@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import sys
+import threading
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -288,6 +289,42 @@ async def live(*, gateway: bool) -> AsyncIterator[Live]:
                 await gw_task
         root.handlers = saved_handlers
         root.setLevel(saved_level)
+
+
+async def wait_for_enter() -> str:
+    """Wait for the operator to press Enter and return the line read from stdin.
+
+    stdin is read in a DAEMON thread, not in the default executor: a non-daemon thread blocked in input()
+    would keep asyncio.run (shutdown_default_executor) and the interpreter exit waiting after Ctrl+C, so the
+    script would look hung until Enter was pressed. With a daemon thread, Ctrl+C cancels this wait at once and
+    main() can print INTERRUPTED and exit 130. EOF on stdin raises EOFError, as input() does."""
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[str] = loop.create_future()
+
+    def deliver(outcome: str | BaseException) -> None:
+        # Runs on the loop. A future cancelled by Ctrl+C is already done, so a late line is dropped.
+        if future.done():
+            return
+        if isinstance(outcome, BaseException):
+            future.set_exception(outcome)
+        elif outcome:
+            future.set_result(outcome)
+        else:
+            future.set_exception(EOFError("stdin closed before Enter"))
+
+    def read_line() -> None:
+        outcome: str | BaseException
+        try:
+            outcome = sys.stdin.readline()
+        except (OSError, ValueError) as exc:
+            outcome = exc
+        try:
+            loop.call_soon_threadsafe(deliver, outcome)
+        except RuntimeError:
+            pass   # the loop is already closed, so nothing is waiting for the line
+
+    threading.Thread(target=read_line, name="wait-for-enter", daemon=True).start()
+    return await future
 
 
 def error_redactor() -> Redactor:

@@ -7,8 +7,12 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import os
 import re
+import signal
+import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import aiohttp
@@ -346,6 +350,86 @@ async def test_capture_version_without_instance_url_has_no_code_version(fake, se
 
 def test_harness_import_has_no_side_effects():
     assert hasattr(_live, "live") and hasattr(_live, "main")
+
+
+# wait_for_enter: stdin is read in a daemon thread, so Ctrl+C is not held up by a blocked read
+
+
+async def test_wait_for_enter_resolves_with_the_line_written_to_stdin(monkeypatch):
+    monkeypatch.setattr(sys, "stdin", io.StringIO("\n"))
+    assert await _live.wait_for_enter() == "\n"
+
+
+async def test_wait_for_enter_raises_eoferror_when_stdin_closes_first(monkeypatch):
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    with pytest.raises(EOFError):
+        await _live.wait_for_enter()
+
+
+async def test_cancelled_wait_drops_a_late_line_without_error(monkeypatch):
+    read_fd, write_fd = os.pipe()
+    stdin = os.fdopen(read_fd, "r", encoding="utf-8")
+    monkeypatch.setattr(sys, "stdin", stdin)
+    task = asyncio.create_task(_live.wait_for_enter())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    os.write(write_fd, b"late\n")
+    os.close(write_fd)
+    await asyncio.sleep(0.2)   # the reader thread delivers the line to a future that is already cancelled
+    stdin.close()
+
+
+SIGINT_TIMEOUT = 10.0
+WAIT_SCRIPT = """
+import sys
+sys.path.insert(0, {live_dir!r})
+import _live
+
+async def script():
+    print("READY", flush=True)
+    await _live.wait_for_enter()
+    print("ENTERED", flush=True)
+
+_live.main(script)
+"""
+
+
+@pytest.mark.skipif(os.name != "posix", reason="delivers SIGINT, which only POSIX test runs use")
+def test_ctrl_c_while_waiting_for_enter_exits_130_promptly(tmp_path):
+    script = tmp_path / "wait_for_enter_script.py"
+    script.write_text(WAIT_SCRIPT.format(live_dir=str(Path(_live.__file__).parent)), encoding="utf-8")
+    proc = subprocess.Popen(
+        [sys.executable, str(script)],
+        stdin=subprocess.PIPE,   # held open: the script waits for an Enter that never comes
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    # Backstop only: kills a hung child so the test cannot run forever. The real bound is SIGINT_TIMEOUT below.
+    backstop = threading.Timer(3 * SIGINT_TIMEOUT, proc.kill)
+    backstop.start()
+    try:
+        assert proc.stdout.readline().strip() == "READY"
+        proc.send_signal(signal.SIGINT)
+        try:
+            code = proc.wait(timeout=SIGINT_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            pytest.fail(f"still running {SIGINT_TIMEOUT:.0f}s after SIGINT while waiting for Enter")
+        stdout, stderr = proc.stdout.read(), proc.stderr.read()
+    finally:
+        backstop.cancel()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        proc.stdin.close()
+        proc.stdout.close()
+        proc.stderr.close()
+    assert code == 130
+    assert "INTERRUPTED" in stdout
+    assert "ENTERED" not in stdout
+    assert "Traceback" not in stderr
 
 
 # main(): exit codes and error output. _redactor is reset per test; live() sets it in the real run.

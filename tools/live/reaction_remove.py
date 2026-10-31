@@ -6,11 +6,10 @@ Run from the project root: .venv/bin/python tools/live/reaction_remove.py (needs
 """
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
 from typing import Any
 
-from _live import WAIT, Live, Results, live, main, out
+from _live import WAIT, Live, Results, live, main, out, wait_for_enter
 from fluxer_client.events import Emoji, ReactionAdd, ReactionRemove, parse
 from fluxer_client.rest import FluxerHTTPError
 
@@ -86,7 +85,7 @@ async def run() -> Results:
         await report_remove_event(lv, channel, message_id)
 
         out(redactor, MANUAL)
-        await asyncio.to_thread(input)
+        await wait_for_enter()
         try:
             again = await wait_add(lv, res, "re-react after permission removed", channel, message_id)
             if again is None:

@@ -50,6 +50,8 @@ Standalone project: `fluxer_client` (a reusable Fluxer REST and gateway client) 
   the token with `[REDACTED]`, known ids with labels and other 15+ digit runs with `<id>`; `out()` is the only print path.
   `main()` exits 0 on pass, 1 on any FAIL or error (type and redacted message, no traceback), 2 on a refusal and 130 on Ctrl+C.
   The redactor is resolved when an error is printed, so it applies even when the error happens inside the run.
+  Scripts wait for the operator with `wait_for_enter()` (stdin read in a daemon thread), never `input()` or
+  `to_thread(input)`: a blocked non-daemon read keeps Ctrl+C from exiting 130 until Enter is pressed.
 - `tools/live/` scripts: `reactions.py` (guild and DM reaction add and remove), `edit.py` (edit content and embeds),
   `reaction_remove.py` (removal with and without Manage Messages), `roles.py` (member role add and remove) and
   `dm.py` (open a DM, send, receive the reply and re-open).
