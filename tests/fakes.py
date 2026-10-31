@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -41,6 +41,8 @@ class Recorded:
     status: int
     payload: Any = None
     files: list[tuple[str, bytes]] = field(default_factory=list)  # (filename, bytes)
+    raw_path: str = ""  # percent-encoded path as sent, so encoding is visible
+    headers: Mapping[str, str] = field(default_factory=dict)  # case-insensitive copy of request headers
 
 
 @dataclass
@@ -54,6 +56,10 @@ class FakeFluxerState:
     forbid_attachments: bool = False
     # Keyed by "METHOD /path"; checked before any default behaviour.
     overrides: dict[str, Override] = field(default_factory=dict)
+    # Keyed by "METHOD /path" (decoded path): how many more 429s the route returns before succeeding.
+    rate_limit: dict[str, int] = field(default_factory=dict)
+    # recipient user id -> DM channel id, filled by POST /users/@me/channels.
+    dm_channels: dict[str, str] = field(default_factory=dict)
     requests: list[Recorded] = field(default_factory=list)
     # Gateway fake: when False the fake never ACKs heartbeats (op 1 gets no op 11).
     ack: bool = True
@@ -88,7 +94,13 @@ def _send(
             content_type=override.content_type,
             headers=override.headers,
         )
+    if state.rate_limit.get(key, 0) > 0:
+        state.rate_limit[key] -= 1
+        state.requests.append(_record(request, 429, payload, files))
+        return web.json_response(RATE_LIMIT_BODY, status=429)
     state.requests.append(_record(request, status, payload, files))
+    if status == 204:
+        return web.Response(status=204)
     return web.json_response(body, status=status)
 
 
@@ -101,6 +113,8 @@ def _record(request: web.Request, status: int, payload: Any, files: list[tuple[s
         status=status,
         payload=payload,
         files=files or [],
+        raw_path=request.raw_path,
+        headers=request.headers.copy(),
     )
 
 
@@ -148,12 +162,38 @@ def make_rest_app(state: FakeFluxerState) -> web.Application:
             return _send(state, request, 404, {"code": "UNKNOWN_MEMBER", "message": "Unknown member"})
         return _send(state, request, 200, state.members[key])
 
+    async def reaction(request: web.Request) -> web.Response:
+        # PUT .../@me adds our reaction; DELETE .../{user} removes a reaction (204 either way)
+        return _send(state, request, 204, None)
+
+    async def edit_message(request: web.Request) -> web.Response:
+        payload = await request.json()
+        mid = request.match_info["mid"]
+        return _send(state, request, 200, {"id": mid, **payload}, payload=payload)
+
+    async def role(request: web.Request) -> web.Response:
+        return _send(state, request, 204, None)
+
+    async def open_dm(request: web.Request) -> web.Response:
+        payload = await request.json()
+        recipient = str(payload.get("recipient_id"))
+        channel = state.dm_channels.setdefault(recipient, str(9000 + len(state.dm_channels)))
+        return _send(state, request, 200, {"id": channel, "type": 1}, payload=payload)
+
     app = web.Application()
     app.router.add_get("/.well-known/fluxer", well_known)
     app.router.add_get("/api/v1/gateway/bot", gateway_bot)
     app.router.add_post("/api/v1/channels/{cid}/messages", create_message)
     app.router.add_get("/api/v1/guilds/{gid}/roles", roles)
     app.router.add_get("/api/v1/guilds/{gid}/members/{uid}", member)
+    reaction_path = "/api/v1/channels/{cid}/messages/{mid}/reactions/{emoji}/{user}"
+    app.router.add_put(reaction_path, reaction)
+    app.router.add_delete(reaction_path, reaction)
+    app.router.add_patch("/api/v1/channels/{cid}/messages/{mid}", edit_message)
+    role_path = "/api/v1/guilds/{gid}/members/{uid}/roles/{rid}"
+    app.router.add_put(role_path, role)
+    app.router.add_delete(role_path, role)
+    app.router.add_post("/api/v1/users/@me/channels", open_dm)
 
     async def unmatched(request: web.Request) -> web.Response:
         # recorded like any other call, so a request to a path nobody expects still shows up
