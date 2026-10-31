@@ -11,6 +11,7 @@ import math
 import re
 from collections.abc import Awaitable, Callable
 from typing import Any
+from urllib.parse import quote
 
 import aiohttp
 
@@ -30,6 +31,34 @@ def _finite_or_none(value: object) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
+
+
+EMOJI_MAX = 64
+REASON_MAX = 128
+_CUSTOM_EMOJI = re.compile(r"[A-Za-z0-9_]{1,32}:[0-9]{1,25}")
+_EMOJI_FORBIDDEN = ("/", "?", "#", "..", "%", "\\")
+
+
+def encode_emoji(emoji: str) -> str:
+    """Path segment for a reaction emoji: `name:id` for custom emoji, else the percent-encoded unicode."""
+    if not isinstance(emoji, str) or not emoji or emoji.isspace() or len(emoji) > EMOJI_MAX:
+        raise ValueError("emoji must be 1-64 non-blank characters")
+    if any(bad in emoji for bad in _EMOJI_FORBIDDEN) or any(c.isspace() or ord(c) < 0x20 for c in emoji):
+        raise ValueError("emoji contains a forbidden character")
+    if ":" in emoji:
+        if not _CUSTOM_EMOJI.fullmatch(emoji):
+            raise ValueError("custom emoji must be name:id")
+        return emoji
+    return quote(emoji, safe="")
+
+
+def _check_reason(reason: str | None) -> dict[str, str]:
+    """Audit-log header for a fixed, caller-supplied reason; never pass user text."""
+    if reason is None:
+        return {}
+    if not reason or len(reason) > REASON_MAX or not all(0x20 <= ord(c) <= 0x7E for c in reason):
+        raise ValueError("audit reason must be 1-128 printable ASCII characters")
+    return {"X-Audit-Log-Reason": reason}
 
 
 class FluxerHTTPError(Exception):
