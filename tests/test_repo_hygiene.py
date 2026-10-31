@@ -146,3 +146,17 @@ def test_reuse_lint_passes():
         capture_output=True, text=True, timeout=120,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+CI_WORKFLOW = PROJECT / ".github" / "workflows" / "ci.yml"
+CI_REQUIRED_STEPS = (
+    "run: python -m pytest -q -W error",
+    "run: ruff check src tests tools",
+    "run: reuse --root . lint",
+)
+
+
+def test_ci_runs_the_three_checks():
+    lines = {line.strip().removeprefix("- ") for line in CI_WORKFLOW.read_text("utf-8").splitlines()}
+    missing = [step for step in CI_REQUIRED_STEPS if step not in lines]
+    assert missing == [], f"ci.yml is missing these steps: {missing}"

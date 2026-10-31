@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 K. Chen
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -e '.[dev]'
+      - run: python -m pytest -q -W error
+      - run: ruff check src tests tools
+      - run: reuse --root . lint
