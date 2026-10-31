@@ -346,3 +346,121 @@ async def test_capture_version_without_instance_url_has_no_code_version(fake, se
 
 def test_harness_import_has_no_side_effects():
     assert hasattr(_live, "live") and hasattr(_live, "main")
+
+
+# main(): exit codes and error output. _redactor is reset per test; live() sets it in the real run.
+
+
+@pytest.fixture
+def no_live_redactor(monkeypatch):
+    monkeypatch.setattr(_live, "_redactor", None)
+
+
+def exit_code_of(main_fn) -> int:
+    with pytest.raises(SystemExit) as info:
+        main_fn()
+    return info.value.code
+
+
+def test_main_error_output_redacts_token_and_labels_ids_bound_during_the_run(no_live_redactor, capsys):
+    unknown = "9" * 18
+
+    async def script():
+        redactor = Redactor(token=TOKEN)
+        _live._redactor = redactor   # the same path live() takes, before any error is raised
+        redactor.label(GUILD, "guild")
+        raise RuntimeError(f"auth {TOKEN} guild {GUILD} other {unknown}")
+
+    assert exit_code_of(lambda: _live.main(script)) == 1
+    printed = capsys.readouterr().out
+    assert "ERROR RuntimeError:" in printed
+    assert TOKEN not in printed
+    assert unknown not in printed
+    assert GUILD not in printed
+    assert "[REDACTED]" in printed
+    assert "<guild>" in printed
+
+
+def test_main_error_before_live_still_masks_long_ids(no_live_redactor, capsys):
+    unknown = "9" * 18
+
+    async def script():
+        raise RuntimeError(f"id {unknown}")
+
+    assert exit_code_of(lambda: _live.main(script)) == 1
+    printed = capsys.readouterr().out
+    assert unknown not in printed
+    assert "<id>" in printed
+
+
+def test_main_refusal_exits_2_with_refused_line(no_live_redactor, capsys):
+    async def script():
+        raise LiveRefused("LIVE_USER_ID is not a member of LIVE_GUILD_ID")
+
+    assert exit_code_of(lambda: _live.main(script)) == 2
+    assert capsys.readouterr().out.startswith("REFUSED: LIVE_USER_ID is not a member of LIVE_GUILD_ID")
+
+
+def test_main_failed_results_exit_1(no_live_redactor):
+    async def script():
+        results = _live.Results(Redactor(token=TOKEN))
+        results.fail("check", "went wrong")
+        return results
+
+    assert exit_code_of(lambda: _live.main(script)) == 1
+
+
+def test_main_passing_results_exit_0(no_live_redactor, capsys):
+    async def script():
+        results = _live.Results(Redactor(token=TOKEN))
+        results.ok("check")
+        return results
+
+    assert exit_code_of(lambda: _live.main(script)) == 0
+    assert "PASS check" in capsys.readouterr().out
+
+
+def test_main_none_result_exits_0(no_live_redactor):
+    async def script():
+        return None
+
+    assert exit_code_of(lambda: _live.main(script)) == 0
+
+
+def test_main_ctrl_c_prints_interrupted_without_traceback_and_exits_130(no_live_redactor, capsys):
+    async def script():
+        raise KeyboardInterrupt
+
+    assert exit_code_of(lambda: _live.main(script)) == 130
+    captured = capsys.readouterr()
+    assert captured.out.strip() == "INTERRUPTED"
+    assert "Traceback" not in captured.err
+
+
+# gateway_failure: the READY-timeout message names the gateway task's exception type, never its message
+
+
+def test_gateway_failure_names_exception_type_and_never_its_message():
+    async def dies():
+        raise ConnectionError(f"dial failed with {TOKEN} for {'8' * 18}")
+
+    async def scenario() -> str:
+        task = asyncio.create_task(dies())
+        await asyncio.wait({task})
+        return _live.gateway_failure(task, Redactor(token=TOKEN))
+
+    message = asyncio.run(scenario())
+    assert message == "gateway did not reach READY (gateway task failed: ConnectionError)"
+    assert TOKEN not in message
+
+
+def test_gateway_failure_for_a_task_still_running_has_no_cause():
+    async def scenario() -> str:
+        task = asyncio.create_task(asyncio.sleep(10))
+        message = _live.gateway_failure(task, Redactor(token=TOKEN))
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return message
+
+    assert asyncio.run(scenario()) == "gateway did not reach READY"

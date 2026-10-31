@@ -28,7 +28,7 @@ WAIT = 120.0   # seconds a script waits for the human to act
 SHOW_KEYS = frozenset({"type", "t", "code", "animated", "bot"})
 NUMBERED_KINDS = frozenset({"message"})
 
-_redactor: Redactor | None = None   # set by live(); used by main() for error output
+_redactor: Redactor | None = None   # set by live() as soon as the token is loaded; main() reads it when reporting errors
 
 
 class LiveRefused(Exception):
@@ -218,6 +218,16 @@ async def capture_version(session: aiohttp.ClientSession, env: Mapping[str, str]
     return {"x_fluxer_version": x_version, "api_code_version": api_code_version}
 
 
+def gateway_failure(task: asyncio.Task[None] | None, redactor: Redactor) -> str:
+    """The READY-timeout message. If the gateway task already died with an exception, its type name is
+    appended (redacted). The exception's message is never included: it may echo the token or a payload."""
+    message = "gateway did not reach READY"
+    if task is not None and task.done() and not task.cancelled() and task.exception() is not None:
+        kind = type(task.exception()).__name__
+        message += f" (gateway task failed: {redactor.text(kind)})"
+    return message
+
+
 @contextlib.asynccontextmanager
 async def live(*, gateway: bool) -> AsyncIterator[Live]:
     """install redactor.log_handler() as the only root handler (level WARNING) -> load_env -> session -> api base (FLUXER_API_URL or discover_api) -> FluxerREST -> check_safety ->
@@ -267,7 +277,7 @@ async def live(*, gateway: bool) -> AsyncIterator[Live]:
                 gw_task = asyncio.create_task(gw.run())
                 done, _ = await asyncio.wait({ready, gw_task}, timeout=WAIT, return_when=asyncio.FIRST_COMPLETED)
                 if ready not in done:
-                    raise RuntimeError("gateway did not reach READY")
+                    raise RuntimeError(gateway_failure(gw_task, redactor))
             yield lv
     finally:
         if gw is not None:
@@ -280,17 +290,25 @@ async def live(*, gateway: bool) -> AsyncIterator[Live]:
         root.setLevel(saved_level)
 
 
+def error_redactor() -> Redactor:
+    """The live() redactor, resolved when an error is reported (live() sets it after the run has started).
+    Before live() has loaded a token there is nothing to redact but long ids."""
+    return _redactor if _redactor is not None else Redactor(token="")
+
+
 def main(coro_fn: Callable[[], Any]) -> None:
-    """asyncio.run; LiveRefused -> print 'REFUSED: <check>' and exit 2; any FAIL from the script -> exit 1;
-    other exceptions -> print the redacted type and message only (no traceback, which could hold headers) and exit 1.
-    coro_fn returns a Results (or None when it has nothing to report)."""
-    redactor = _redactor or Redactor(token="")
+    """asyncio.run; LiveRefused -> print 'REFUSED: <check>' and exit 2; Ctrl+C -> print 'INTERRUPTED' and exit 130;
+    any FAIL from the script -> exit 1; other exceptions -> print the redacted type and message only (no traceback,
+    which could hold headers) and exit 1. coro_fn returns a Results (or None when it has nothing to report)."""
     try:
         results = asyncio.run(coro_fn())
     except LiveRefused as exc:
-        out(redactor, f"REFUSED: {exc}")
+        out(error_redactor(), f"REFUSED: {exc}")
         sys.exit(2)
+    except KeyboardInterrupt:
+        out(error_redactor(), "INTERRUPTED")
+        sys.exit(130)
     except Exception as exc:  # noqa: BLE001 - reported with type and message only, never a traceback
-        out(redactor, f"ERROR {type(exc).__name__}: {exc}")
+        out(error_redactor(), f"ERROR {type(exc).__name__}: {exc}")
         sys.exit(1)
     sys.exit(1 if results is not None and results.failed else 0)

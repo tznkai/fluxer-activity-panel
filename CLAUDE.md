@@ -44,4 +44,12 @@ Standalone project: `fluxer_client` (a reusable Fluxer REST and gateway client) 
 - `rest.py` `FluxerREST.remove_member_role(guild_id, user_id, role_id, *, reason)`: DELETE a member role, with an optional audit reason.
 - `rest.py` `FluxerREST.open_dm(user_id)`: POST to open or reuse a DM channel and return its id.
 - `tests/fakes.py`: fake Fluxer REST and gateway servers used by the tests.
-- `tools/live/`: live-instance helper scripts (Phase 3). `.gitkeep` keeps the directory present until then.
+- `tools/live/_live.py`: the shared harness for the hand-run live scripts (never run by CI; they need a local `.env`).
+  `load_env` refuses unless the required variables are set; `check_safety` refuses unless the channel is in the guild,
+  the user is a member and the guild has at most 2 members. Refusals name the check, never a value. `Redactor` replaces
+  the token with `[REDACTED]`, known ids with labels and other 15+ digit runs with `<id>`; `out()` is the only print path.
+  `main()` exits 0 on pass, 1 on any FAIL or error (type and redacted message, no traceback), 2 on a refusal and 130 on Ctrl+C.
+  The redactor is resolved when an error is printed, so it applies even when the error happens inside the run.
+- `tools/live/` scripts: `reactions.py` (guild and DM reaction add and remove), `edit.py` (edit content and embeds),
+  `reaction_remove.py` (removal with and without Manage Messages), `roles.py` (member role add and remove) and
+  `dm.py` (open a DM, send, receive the reply and re-open).
