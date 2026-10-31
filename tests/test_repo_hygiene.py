@@ -94,15 +94,51 @@ def test_hygiene_check_never_opens_secret_files(tmp_path, monkeypatch):
     assert not opened_secrets, f"secret files were opened: {opened_secrets}"
 
 
-def test_no_long_digit_runs_in_tracked_files():
+def long_digit_offenders(root: Path) -> list[str]:
+    """Tracked files under `root` that contain a 15+ digit run. Secrets are skipped before any read.
+
+    A tracked path that is missing on disk (deleted but still tracked) or is no longer a regular
+    file (e.g. now a directory) is skipped rather than read.
+    """
     offenders = []
-    for path in tracked_files(PROJECT):
+    for path in tracked_files(root):
         if is_secret(path):
+            continue
+        if not path.is_file():
             continue
         text = path.read_bytes().decode("utf-8", "ignore")
         if re.search(r"[0-9]{15,}", text) is not None:
-            offenders.append(str(path.relative_to(PROJECT)))
+            offenders.append(str(path.relative_to(root)))
+    return offenders
+
+
+def test_no_long_digit_runs_in_tracked_files():
+    offenders = long_digit_offenders(PROJECT)
     assert offenders == [], f"tracked files contain 15+ digit runs (possible real ids): {offenders}"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not on PATH")
+def test_digit_scan_skips_tracked_file_deleted_from_disk(tmp_path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=60)
+    (tmp_path / "gone.txt").write_text("deleted after add\n", "utf-8")
+    (tmp_path / "live.txt").write_text("1" * 15 + "\n", "utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-f", "gone.txt", "live.txt"], check=True, timeout=60)
+    (tmp_path / "gone.txt").unlink()
+
+    assert sorted(p.name for p in tracked_files(tmp_path)) == ["gone.txt", "live.txt"]
+    assert long_digit_offenders(tmp_path) == ["live.txt"]
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not on PATH")
+def test_digit_scan_skips_tracked_path_that_became_directory(tmp_path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=60)
+    (tmp_path / "item").write_text("plain\n", "utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-f", "item"], check=True, timeout=60)
+    (tmp_path / "item").unlink()
+    (tmp_path / "item").mkdir()
+    (tmp_path / "item" / "inner.txt").write_text("plain\n", "utf-8")
+
+    assert long_digit_offenders(tmp_path) == []
 
 
 def _imported_modules(tree: ast.AST) -> list[str]:
