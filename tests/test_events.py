@@ -8,6 +8,7 @@ import logging
 
 import pytest
 
+from fluxer_client import events as events_module
 from fluxer_client.events import (
     Emoji,
     GuildRolesChanged,
@@ -283,3 +284,66 @@ def test_empty_session_id_names_session_id(caplog) -> None:
         assert parse("READY", {"user": {"id": "1001"}, "session_id": ""}) is None
     (record,) = warnings_for(caplog)
     assert "session_id" in record.getMessage()
+
+
+# Malformed optional and nested fields that have no other coverage
+
+
+@pytest.mark.parametrize(
+    "event_type, payload, field_name, bad_value",
+    [
+        # emoji.id: present but not a snowflake
+        (
+            "MESSAGE_REACTION_ADD",
+            {"user_id": "1001", "channel_id": "3001", "message_id": "5001", "emoji": {"name": "x", "id": "bad"}},
+            "emoji.id",
+            "bad",
+        ),
+        # emoji.name: present but not a string
+        (
+            "MESSAGE_REACTION_REMOVE",
+            {"user_id": "1001", "channel_id": "3001", "message_id": "5001", "emoji": {"name": 5}},
+            "emoji.name",
+            5,
+        ),
+        # guild_id: optional, but present and invalid
+        (
+            "MESSAGE_CREATE",
+            {"id": "5001", "channel_id": "3001", "guild_id": "zz", "author": {"id": "1001"}, "content": ""},
+            "guild_id",
+            "zz",
+        ),
+        # guild_id on a GUILD_ROLE_* event, which requires it
+        ("GUILD_ROLE_DELETE", {"guild_id": "zz", "role_id": "4001"}, "guild_id", "zz"),
+    ],
+    ids=["emoji-id", "emoji-name", "optional-guild-id", "role-guild-id"],
+)
+def test_malformed_field_gives_none_and_one_warning_naming_field(
+    event_type, payload, field_name, bad_value, caplog,
+) -> None:
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        assert parse(event_type, payload) is None
+    (record,) = warnings_for(caplog)
+    message = record.getMessage()
+    assert f"field {field_name}" in message
+    assert str(bad_value) not in message
+
+
+# Defensive catch-all in parse(): no current parser raises TypeError or AttributeError, so
+# the test swaps one in. It must still give None and log only the placeholder field name.
+
+
+@pytest.mark.parametrize("error_type", [TypeError, AttributeError])
+def test_unexpected_parser_error_logs_placeholder_and_never_the_value(
+    error_type, monkeypatch, caplog,
+) -> None:
+    def broken(raw):
+        raise error_type("SENTINEL-VALUE")
+
+    monkeypatch.setitem(events_module._PARSERS, "READY", broken)
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        assert parse("READY", {"user": {"id": "1001"}, "session_id": "s"}) is None
+    (record,) = warnings_for(caplog)
+    message = record.getMessage()
+    assert message == 'malformed READY payload: field "?"'
+    assert "SENTINEL-VALUE" not in message

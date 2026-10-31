@@ -203,6 +203,26 @@ async def test_open_dm_404_surfaces_status_and_code(fake, session):
     assert info.value.code == "UNKNOWN_USER"
 
 
+# A 200 whose body has no usable channel id must raise, not return a bad id.
+# The two messages differ: "no string id" is open_dm's own guard, "not a snowflake id"
+# is require_snowflake's. Matching both means deleting either guard changes the outcome.
+@pytest.mark.parametrize(
+    "body, message",
+    [
+        (b"{}", "no string id"),
+        (b'{"id": 7}', "no string id"),
+        (b"[]", "no string id"),
+        (b'{"id": "abc"}', "not a snowflake id"),
+    ],
+    ids=["missing-id", "non-string-id", "non-dict-body", "non-snowflake-id"],
+)
+async def test_open_dm_malformed_response_raises(fake, session, body, message):
+    state, base = fake
+    state.overrides["POST /api/v1/users/@me/channels"] = Override(200, body)
+    with pytest.raises(ValueError, match=message):
+        await make_rest(session, base).open_dm("1001")
+
+
 # AC1.7: every id argument of every new method is validated before any request
 
 CALLS: list[tuple[str, Callable[[FluxerREST, str], Awaitable[object]]]] = [

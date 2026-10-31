@@ -235,5 +235,7 @@ def parse(t: str, d: Any) -> Event | None:
     except _Malformed as exc:
         log.warning("malformed %s payload: field %s", t, exc.field_name)
     except (TypeError, AttributeError):
+        # Defensive catch-all: the parsers check types before use, so no current payload reaches
+        # this. It logs a placeholder, never the exception text, which may carry the value.
         log.warning('malformed %s payload: field "?"', t)
     return None
