@@ -5,12 +5,13 @@
 from __future__ import annotations
 
 import asyncio
+import enum
 import json
 import logging
 import math
 import re
-from collections.abc import Awaitable, Callable
-from typing import Any
+from collections.abc import Awaitable, Callable, Mapping
+from typing import Any, Final
 from urllib.parse import quote
 
 import aiohttp
@@ -23,6 +24,16 @@ RETRY_AFTER_MIN = 0.001
 RETRY_AFTER_MAX = 60.0
 RETRY_AFTER_DEFAULT = 1.0
 _FILENAME = re.compile(r"[A-Za-z0-9._-]{1,64}")
+
+
+class Unset(enum.Enum):
+    UNSET = enum.auto()
+
+    def __repr__(self) -> str:
+        return "UNSET"
+
+
+UNSET: Final = Unset.UNSET
 
 
 def _finite_or_none(value: object) -> float | None:
@@ -102,7 +113,9 @@ class FluxerREST:
         *,
         json_body: Any = None,
         form: Callable[[], aiohttp.FormData] | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> Any:
+        merged = {**self._headers, **(headers or {})}
         for attempt in range(self.max_retries + 1):
             kwargs: dict[str, Any] = {}
             if form is not None:
@@ -110,7 +123,7 @@ class FluxerREST:
             elif json_body is not None:
                 kwargs["json"] = json_body
             async with self.session.request(
-                method, self._url(path), headers=self._headers, **kwargs
+                method, self._url(path), headers=merged, **kwargs
             ) as resp:
                 if resp.status == 429 and attempt < self.max_retries:
                     delay = await self._retry_after(resp)
@@ -192,6 +205,56 @@ class FluxerREST:
     async def get_member(self, guild_id: str, user_id: str) -> dict[str, Any]:
         path = f"/guilds/{require_snowflake(guild_id)}/members/{require_snowflake(user_id)}"
         return await self.request("GET", path)
+
+    async def edit_message(
+        self,
+        channel_id: str,
+        message_id: str,
+        *,
+        content: str | None | Unset = UNSET,
+        embeds: list[dict[str, Any]] | Unset = UNSET,
+    ) -> Any:
+        path = f"/channels/{require_snowflake(channel_id)}/messages/{require_snowflake(message_id)}"
+        body: dict[str, Any] = {}
+        if content is not UNSET:
+            body["content"] = content  # None is sent as JSON null
+        if embeds is not UNSET:
+            body["embeds"] = embeds  # replaces the whole list
+        if not body:
+            raise ValueError("edit_message needs content or embeds")
+        return await self.request("PATCH", path, json_body=body)
+
+    def _reaction_path(self, channel_id: str, message_id: str, emoji: str, who: str) -> str:
+        return (f"/channels/{require_snowflake(channel_id)}/messages/{require_snowflake(message_id)}"
+                f"/reactions/{encode_emoji(emoji)}/{who}")
+
+    async def add_reaction(self, channel_id: str, message_id: str, emoji: str) -> None:
+        await self.request("PUT", self._reaction_path(channel_id, message_id, emoji, "@me"))
+
+    async def remove_reaction(self, channel_id: str, message_id: str, emoji: str, user_id: str) -> None:
+        path = self._reaction_path(channel_id, message_id, emoji, require_snowflake(user_id))
+        await self.request("DELETE", path)
+
+    def _role_path(self, guild_id: str, user_id: str, role_id: str) -> str:
+        return (f"/guilds/{require_snowflake(guild_id)}/members/{require_snowflake(user_id)}"
+                f"/roles/{require_snowflake(role_id)}")
+
+    async def add_member_role(self, guild_id: str, user_id: str, role_id: str, *, reason: str | None = None) -> None:
+        path, headers = self._role_path(guild_id, user_id, role_id), _check_reason(reason)
+        await self.request("PUT", path, headers=headers)
+
+    async def remove_member_role(self, guild_id: str, user_id: str, role_id: str, *,
+                                 reason: str | None = None) -> None:
+        path, headers = self._role_path(guild_id, user_id, role_id), _check_reason(reason)
+        await self.request("DELETE", path, headers=headers)
+
+    async def open_dm(self, user_id: str) -> str:
+        data = await self.request("POST", "/users/@me/channels",
+                                  json_body={"recipient_id": require_snowflake(user_id)})
+        channel_id = data.get("id") if isinstance(data, dict) else None
+        if not isinstance(channel_id, str):
+            raise ValueError("DM channel response has no string id")
+        return require_snowflake(channel_id)
 
 
 async def resolve_endpoints(
