@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: 2026 K. Chen
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fluxer-activity-panel"
+version = "0.1.0"
+description = "Fluxer activity panel bot and a reusable Fluxer client"
+readme = "README.md"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSES/AGPL-3.0-or-later.txt"]
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.11",
+    "yarl>=1.17",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.4",
+    "pytest-asyncio>=1.0",
+    "pytest-aiohttp>=1.1",
+    "ruff>=0.17.2",
+    "reuse>=6.2.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fluxer_client"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+# BLE is selected so the copied `# noqa: BLE001` comments refer to an active rule.
+select = ["E4", "E7", "E9", "F", "B", "BLE"]
