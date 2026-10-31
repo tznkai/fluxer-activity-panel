@@ -50,6 +50,9 @@ class FakeFluxerState:
     gateway_url: str = "ws://fake-gateway.test/gateway"
     roles: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     members: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
+    # GET /channels/{id} and GET /guilds/{id} answer from these (404 when unknown).
+    channels: dict[str, dict[str, Any]] = field(default_factory=dict)
+    guilds: dict[str, dict[str, Any]] = field(default_factory=dict)
     # The next N message POSTs answer 429 (RATE_LIMIT_BODY).
     rate_limit_next: int = 0
     # When True, multipart message POSTs (attachments) get 403, as without Attach Files.
@@ -150,6 +153,18 @@ def make_rest_app(state: FakeFluxerState) -> web.Application:
             return _send(state, request, 429, RATE_LIMIT_BODY, payload=payload, files=files)
         return _send(state, request, 200, {"id": "m1"}, payload=payload, files=files)
 
+    async def channel(request: web.Request) -> web.Response:
+        cid = request.match_info["cid"]
+        if cid not in state.channels:
+            return _send(state, request, 404, {"code": "UNKNOWN_CHANNEL", "message": "Unknown channel"})
+        return _send(state, request, 200, state.channels[cid])
+
+    async def guild(request: web.Request) -> web.Response:
+        gid = request.match_info["gid"]
+        if gid not in state.guilds:
+            return _send(state, request, 404, {"code": "UNKNOWN_GUILD", "message": "Unknown guild"})
+        return _send(state, request, 200, state.guilds[gid])
+
     async def roles(request: web.Request) -> web.Response:
         guild = request.match_info["gid"]
         if guild not in state.roles:
@@ -184,6 +199,8 @@ def make_rest_app(state: FakeFluxerState) -> web.Application:
     app.router.add_get("/.well-known/fluxer", well_known)
     app.router.add_get("/api/v1/gateway/bot", gateway_bot)
     app.router.add_post("/api/v1/channels/{cid}/messages", create_message)
+    app.router.add_get("/api/v1/channels/{cid}", channel)
+    app.router.add_get("/api/v1/guilds/{gid}", guild)
     app.router.add_get("/api/v1/guilds/{gid}/roles", roles)
     app.router.add_get("/api/v1/guilds/{gid}/members/{uid}", member)
     reaction_path = "/api/v1/channels/{cid}/messages/{mid}/reactions/{emoji}/{user}"

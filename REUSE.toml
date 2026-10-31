@@ -6,9 +6,3 @@ version = 1
 path = ["docs/panel-brief.md", "docs/fluxer-game-panel.mermaid"]
 SPDX-FileCopyrightText = "2026 K. Chen"
 SPDX-License-Identifier = "AGPL-3.0-or-later"
-
-# Empty placeholder that keeps tools/ present for ruff until Phase 3 fills tools/live/.
-[[annotations]]
-path = "tools/live/.gitkeep"
-SPDX-FileCopyrightText = "2026 K. Chen"
-SPDX-License-Identifier = "AGPL-3.0-or-later"
