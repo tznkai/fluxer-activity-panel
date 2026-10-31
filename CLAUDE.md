@@ -34,5 +34,14 @@ Standalone project: `fluxer_client` (a reusable Fluxer REST and gateway client) 
 ## Layout
 
 - `src/fluxer_client/ids.py`, `rest.py`, `gateway.py`, `roles.py`: the client modules.
+- `src/fluxer_client/events.py`: parses gateway dispatches into frozen dataclasses; unknown or malformed payloads return `None` and log the field name only.
+- `rest.py` `encode_emoji(emoji)`: validates a reaction emoji and percent-encodes unicode (or passes `name:id` custom emoji).
+- `rest.py` `UNSET`: sentinel for "argument not given", distinct from `None` (which means JSON null).
+- `rest.py` `FluxerREST.edit_message(channel_id, message_id, *, content, embeds)`: PATCH with only the fields given.
+- `rest.py` `FluxerREST.add_reaction(channel_id, message_id, emoji)`: PUT the caller's reaction.
+- `rest.py` `FluxerREST.remove_reaction(channel_id, message_id, emoji, user_id)`: DELETE one user's reaction.
+- `rest.py` `FluxerREST.add_member_role(guild_id, user_id, role_id, *, reason)`: PUT a member role, with an optional audit reason.
+- `rest.py` `FluxerREST.remove_member_role(guild_id, user_id, role_id, *, reason)`: DELETE a member role, with an optional audit reason.
+- `rest.py` `FluxerREST.open_dm(user_id)`: POST to open or reuse a DM channel and return its id.
 - `tests/fakes.py`: fake Fluxer REST and gateway servers used by the tests.
 - `tools/live/`: live-instance helper scripts (Phase 3). `.gitkeep` keeps the directory present until then.
