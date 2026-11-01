@@ -7,10 +7,58 @@ This project holds two Python packages under `src/`:
 
 - `fluxer_client`: a panel-agnostic Fluxer client with REST, gateway, role cache
   and snowflake id helpers.
-- `fluxer_panel`: the activity panel bot built on `fluxer_client`. It is added in a
-  later phase.
+- `fluxer_panel`: the activity panel bot built on `fluxer_client`.
 
-Configuration comes from environment variables. See `.env.example` for the names.
+Configuration comes from environment variables. See `.env.example` for the names. The code
+never loads `.env`; the operator sources it in the shell.
+
+## Commands
+
+- `python -m fluxer_panel run` (the default) connects to Fluxer and runs the bot.
+- `python -m fluxer_panel purge` runs one retention purge, writes the status file and exits.
+  It needs the same configuration as the bot (`FLUXER_TOKEN`, the instance URL and
+  `ADMIN_USER_IDS` are all required), but it never connects to Fluxer. It exits 0 when the
+  purge succeeded, 1 when it failed (the log has `purge_failed`), 2 on a configuration error
+  and 3 when the database is refused.
+
+## Retention purge
+
+`run` purges once at startup, after it has resolved its endpoints, and then every
+`PURGE_INTERVAL_SECONDS` (default 3600). A purge that fails is logged and recorded in the
+status file, and the bot keeps running.
+
+The purge deletes:
+
+- a session that does not recur and ended more than 7 days ago. Its RSVPs go with it.
+- a recurring session whose series ended (`recurrence_until`) more than 7 days ago. A series
+  with no end date is never purged.
+- a request created more than 30 days ago, whatever its status.
+
+The cutoffs are strict: a row exactly at a cutoff is kept.
+
+### Status file
+
+The status file is `purge-status.json` in the data directory, or the path in
+`PURGE_STATUS_PATH`. It is rewritten after every attempt. It is world-readable (mode 0644)
+so a monitor running as another user can read it. It holds only timestamps and counts:
+
+```json
+{
+ "last_success_at": 1767225600,
+ "last_attempt_at": 1767225600,
+ "ok": true,
+ "deleted": {"sessions": 0, "rsvps": 0, "requests": 0},
+ "schema_version": 1
+}
+```
+
+- `last_success_at`: when the last successful purge ran. It is `null` until the first success,
+  and a failed attempt keeps the previous value.
+- `last_attempt_at`: when the latest attempt ran, successful or not.
+- `ok`: whether the latest attempt succeeded. `deleted` holds that attempt's counts (zeros on failure).
+
+Alert when `last_success_at` is `null` or older than twice `PURGE_INTERVAL_SECONDS`. A missing
+file means the bot has never run a purge.
 
 ## Development
 

@@ -20,7 +20,7 @@ Standalone project: `fluxer_client` (a reusable Fluxer REST and gateway client) 
 - Tests: `.venv/bin/python -m pytest -q -W error` (warnings are errors)
 - Lint: `.venv/bin/ruff check src tests tools`
 - Licensing: `.venv/bin/reuse --root . lint`
-- Run the panel: `.venv/bin/python -m fluxer_panel [run|purge]` (`run` is the default; `purge` is a stub until Phase 6).
+- Run the panel: `.venv/bin/python -m fluxer_panel [run|purge]` (`run` is the default). `purge` runs one retention purge and exits; it never connects to Fluxer.
   Config comes from the environment only. The code never loads `.env`; the operator sources it in their shell.
 - CI (`.github/workflows/ci.yml`) runs these three on every push and pull request.
 
@@ -69,7 +69,10 @@ Standalone project: `fluxer_client` (a reusable Fluxer REST and gateway client) 
 - `src/fluxer_panel/admin.py`: `authorize`, `parse_command` and `handle` for `<prefix>admin <sub>` (`ping` only).
 - `src/fluxer_panel/bot.py`: `Bot.on_dispatch` routes typed gateway events. Guild messages are ignored; DMs go to `admin.handle`.
 - `src/fluxer_panel/__main__.py`: `main()` parses `run|purge`, loads config, sets up logging and runs. `run()` resolves
-  endpoints, then stops on SIGINT or SIGTERM and logs `shutting_down`.
+  endpoints, then stops on SIGINT or SIGTERM and logs `shutting_down`. The purge task starts once the gateway task exists
+  and is cancelled and awaited on every exit. `purge_once` runs one purge for the `purge` subcommand.
+- `src/fluxer_panel/purge.py`: `purge` (one transaction), `run_purge` (purge, checkpoint, status file; never raises
+  except cancellation), `purge_loop` (purge now, then every interval) and `write_status`.
 
 ## fluxer_panel rules
 
@@ -103,6 +106,20 @@ Standalone project: `fluxer_client` (a reusable Fluxer REST and gateway client) 
   replaces the token, raw and repr- or json-escaped up to three nested levels (`_ESCAPE_ROUNDS` in `logs.py`), in the
   message, args and traceback. Example: a token repr'd into an exception message that is then logged with `%r` is two
   levels. Deeper nesting is not covered. A malformed format call does not raise. It also calls `logging.captureWarnings(True)`, so Python warnings are JSON lines too.
+- Retention purge (`purge.py`): a non-recurring session is deleted when `ends_at` is more than 7 days before now, and
+  a recurring session when `recurrence_until` is more than 7 days before now. An open-ended series (`recurrence_until`
+  NULL) is never purged. RSVPs go with their session by `ON DELETE CASCADE`. A request is deleted when `created_at` is
+  more than 30 days before now, whatever its status. Cutoffs are strict: a row exactly at a cutoff is kept. One
+  transaction per run, then a WAL checkpoint.
+- Purge schedule: `run` purges at startup and then every `PURGE_INTERVAL_SECONDS` (default 3600). A failed purge logs
+  `purge_failed`, is recorded in the status file, and the bot keeps running.
+- Status file: `PURGE_STATUS_PATH` (default `DATA_DIR/purge-status.json`), written atomically after every attempt with
+  mode 0644 so a monitor running as another user can read it. It holds only timestamps and counts: `last_success_at`
+  (unix seconds, or null until the first success; a failed attempt keeps the previous value), `last_attempt_at`, `ok`,
+  `deleted` (`sessions`, `rsvps`, `requests`; zeros on failure) and `schema_version` (1).
+  Monitoring rule: alert when `last_success_at` is null or older than twice `PURGE_INTERVAL_SECONDS`.
+- `purge` subcommand: one purge and one status write. Exit 0 on success, 1 when the purge failed, 2 on a config error,
+  3 when the DB is refused. It needs the same config as `run`, but never touches the network.
 - Authorization: `admin.authorize` is the single authorization check. It requires a DM (no guild id), a non-bot author,
   and an author id in `ADMIN_USER_IDS`. Every admin command goes through `handle`, which calls `authorize` before acting.
   A denial logs `admin_denied`.
