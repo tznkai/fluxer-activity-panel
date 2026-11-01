@@ -548,3 +548,17 @@ def test_gateway_failure_for_a_task_still_running_has_no_cause():
         return message
 
     assert asyncio.run(scenario()) == "gateway did not reach READY"
+
+
+# docs/fluxer-notes.md: the recorded live capability results carry no raw ids or tokens
+
+
+NOTES = Path(__file__).resolve().parents[1] / "docs" / "fluxer-notes.md"
+TOKEN_LIKE = re.compile(r"Bot [A-Za-z0-9._-]{20,}")
+
+
+def test_fluxer_notes_have_no_raw_ids_or_tokens():
+    text = NOTES.read_text(encoding="utf-8")
+    assert re.search(r"\d{15,}", text) is None
+    assert TOKEN_LIKE.search(text) is None
+    assert "X-Fluxer-Version" in text
