@@ -76,8 +76,9 @@ Standalone project: `fluxer_client` (a reusable Fluxer REST and gateway client) 
   `log.exception("fatal_error")`. A traceback can carry any exception text, so no code enforces the no-URL rule there.
   `fluxer_client` records (gateway and rest) are plain-text messages that only get token redaction and may contain URLs and exception text.
 - `setup_logging` replaces the root handlers with one JSON handler on stdout. It installs `TokenRedactionFilter`, which
-  replaces the token, in raw and repr- or json-escaped form, in the message, args and traceback. A malformed format
-  call does not raise. It also calls `logging.captureWarnings(True)`, so Python warnings are JSON lines too.
+  replaces the token, raw and repr- or json-escaped up to three nested levels (`_ESCAPE_ROUNDS` in `logs.py`), in the
+  message, args and traceback. Example: a token repr'd into an exception message that is then logged with `%r` is two
+  levels. Deeper nesting is not covered. A malformed format call does not raise. It also calls `logging.captureWarnings(True)`, so Python warnings are JSON lines too.
 - Authorization: `admin.authorize` is the single authorization check. It requires a DM (no guild id), a non-bot author,
   and an author id in `ADMIN_USER_IDS`. Every admin command goes through `handle`, which calls `authorize` before acting.
   A denial logs `admin_denied`.
