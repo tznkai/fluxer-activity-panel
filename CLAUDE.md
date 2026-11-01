@@ -3,7 +3,7 @@
 
 # Fluxer Activity Panel
 
-Last verified: 2026-11-01
+Last verified: 2026-10-31
 
 Standalone project with two packages under `src/`: `fluxer_client` (a panel-agnostic Fluxer REST and
 gateway client) and `fluxer_panel` (the activity panel bot built on it). `README.md` has the
@@ -73,7 +73,7 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   is not covered. It also calls `logging.captureWarnings(True)`.
 - Token handling: the token is `repr=False` in `Config`, config errors name the variable and never its value, and
   the token goes only in the `Authorization` header or the gateway identify/resume frames.
-- Admin: `admin.authorize` is the single check: DM only (no guild id), non-bot author, author id in
+- Admin: `admin.authorize` is the single check: DM only (no guild id), non-bot author, author id a valid snowflake, author id in
   `ADMIN_USER_IDS`. Every admin command goes through `handle`, which calls `authorize` first. Denials log `admin_denied`.
   The bot ignores its own and other bots' messages before routing.
 - No code in `fluxer_panel` calls the role methods yet. Role changes are a privilege change: a future caller must
@@ -114,8 +114,8 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
 ## Live tools (`tools/live/`)
 
 - Hand-run only. CI never runs them, and they need a local `.env`.
-- Only the private guild may be used. `check_safety` refuses unless the channel is in the guild, the user is a member
-  and the guild has at most two members.
+- Only the private guild may be used. `check_safety` refuses unless the channel is in the guild and the user is a member.
+  It also refuses if the guild reports more than two members (no refusal when the count is not reported).
 - Never print the token or raw ids. `Redactor` replaces the token with `[REDACTED]`, labels known ids and replaces any
   other 15+ digit run with `<id>`. `out()` is the only print path. Error output is the exception type and redacted message.
 - Exit codes: 0 pass; 1 any FAIL or error; 2 refusal; 130 Ctrl+C.

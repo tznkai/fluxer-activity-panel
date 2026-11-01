@@ -10,13 +10,15 @@ Paths are relative to this directory.
 ## Token handling
 
 - `src/fluxer_panel/config.py:17` `_TOKEN = re.compile(` — the token must be printable ASCII with no spaces, because it is placed in an `Authorization` header.
-- `src/fluxer_panel/config.py:21` `Message names the variable, never its value.` — configuration errors name the variable, so a bad token is reported without being echoed.
+- `src/fluxer_panel/config.py:21` `Message names the variable, never its value.` — configuration errors name the variable, so a bad token is reported without being echoed. This is the docstring's intent; the enforcement is in the raise lines below.
+- `src/fluxer_panel/config.py:64` `raise ConfigError("FLUXER_TOKEN must be printable ASCII without spaces")` — the bad-token message states the rule and names the variable, and it never includes the token.
 - `src/fluxer_panel/config.py:37` `raise ConfigError(message) from None` — a URL that fails to parse raises the generic message, and the parser's own text (which may echo the value) is dropped.
 - `src/fluxer_panel/config.py:45` `token: str = field(repr=False)` — the token is left out of `repr(Config)`, so a logged or printed config does not show it.
 - `src/fluxer_client/rest.py:102` `self._headers = {"Authorization": f"Bot {token}"}` — the only place REST sends the token. It goes in a header, never in a URL or a log line.
 - `src/fluxer_client/gateway.py:135` `"token": self.token, "session_id"` — the resume frame (op 6) carries the token.
 - `src/fluxer_client/gateway.py:173` `"token": self.token,` — the identify frame (op 2) carries the token.
-- `src/fluxer_panel/__main__.py:108` `print(f"Configuration error: {exc}"` — the only panel print. It writes a configuration message to stderr, which names variables and never values.
+- `src/fluxer_panel/__main__.py:108` `print(f"Configuration error: {exc}"` — one of the two panel prints (the other is the usage line below). It writes to stderr a configuration message, which names variables and never values.
+- `src/fluxer_panel/__main__.py:103` `print(USAGE, file=sys.stderr)` — the second panel print, for a bad command line. It writes the fixed `USAGE` text to stderr, which names no values.
 - `src/fluxer_panel/__main__.py:110` `setup_logging(config.log_level, config.token)` — the token is handed to the redaction filter before anything can log.
 - `src/fluxer_panel/__main__.py:125` `last resort: log (redacted) and exit 1` — the last-resort catch-all logs through the redacting handler and returns 1. No raw traceback reaches stderr.
 
@@ -32,7 +34,7 @@ Paths are relative to this directory.
 - `src/fluxer_panel/logs.py:108` `a malformed call must not raise` — a malformed log call is caught inside the filter, so it cannot raise into the code that logged it.
 - `src/fluxer_panel/logs.py:130` `handler.addFilter(TokenRedactionFilter(token))` — the filter is installed on the one JSON handler that `setup_logging` creates.
 - `src/fluxer_panel/logs.py:136` `logging.captureWarnings(True)` — Python warnings go through logging, so they are JSON lines and are redacted too.
-- `src/fluxer_client/events.py:26` `session_id: str = field(repr=False)` — the undocumented session id that DM reactions carry is kept out of reprs.
+- `src/fluxer_client/events.py:26` `session_id: str = field(repr=False)` — the gateway session id from `Ready`, which with the token enables a session resume, is kept out of reprs.
 - `src/fluxer_client/events.py:42` `content: str = field(repr=False)` — message text is kept out of reprs and therefore out of debug output.
 - `src/fluxer_client/events.py:236` `log.warning("malformed %s payload: field %s", t, exc.field_name)` — a malformed payload is logged with the field name only.
 - `src/fluxer_client/events.py:240` `field "?"` — the catch-all logs a placeholder, not the exception text, which may carry the value.
@@ -120,7 +122,7 @@ No code in `src/fluxer_panel` calls `add_member_role` or `remove_member_role` in
 - `tools/live/_live.py:98` `return LONG_NUMBER.sub("<id>", s)` — the last step: any remaining long digit run.
 - `tools/live/_live.py:122` `def log_handler(` — the stderr log handler formats the whole record, message and traceback, through the redactor.
 - `tools/live/_live.py:137` `def out(` — the only print path for the live scripts.
-- `tools/live/_live.py:185` `async def check_safety(` — refuses unless the channel is in the guild, the user is a member, and the guild has at most two members.
+- `tools/live/_live.py:185` `async def check_safety(` — refuses unless the channel is in the guild and the user is a member. It also refuses if the guild reports more than two members (no refusal when the count is not reported).
 - `tools/live/_live.py:197` `LIVE_USER_ID is not a member of LIVE_GUILD_ID` — a 404 on the membership check refuses. A mistyped user id never gets a DM.
 - `tools/live/_live.py:208` `"Authorization": f"Bot {env['FLUXER_TOKEN']}"` — the version capture sends the token in a header and prints nothing from it.
 - `tools/live/_live.py:222` `def gateway_failure(` — a gateway failure reports only the exception's type name. Its message is never printed, since it may echo the token or a payload.
@@ -129,6 +131,7 @@ No code in `src/fluxer_panel` calls `add_member_role` or `remove_member_role` in
 
 ## .env handling
 
+- `.gitignore:10` `.env` — ignores the real env file, so a local `.env` is not committed by a plain `git add`.
 - `.gitignore:11` `.env.*` — ignores every env file variant.
 - `.gitignore:12` `!.env.example` — the one tracked env file, the blank template.
 - `tests/test_repo_hygiene.py:24` `SECRET_GLOBS = (` — the denylist of key and PEM file names. The hygiene test lists tracked names and never opens them.
@@ -150,14 +153,14 @@ This section compares the phase 1 brief and plan with what the investigation and
 ### Snowflake length
 
 - **Brief assumed:** the brief lists snowflake validation as something to carry over, without a length. The phase 1 plan says Fluxer documents snowflakes as at most 19 digits.
-- **True:** the code accepts 1 to 25 digits (`src/fluxer_client/ids.py:10`). The database CHECK constraints in migration 0001 and the admin-id pattern in `config.py` use the same 25 bound. The live run did not test id length.
+- **True:** the code accepts 1 to 25 digits (`src/fluxer_client/ids.py:10` `_SNOWFLAKE = re.compile(`). The database CHECK constraints in migration 0001 and the admin-id pattern in `config.py` use the same 25 bound. The live run did not test id length.
 - **Consequence and recommendation:** do not tighten to 19 now. A looser bound only admits more digit strings, and the rejected value never reaches an error message. Tightening would have to change three places: `ids.py`, `config.py`, and the CHECK constraints in `0001_init.sql`. Migration 0001 must not be edited after release, so the CHECKs would need a new migration that rebuilds the STRICT tables. Record 19 as the documented maximum, and revisit with a migration only if Fluxer issues longer ids.
 
 ### Edit rate limit
 
 - **Brief assumed:** the brief does not mention a rate limit. The phase 1 plan says Fluxer's documented edit limit applies to published messages in shared (announcement) channels.
 - **True:** six rapid edits (values 0 to 5) of an ordinary message, with client retries off, all succeeded with no 429 (`docs/fluxer-notes.md`). Six edits prove nothing about the limit's size.
-- **Consequence:** the client keeps its generic 429 retry in `FluxerREST.request` (`src/fluxer_client/rest.py:109`). The panel must not depend on edits being unlimited.
+- **Consequence:** the client keeps its generic 429 retry in `FluxerREST.request` (`src/fluxer_client/rest.py:109` `async def request(`). The panel must not depend on edits being unlimited.
 
 ### Gateway intents
 
@@ -175,13 +178,13 @@ This section compares the phase 1 brief and plan with what the investigation and
 
 - **Brief assumed:** the brief does not mention audit reasons. The phase 1 plan says `X-Audit-Log-Reason` accepts 512 characters.
 - **True:** the live Activity Log showed the reason text (`fluxer panel live test`) for both the add and the remove. The 512 limit was not tested.
-- **Consequence:** the 128-character cap (`src/fluxer_client/rest.py:48`, `REASON_MAX`) is a local choice, and it is safe to keep. Every guild admin can read the reason, so reasons must be fixed text, which `_check_reason` enforces.
+- **Consequence:** the 128-character cap (`src/fluxer_client/rest.py:48` `REASON_MAX = 128`) is a local choice, and it is safe to keep. Every guild admin can read the reason, so reasons must be fixed text, which `_check_reason` enforces.
 
 ### PATCH with content null
 
 - **Brief assumed:** the brief does not mention it. The phase 1 plan treated `content: null` as an edit option.
 - **True:** the call was accepted. The returned content is an empty string, and the embed is kept. The behaviour is undocumented.
-- **Consequence:** `rest.py` uses the `UNSET` sentinel (`src/fluxer_client/rest.py:36`), so "not given" is never sent as null. To change only the embed, omit `content`. Never send `content: null` by accident, because it erases the text.
+- **Consequence:** `rest.py` uses the `UNSET` sentinel (`src/fluxer_client/rest.py:36` `UNSET: Final = Unset.UNSET`), so "not given" is never sent as null. To change only the embed, omit `content`. Never send `content: null` by accident, because it erases the text.
 
 ### Hierarchy refusal and missing permission
 
@@ -193,19 +196,19 @@ This section compares the phase 1 brief and plan with what the investigation and
 
 - **Brief assumed:** the brief's reaction buttons (`▶️ 🙋 📅 🔔`) are unicode emoji. It does not say what the events look like.
 - **True:** a unicode emoji has no `id` key at all. It is not `id: null`.
-- **Consequence:** the parser handles the missing key, and `encode_emoji` percent-encodes unicode (`src/fluxer_client/rest.py:63`). Matching a reaction to a button must compare names, not ids.
+- **Consequence:** the parser handles the missing key, and `encode_emoji` percent-encodes unicode (`src/fluxer_client/rest.py:63` `return quote(emoji, safe="")`). Matching a reaction to a button must compare names, not ids.
 
 ### DM reactions
 
 - **Brief assumed:** the brief says reactions act as buttons and that DM flows stand in for modals. It does not say what DM reaction events carry.
 - **True:** DM reactions have no `guild_id` and no `member`, so there are no roles. They carry an undocumented 32-character `session_id`.
-- **Consequence:** DM reactions cannot be role-gated, so treat DMs as having no guild roles. The `session_id` is opaque and is kept out of reprs (`src/fluxer_client/events.py:26`). It must not be logged.
+- **Consequence:** DM reactions cannot be role-gated, so treat DMs as having no guild roles. The DM `session_id` is not parsed into any event. The reaction dataclasses have no field for it, and the reaction parser builds them from named fields only (`src/fluxer_client/events.py:164` `return ReactionAdd(`). Panel code never sees it. Any future parser that reads it must keep it `repr=False` and must not log it.
 
 ### Bulk reaction events
 
 - **Brief assumed:** the phase 1 plan asked for the `MESSAGE_REACTION_ADD_MANY` shape.
 - **True:** it was not observed. The live run also did not observe `MESSAGE_REACTION_REMOVE_ALL` or `MESSAGE_REACTION_REMOVE_EMOJI`.
-- **Consequence:** `parse` returns `None` for `ADD_MANY` without logging, so a bulk add is silently dropped (`src/fluxer_client/events.py:229`). Capture the shape before any feature depends on bulk reactions.
+- **Consequence:** `parse` returns `None` for `ADD_MANY` without logging, so a bulk add is silently dropped (`src/fluxer_client/events.py:229` `MESSAGE_REACTION_ADD_MANY`). Capture the shape before any feature depends on bulk reactions.
 
 ### Event parser
 

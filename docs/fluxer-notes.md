@@ -146,4 +146,4 @@ channel ID.
 
 ## Panel smoke test (Phase 4)
 
-- 2026-11-01, server 2026.1031.154542: `python -m fluxer_panel` resolved endpoints, logged `ready`, answered an admin's DM `!admin ping` with `pong` (`admin_command` `ping`; a bare or unknown subcommand got the list, `admin_command` `unknown`), and on SIGTERM from `timeout` logged `shutting_down` then closed the gateway cleanly. No message content appeared in any log line.
+- 2026-11-01 (UTC), server 2026.1031.154542: `python -m fluxer_panel` resolved endpoints, logged `ready`, answered an admin's DM `!admin ping` with `pong` (`admin_command` `ping`; a bare or unknown subcommand got the list, `admin_command` `unknown`), and on SIGTERM from `timeout` logged `shutting_down` then closed the gateway cleanly. No message content appeared in any log line.
