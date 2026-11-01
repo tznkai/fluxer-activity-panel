@@ -45,11 +45,14 @@ connected and the file is not written to except as described.
   schema version is higher than this build knows). The file is left unchanged. Deploy
   the code that knows that schema version (for example, the code was rolled back, and
   the newer release should be redeployed).
-- **`db_unavailable`**: the database exists but this process cannot use it. The file was
-  not touched. The panel checks that it can write the database before it connects, so
-  this covers:
-  - a database file, or its directory, that is not writable (the panel needs to write the
-    database and its `-wal` and `-shm` files there). Fix the permissions, then start again.
+- **`db_unavailable`**: the database, or the data directory it lives in, cannot be read or
+  written by this process, or the database could not be used. The file was not touched.
+  The panel checks that it can write the database before it connects, so this covers:
+  - a database file, or its directory, that is not readable or writable (the panel needs to
+    write the database and its `-wal` and `-shm` files in that directory). This includes a
+    missing database in a read-only data directory. Fix the permissions or ownership of
+    `panel.db`, of any `panel.db-wal` or `panel.db-shm` file next to it, and of the data
+    directory, then start again. A refused start creates no new side files.
   - another connection holding the write lock for longer than 5 seconds. Stop the other
     process, then start again.
   - a `panel.db-journal` file next to `panel.db`. This is a pre-WAL rollback journal left
@@ -62,4 +65,5 @@ The panel does not prevent a second instance from running against the same datab
 Running two panels against one database is unsupported.
 
 Exit 1 with a `fatal_error` event means something else failed while opening the database,
-such as an unwritable data directory. That is not a refusal and does not quarantine anything.
+such as the data directory could not be created (for example, its parent is a regular file).
+That is not a refusal and does not quarantine anything.

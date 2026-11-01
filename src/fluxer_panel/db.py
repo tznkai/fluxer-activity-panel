@@ -66,10 +66,32 @@ def _primary_code(exc: sqlite3.Error) -> int:
     return getattr(exc, "sqlite_errorcode", 0) & 0xFF
 
 
-def _unavailable(exc: sqlite3.Error) -> DatabaseRefused:
-    """Log db_unavailable with the SQLite error name (no path, no message) and build the refusal."""
-    log_event(log, "db_unavailable", level=logging.ERROR, code=getattr(exc, "sqlite_errorname", "unknown"))
+def _refuse_unavailable(code: str) -> DatabaseRefused:
+    """Log db_unavailable with a SQLite error name (no path, no message) and build the refusal."""
+    log_event(log, "db_unavailable", level=logging.ERROR, code=code)
     return DatabaseRefused("unavailable")
+
+
+def _unavailable(exc: sqlite3.Error) -> DatabaseRefused:
+    return _refuse_unavailable(getattr(exc, "sqlite_errorname", "unknown"))
+
+
+def _check_writable(path: Path) -> None:
+    """Refuse before SQLite creates any side file when the DB file or its directory is already unusable.
+
+    SQLite creates -wal and -shm with the DB file's mode, and even the read-only _inspect connection creates
+    them for a WAL-mode DB, so this runs before _inspect. A refused start then leaves no side files behind.
+    The trade-off: a corrupt file that is also unwritable is refused as unavailable rather than quarantined;
+    the file is untouched until the operator fixes its permissions. os.access is only a pre-check: the write
+    probe in _connect stays the authoritative test.
+    """
+    if path.exists():
+        if not os.access(path, os.R_OK):
+            raise _refuse_unavailable("SQLITE_CANTOPEN")
+        if not os.access(path, os.W_OK):
+            raise _refuse_unavailable("SQLITE_READONLY")
+    if not os.access(path.parent, os.W_OK | os.X_OK):
+        raise _refuse_unavailable("SQLITE_READONLY")
 
 
 def _inspect(path: Path) -> tuple[bool, int]:
@@ -130,6 +152,7 @@ class Database:
             # a previous start quarantined the DB: never silently replace it with an empty one
             log_event(log, "db_quarantine_pending", level=logging.ERROR)
             raise DatabaseRefused("quarantined")
+        _check_writable(path)
         if existed:
             healthy, version = _inspect(path)
             if not healthy:

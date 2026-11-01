@@ -335,6 +335,55 @@ async def test_db_in_read_only_directory_is_unavailable_and_untouched(tmp_path: 
         folder.chmod(0o755)
 
 
+@requires_permissions
+async def test_refused_open_on_read_only_file_creates_no_side_files(tmp_path: Path) -> None:
+    path = tmp_path / "panel.db"
+    Database.open(path).close()
+    path.chmod(0o444)
+    try:
+        with pytest.raises(DatabaseRefused) as info:
+            Database.open(path)
+        assert info.value.reason == "unavailable"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["panel.db"]
+    finally:
+        path.chmod(0o600)
+
+
+@requires_permissions
+async def test_fixing_only_the_db_mode_lets_the_next_start_succeed(tmp_path: Path) -> None:
+    path = tmp_path / "panel.db"
+    Database.open(path).close()
+    path.chmod(0o444)
+    try:
+        with pytest.raises(DatabaseRefused):
+            Database.open(path)
+    finally:
+        path.chmod(0o600)
+    reopened = Database.open(path)
+    try:
+        assert await reopened.run(lambda c: c.execute("PRAGMA user_version").fetchone()[0]) == dbmod.LATEST_VERSION
+    finally:
+        reopened.close()
+
+
+@requires_permissions
+async def test_missing_db_in_read_only_directory_is_unavailable_and_nothing_is_created(
+        tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    folder = tmp_path / "ro"
+    folder.mkdir()
+    path = folder / "panel.db"
+    folder.chmod(0o555)
+    try:
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(DatabaseRefused) as info:
+                Database.open(path)
+        assert info.value.reason == "unavailable"
+        assert list(folder.iterdir()) == []
+        assert _unavailable_codes(caplog) == ["SQLITE_READONLY"]
+    finally:
+        folder.chmod(0o755)
+
+
 @pytest.mark.parametrize("pending", [False, True])
 async def test_write_lock_held_by_another_connection_is_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
                                                                     caplog: pytest.LogCaptureFixture,
