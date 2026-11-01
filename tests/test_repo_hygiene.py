@@ -167,6 +167,8 @@ def test_no_source_bot_imports():
 
 
 def test_fluxer_client_never_imports_fluxer_panel():
+    # Guard against a vacuous pass: the boundary is only meaningful once the panel package exists.
+    assert (PROJECT / "src" / "fluxer_panel" / "__init__.py").is_file(), "fluxer_panel package is missing"
     offenders = []
     for path in sorted((PROJECT / "src" / "fluxer_client").rglob("*.py")):
         tree = ast.parse(path.read_text("utf-8"), filename=str(path))

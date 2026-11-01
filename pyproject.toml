@@ -27,7 +27,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/fluxer_client"]
+packages = ["src/fluxer_client", "src/fluxer_panel"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
