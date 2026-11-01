@@ -82,10 +82,14 @@ Standalone project: `fluxer_client` (a reusable Fluxer REST and gateway client) 
   to an empty DB) on corruption; refuse on a newer schema without touching the file; otherwise back up to
   `<db>.pre-v<N>` and apply the numbered migrations. `_connect` ends with a write probe (`BEGIN IMMEDIATE`, a
   same-value `user_version` write, then `ROLLBACK`), so an unwritable file or a held write lock is found before any
-  network use. `_check_writable` runs before `_inspect` and refuses with `db_unavailable` when `os.access` says the
-  existing DB file is not readable or writable, or its directory is not writable or searchable. It must come first:
-  even the read-only `_inspect` connection creates `-wal` and `-shm` for a WAL-mode DB. It is a pre-check only;
-  the probe stays authoritative.
+  network use. `_check_directory` runs right after the `mkdir` and before any lookup in the directory: it refuses
+  with `db_unavailable` unless `os.access` says the directory is readable and searchable (`SQLITE_CANTOPEN`) and
+  writable (`SQLITE_READONLY`). A `PermissionError` from `mkdir` is also `db_unavailable`; other `mkdir` errors
+  stay exit 1. `_check_writable` runs next, before `_inspect`, and refuses with `db_unavailable` when `os.access`
+  says the existing DB file is not readable or writable. Both must come first: `exists()` needs the search bit,
+  the `.corrupt*` glob needs the read bit (an unreadable directory makes it silently return nothing), and even the
+  read-only `_inspect` connection creates `-wal` and `-shm` for a WAL-mode DB. They are pre-checks only; the probe
+  stays authoritative.
   Primary codes READONLY, CANTOPEN, BUSY and PERM (from `_connect`, the probe or `_migrate`) map to
   `db_unavailable` and `DatabaseRefused("unavailable")`; the file is not touched. Corruption codes quarantine.
   The panel does not enforce a single instance: two panels on one DB are unsupported. Never add an unused DB

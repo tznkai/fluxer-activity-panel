@@ -48,11 +48,14 @@ connected and the file is not written to except as described.
 - **`db_unavailable`**: the database, or the data directory it lives in, cannot be read or
   written by this process, or the database could not be used. The file was not touched.
   The panel checks that it can write the database before it connects, so this covers:
-  - a database file, or its directory, that is not readable or writable (the panel needs to
-    write the database and its `-wal` and `-shm` files in that directory). This includes a
-    missing database in a read-only data directory. Fix the permissions or ownership of
-    `panel.db`, of any `panel.db-wal` or `panel.db-shm` file next to it, and of the data
-    directory, then start again. A refused start creates no new side files.
+  - the data directory is not readable, writable and searchable by this process. The panel
+    needs to read it to look for quarantined files, and to write and search it to create
+    `panel.db`, `panel.db-wal` and `panel.db-shm`. This includes a missing database in a
+    read-only data directory, and a data directory that cannot be created because a parent
+    directory is not writable. Fix the permissions or ownership of the data directory, then
+    start again. A refused start creates no new side files.
+  - a database file that is not readable or writable. Fix the permissions or ownership of
+    `panel.db`, then start again.
   - another connection holding the write lock for longer than 5 seconds. Stop the other
     process, then start again.
   - a `panel.db-journal` file next to `panel.db`. This is a pre-WAL rollback journal left

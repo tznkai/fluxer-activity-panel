@@ -76,22 +76,34 @@ def _unavailable(exc: sqlite3.Error) -> DatabaseRefused:
     return _refuse_unavailable(getattr(exc, "sqlite_errorname", "unknown"))
 
 
+def _check_directory(folder: Path) -> None:
+    """Refuse unless the data directory is readable, writable and searchable. Runs before any lookup in it.
+
+    The search bit is needed to reach any file in the directory: without it Path.exists() raises EACCES. The read
+    bit is needed by the .corrupt* glob, which returns nothing (and raises nothing) on an unreadable directory, so
+    a quarantined DB would be invisible and a fresh empty one could be created. SQLite itself needs only write and
+    search, so the read bit is required on purpose. The write bit creates the DB, -wal and -shm files.
+    """
+    if not os.access(folder, os.R_OK | os.X_OK):
+        raise _refuse_unavailable("SQLITE_CANTOPEN")
+    if not os.access(folder, os.W_OK):
+        raise _refuse_unavailable("SQLITE_READONLY")
+
+
 def _check_writable(path: Path) -> None:
-    """Refuse before SQLite creates any side file when the DB file or its directory is already unusable.
+    """Refuse before SQLite creates any side file when the existing DB file is already unusable.
 
     SQLite creates -wal and -shm with the DB file's mode, and even the read-only _inspect connection creates
     them for a WAL-mode DB, so this runs before _inspect. A refused start then leaves no side files behind.
     The trade-off: a corrupt file that is also unwritable is refused as unavailable rather than quarantined;
     the file is untouched until the operator fixes its permissions. os.access is only a pre-check: the write
-    probe in _connect stays the authoritative test.
+    probe in _connect stays the authoritative test. The directory is checked first, by _check_directory.
     """
     if path.exists():
         if not os.access(path, os.R_OK):
             raise _refuse_unavailable("SQLITE_CANTOPEN")
         if not os.access(path, os.W_OK):
             raise _refuse_unavailable("SQLITE_READONLY")
-    if not os.access(path.parent, os.W_OK | os.X_OK):
-        raise _refuse_unavailable("SQLITE_READONLY")
 
 
 def _inspect(path: Path) -> tuple[bool, int]:
@@ -145,7 +157,13 @@ class Database:
 
     @classmethod
     def open(cls, path: Path) -> Database:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            # a missing data directory under a parent this process cannot write: db_unavailable, not exit 1.
+            # Other mkdir failures (e.g. a parent that is a file) stay unexpected errors, exit 1.
+            raise _refuse_unavailable("SQLITE_CANTOPEN") from None
+        _check_directory(path.parent)
         existed = path.exists()
         version = 0
         if not existed and any(path.parent.glob(glob.escape(path.name) + ".corrupt*")):

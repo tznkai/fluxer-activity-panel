@@ -384,6 +384,62 @@ async def test_missing_db_in_read_only_directory_is_unavailable_and_nothing_is_c
         folder.chmod(0o755)
 
 
+@requires_permissions
+@pytest.mark.parametrize("mode", [0o600, 0o300], ids=["no-search-bit", "no-read-bit"])
+@pytest.mark.parametrize("existing", [False, True], ids=["missing-db", "existing-db"])
+async def test_data_dir_without_read_or_search_bit_is_unavailable_and_untouched(
+        tmp_path: Path, caplog: pytest.LogCaptureFixture, mode: int, existing: bool) -> None:
+    folder = tmp_path / "data"
+    folder.mkdir()
+    path = folder / "panel.db"
+    if existing:
+        Database.open(path).close()
+    before = {p.name: p.read_bytes() for p in folder.iterdir()}
+    folder.chmod(mode)
+    try:
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(DatabaseRefused) as info:
+                Database.open(path)
+        assert info.value.reason == "unavailable"
+        assert _unavailable_codes(caplog) == ["SQLITE_CANTOPEN"]
+    finally:
+        folder.chmod(0o755)
+    assert {p.name: p.read_bytes() for p in folder.iterdir()} == before
+
+
+@requires_permissions
+async def test_unreadable_data_dir_does_not_hide_a_quarantined_db(tmp_path: Path) -> None:
+    # without the read bit the .corrupt* glob sees nothing; the open must refuse rather than create an empty DB
+    folder = tmp_path / "data"
+    folder.mkdir()
+    (folder / "panel.db.corrupt").write_bytes(b"quarantined")
+    folder.chmod(0o300)
+    try:
+        with pytest.raises(DatabaseRefused) as info:
+            Database.open(folder / "panel.db")
+        assert info.value.reason == "unavailable"
+    finally:
+        folder.chmod(0o755)
+    assert sorted(p.name for p in folder.iterdir()) == ["panel.db.corrupt"]
+
+
+@requires_permissions
+async def test_missing_data_dir_under_unwritable_parent_is_unavailable(
+        tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    parent.chmod(0o500)
+    try:
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(DatabaseRefused) as info:
+                Database.open(parent / "data" / "panel.db")
+        assert info.value.reason == "unavailable"
+        assert _unavailable_codes(caplog) == ["SQLITE_CANTOPEN"]
+    finally:
+        parent.chmod(0o755)
+    assert list(parent.iterdir()) == []
+
+
 @pytest.mark.parametrize("pending", [False, True])
 async def test_write_lock_held_by_another_connection_is_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
                                                                     caplog: pytest.LogCaptureFixture,
