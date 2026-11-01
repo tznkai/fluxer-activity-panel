@@ -351,19 +351,25 @@ def test_unexpected_parser_error_logs_placeholder_and_never_the_value(
 
 # Observed live shapes (2026-10-31). Ids are fake placeholders; the extra keys are as observed and must be ignored.
 
+# Full guild `member` object as observed on guild MESSAGE_REACTION_ADD and MESSAGE_REACTION_REMOVE.
+OBSERVED_GUILD_MEMBER = {
+    "accent_color": None, "avatar": None, "banner": None, "communication_disabled_until": None,
+    "deaf": False, "joined_at": "2026-01-01T00:00:00.000000+00:00", "mute": False, "nick": None,
+    "roles": ["4001"],
+    "user": {"avatar": None, "avatar_color": None, "discriminator": "0001", "flags": 0,
+             "global_name": "Alice", "id": "1001", "username": "alice"},
+}
+
+# Fake 32-character session_id, the length observed on DM reaction events.
+OBSERVED_SESSION_ID = "0123456789abcdef0123456789abcdef"
+
 
 def test_observed_guild_reaction_add_without_emoji_id_key() -> None:
     event = parse("MESSAGE_REACTION_ADD", {
         "channel_id": "3001",
         "emoji": {"name": "👌"},
         "guild_id": "2001",
-        "member": {
-            "accent_color": None, "avatar": None, "banner": None, "communication_disabled_until": None,
-            "deaf": False, "joined_at": "2026-01-01T00:00:00.000000+00:00", "mute": False, "nick": None,
-            "roles": ["4001"],
-            "user": {"avatar": None, "avatar_color": None, "discriminator": "0001", "flags": 0,
-                     "global_name": "Alice", "id": "1001", "username": "alice"},
-        },
+        "member": OBSERVED_GUILD_MEMBER,
         "message_id": "5001",
         "user_id": "1001",
     })
@@ -382,8 +388,7 @@ def test_observed_guild_reaction_remove_matches_add_shape() -> None:
         "channel_id": "3001",
         "emoji": {"name": "👌"},
         "guild_id": "2001",
-        "member": {"deaf": False, "mute": False, "nick": None, "roles": ["4001"],
-                   "user": {"id": "1001", "username": "alice"}},
+        "member": OBSERVED_GUILD_MEMBER,
         "message_id": "5001",
         "user_id": "1001",
     })
@@ -402,7 +407,7 @@ def test_observed_dm_reaction_add_with_session_id_has_no_guild_or_member() -> No
         "channel_id": "3002",
         "emoji": {"name": "🎉"},
         "message_id": "5002",
-        "session_id": "sess-0123456789abcdef0123456789abcdef",
+        "session_id": OBSERVED_SESSION_ID,
         "user_id": "1001",
     })
     assert event == ReactionAdd(
@@ -413,7 +418,7 @@ def test_observed_dm_reaction_add_with_session_id_has_no_guild_or_member() -> No
         emoji=Emoji(name="🎉", id=None),
         member_role_ids=None,
     )
-    assert "sess-0123456789abcdef0123456789abcdef" not in repr(event)
+    assert OBSERVED_SESSION_ID not in repr(event)
 
 
 def test_observed_dm_reaction_remove_with_session_id() -> None:
@@ -421,7 +426,7 @@ def test_observed_dm_reaction_remove_with_session_id() -> None:
         "channel_id": "3002",
         "emoji": {"name": "🎉"},
         "message_id": "5002",
-        "session_id": "sess-0123456789abcdef0123456789abcdef",
+        "session_id": OBSERVED_SESSION_ID,
         "user_id": "1001",
     })
     assert event == ReactionRemove(
