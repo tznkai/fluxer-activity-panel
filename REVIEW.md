@@ -134,15 +134,24 @@ No code in `src/fluxer_panel` calls `add_member_role` or `remove_member_role` in
 - `.gitignore:10` `.env` — ignores the real env file, so a local `.env` is not committed by a plain `git add`.
 - `.gitignore:11` `.env.*` — ignores every env file variant.
 - `.gitignore:12` `!.env.example` — the one tracked env file, the blank template.
-- `tests/test_repo_hygiene.py:24` `SECRET_GLOBS = (` — the denylist of key and PEM file names. The hygiene test lists tracked names and never opens them.
-- `tests/test_repo_hygiene.py:28` `def is_secret(` — the check that a tracked name is a secret.
+- `tests/test_repo_hygiene.py:26` `SECRET_GLOBS = (` — the denylist of key and PEM file names. The hygiene test lists tracked names and never opens them.
+- `tests/test_repo_hygiene.py:30` `def is_secret(` — the check that a tracked name is a secret.
 - `tools/live/_live.py:39` `def read_env_file(` — the live tool's own `KEY=VALUE` parser. It does no interpolation. Only the live tool reads a `.env` file.
 - `tools/live/_live.py:62` `**read_env_file(env_file)` — values from the real environment override values from the `.env` file.
 - `src/fluxer_panel/config.py:58` `def from_env(` — the panel reads environment variables only. It never opens `.env`; the operator sources the file in their shell.
 
+## Published-tree hygiene
+
+- `tests/test_repo_hygiene.py:149` `ALLOWED_IPS = frozenset(` — the only addresses a tracked file may contain are the loopback and unspecified ones.
+- `tests/test_repo_hygiene.py:150` `ALLOWED_HOSTS = frozenset(` — the only named hosts allowed: reserved documentation names, the license host, Fluxer's public docs host and two test placeholders.
+- `tests/test_repo_hygiene.py:163` `URL_AUTHORITY = re.compile(` — every network-scheme URL host in a tracked file is checked against the allowlist.
+- `tests/test_repo_hygiene.py:164` `DOTTED_IPV4 = re.compile(` — every dotted IPv4 address is checked against the allowlist.
+- `tests/test_repo_hygiene.py:165` `BARE_NAME = re.compile(` — a bare dotted name is checked only when it ends in a listed TLD, so file names and Python attribute access are ignored.
+- `tests/test_repo_hygiene.py:215` `def network_offenders(` — the scan. Secrets are skipped before any read, and a finding names the file, line and kind, never the value.
+
 ## What the phase 1 prompt got wrong
 
-This section compares the phase 1 brief and plan with what the investigation and the live run showed. The sources are `docs/panel-brief.md` (the "Before any code" checks and build order step 1) and the phase 1 plan. The live results are in `docs/fluxer-notes.md`, recorded against server build 2026.1031.154542 and client build 2026.1017.133957. Where the brief is silent, the entry says so, and the assumption is attributed to the phase 1 plan's reading of Fluxer's documentation. That reading was not re-checked in this run.
+This section compares the phase 1 brief and plan with what the investigation and the live run showed. The sources are the panel brief (a private design document kept outside this repository; its "Before any code" checks and build order step 1) and the phase 1 plan. The live results are in `docs/fluxer-notes.md`, recorded against server build 2026.1031.154542 and client build 2026.1017.133957. Where the brief is silent, the entry says so, and the assumption is attributed to the phase 1 plan's reading of Fluxer's documentation. That reading was not re-checked in this run.
 
 ### The green-oaks-bot client is not a clean base
 
@@ -188,7 +197,7 @@ This section compares the phase 1 brief and plan with what the investigation and
 
 ### Hierarchy refusal and missing permission
 
-- **Brief assumed:** the brief lists "role allowlist and hierarchy" as the highest-risk review item (`docs/panel-brief.md`, phase 3).
+- **Brief assumed:** the brief lists "role allowlist and hierarchy" as the highest-risk review item (the panel brief, phase 3).
 - **True:** a hierarchy refusal and a missing-permission refusal both return 403 with code `MISSING_PERMISSIONS`.
 - **Consequence:** the client cannot tell them apart from the error. Phase 3 must check the role hierarchy before the call, not by reading the error.
 

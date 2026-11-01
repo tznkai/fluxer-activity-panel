@@ -46,6 +46,7 @@ TOPICS = [
     "DB quarantine and backups",
     "Live-tool redaction",
     ".env handling",
+    "Published-tree hygiene",
     "What the phase 1 prompt got wrong",
 ]
 

@@ -3,7 +3,7 @@
 
 # Fluxer Activity Panel
 
-Last verified: 2026-10-31
+Last verified: 2026-11-01
 
 Standalone project with two packages under `src/`: `fluxer_client` (a panel-agnostic Fluxer REST and
 gateway client) and `fluxer_panel` (the activity panel bot built on it). `README.md` has the
@@ -24,8 +24,8 @@ user-facing description, the purge status file format and the "Exit 3" recovery 
 - `tests/`: pytest suite. `tests/fakes.py` holds the fake REST and gateway servers. `tests/test_review_refs.py`
   and `tests/test_repo_hygiene.py` are the structural checks.
 - `tools/live/`: hand-run live scripts and the shared harness `_live.py` (see Live tools).
-- `docs/`: `panel-brief.md` (the brief), `fluxer-notes.md` (live-run observations, recorded against a server build),
-  `fluxer-game-panel.mermaid` (diagram).
+- `docs/`: `fluxer-notes.md` (live-run observations, recorded against a server build). The panel brief is a
+  private design document kept outside this repository; it is not in the tree and is not linked from it.
 - `REVIEW.md`: review guide. Its references are checked by `tests/test_review_refs.py`.
 - `.github/workflows/ci.yml`: the CI workflow.
 
@@ -45,7 +45,8 @@ user-facing description, the purge status file format and the "Exit 3" recovery 
 
 - This directory is public: it is published by git subtree split. Keep it self-contained.
 - No secrets, IDs, hostnames or instance details in tracked files. Test fixtures use fake values
-  (`"1001"`, `"https://fluxer.invalid"`). Never write a run of 15+ digits.
+  (`"1001"`, `"https://fluxer.invalid"`). Never write a run of 15+ digits. `tests/test_repo_hygiene.py` fails on
+  any IP address or URL or bare host outside its allowlist, so a new public name needs an allowlist entry there.
 - Never read or print `.env`. `.env.example` is the only tracked env file.
 - Every new file needs an SPDX header or a `REUSE.toml` entry, or `reuse lint` fails.
 - Do not modify `../green-oaks-bot`. It is the source of the copied client code and is read-only here.

@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 K. Chen
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Repo hygiene: no tracked secrets, no real ids in published files, REUSE-clean, no source-bot imports.
+"""Repo hygiene: no tracked secrets, no real ids, no non-allowlisted addresses or hosts, REUSE-clean,
+no source-bot imports.
 
 Secret files are matched by name only and are never opened by the scan.
 """
@@ -10,6 +11,7 @@ from __future__ import annotations
 import ast
 import builtins
 import fnmatch
+import ipaddress
 import re
 import shutil
 import subprocess
@@ -139,6 +141,183 @@ def test_digit_scan_skips_tracked_path_that_became_directory(tmp_path):
     (tmp_path / "item" / "inner.txt").write_text("plain\n", "utf-8")
 
     assert long_digit_offenders(tmp_path) == []
+
+
+# Network scan. Everything not listed here is a finding. The allowlist holds only what tracked files
+# contain today, plus the reserved and public names a fixture or a doc may need.
+NETWORK_SCHEMES = ("http", "https", "ws", "wss", "ftp", "ssh")
+ALLOWED_IPS = frozenset({"127.0.0.1", "0.0.0.0", "::1"})  # loopback and unspecified addresses only
+ALLOWED_HOSTS = frozenset({
+    "example.com", "example.org", "example.net",  # reserved for documentation (RFC 2606)
+    "www.gnu.org", "fsf.org",                     # the AGPL text in LICENSES/
+    "docs.fluxer.app",                            # Fluxer's public documentation
+    "unused", "override",                         # placeholder hosts in test fixtures
+})
+RESERVED_SUFFIXES = (".invalid", ".test", ".example", ".localhost")  # RFC 2606 and RFC 6761
+# Bare dotted names are checked only when they end in one of these: public TLDs and the names a
+# private network uses. Other dotted words (file names, Python attribute access) are ignored.
+CHECKED_TLDS = frozenset({
+    "com", "net", "org", "io", "app", "cloud", "dev", "me", "xyz", "co", "uk", "de",
+    "lan", "local", "home", "arpa", "internal", "intranet", "corp",
+})
+URL_AUTHORITY = re.compile(r"\b(?:" + "|".join(NETWORK_SCHEMES) + r")://([^\s/?#'\"`<>]*)", re.IGNORECASE)
+DOTTED_IPV4 = re.compile(r"(?<![\w.])((?:\d{1,3}\.){3}\d{1,3})(?![\w]|\.\d)")
+BARE_NAME = re.compile(r"(?<![\w.@/-])((?:[a-z0-9-]+\.)+[a-z]{2,63})(?![\w-])", re.IGNORECASE)
+
+
+def _is_ip(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _ip_outside_allowlist(value: str) -> bool:
+    return _is_ip(value) and str(ipaddress.ip_address(value)) not in ALLOWED_IPS
+
+
+def _host_allowed(host: str) -> bool:
+    return host in ALLOWED_HOSTS or host.endswith(RESERVED_SUFFIXES)
+
+
+def _url_host(authority: str) -> str:
+    """The host of a URL authority, with userinfo, port and brackets removed. Empty when there is none."""
+    host = authority.rsplit("@", 1)[-1]
+    if host.startswith("["):
+        inside = host[1:].split("]", 1)[0]
+        return inside if _is_ip(inside) else ""  # a bracket with no address is a fragment, not a host
+    return host.split(":", 1)[0].rstrip(".").lower()
+
+
+def network_kinds(line: str) -> list[str]:
+    """The kinds of non-allowlisted address or host on one line. Values are never returned, only kinds."""
+    kinds: set[str] = set()
+    for match in DOTTED_IPV4.finditer(line):
+        if _ip_outside_allowlist(match.group(1)):
+            kinds.add("ipv4")
+    for match in URL_AUTHORITY.finditer(line):
+        host = _url_host(match.group(1))
+        if not host:
+            continue
+        if _is_ip(host):
+            if ":" in host and _ip_outside_allowlist(host):
+                kinds.add("ipv6")
+        elif not _host_allowed(host):
+            kinds.add("url-host")
+    for match in BARE_NAME.finditer(line):
+        host = match.group(1).lower()
+        if host.rsplit(".", 1)[-1] in CHECKED_TLDS and not _host_allowed(host):
+            kinds.add("host")
+    return sorted(kinds)
+
+
+def network_offenders(root: Path) -> list[str]:
+    """Tracked files under `root` with a non-allowlisted address or host, as `path:line kind`.
+
+    Secrets are skipped before any read, and a tracked path that is missing or no longer a regular
+    file is skipped. A finding names the location and kind only, never the value: CI logs are public.
+    """
+    offenders = []
+    for path in tracked_files(root):
+        if is_secret(path):
+            continue
+        if not path.is_file():
+            continue
+        text = path.read_bytes().decode("utf-8", "ignore")
+        for number, line in enumerate(text.splitlines(), start=1):
+            for kind in network_kinds(line):
+                offenders.append(f"{path.relative_to(root)}:{number} {kind}")
+    return offenders
+
+
+def test_no_network_leaks_in_tracked_files():
+    offenders = network_offenders(PROJECT)
+    assert offenders == [], f"tracked files contain non-allowlisted addresses or hosts (path:line kind): {offenders}"
+
+
+def _tracked_repo(root: Path, files: dict[str, str]) -> Path:
+    subprocess.run(["git", "init", "-q", str(root)], check=True, timeout=60)
+    for name, text in files.items():
+        (root / name).write_text(text, "utf-8")
+    subprocess.run(["git", "-C", str(root), "add", "-f", *files], check=True, timeout=60)
+    return root
+
+
+# Built from parts so this file carries no dotted address or private host as a literal.
+SAMPLE_IP = ".".join(["203", "0", "113", "9"])  # a documentation address, not on the allowlist
+SAMPLE_HOST = "".join(["nas", ".", "lan"])      # a private-network name, not on the allowlist
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not on PATH")
+def test_network_scan_catches_ipv4_outside_allowlist(tmp_path):
+    repo = _tracked_repo(tmp_path, {"notes.txt": f"reach it at {SAMPLE_IP}\n"})
+    offenders = network_offenders(repo)
+    assert offenders == ["notes.txt:1 ipv4"]
+    assert SAMPLE_IP not in "".join(offenders), "a finding must not echo the value"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not on PATH")
+def test_network_scan_catches_private_host_in_url(tmp_path):
+    url = "".join(["ws://", SAMPLE_HOST, "/gateway"])
+    repo = _tracked_repo(tmp_path, {"cfg.txt": f"gateway {url}\n"})
+    assert network_offenders(repo) == ["cfg.txt:1 url-host"]
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not on PATH")
+def test_network_scan_catches_bare_private_host(tmp_path):
+    repo = _tracked_repo(tmp_path, {"ops.txt": f"log in to {SAMPLE_HOST} first\n"})
+    assert network_offenders(repo) == ["ops.txt:1 host"]
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not on PATH")
+def test_network_scan_passes_allowlisted_hosts_and_code_shapes(tmp_path):
+    text = "\n".join([
+        "https://fluxer.invalid/api", "ws://fake-gateway.test/gateway", "http://example.com/",
+        "ws://unused/gw", "docs.fluxer.app", "127.0.0.1:8080", "0.0.0.0", "http://[::1]:9000/",
+        "https://<instance>/api", "attachment://card.png",
+        "self.rest.request(logging.getLogger(__name__))  # os.environ, asyncio.run",
+        "panel.db ci.yml REVIEW.md pyproject.toml .env.example build 2026.1031.154542",
+    ]) + "\n"
+    repo = _tracked_repo(tmp_path, {"ok.txt": text})
+    assert network_offenders(repo) == []
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not on PATH")
+def test_network_scan_never_opens_secret_files(tmp_path, monkeypatch):
+    repo = _tracked_repo(tmp_path, {
+        ".env": f"HOST={SAMPLE_HOST}\n",
+        "key.pem": f"{SAMPLE_IP}\n",
+        ".env.example": "FLUXER_TOKEN=\n",
+    })
+
+    opened: list[str] = []
+
+    def recording(real):
+        def wrapper(self, *args, **kwargs):
+            opened.append(self.name)
+            return real(self, *args, **kwargs)
+        return wrapper
+
+    monkeypatch.setattr(Path, "open", recording(Path.open))
+    real_open = builtins.open
+
+    def recording_open(file, *args, **kwargs):
+        opened.append(Path(file).name)
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", recording_open)
+
+    assert network_offenders(repo) == []
+    assert ".env.example" in opened, "the scan must still read ordinary tracked files"
+    assert not set(opened) & {".env", "key.pem"}, f"secret files were opened: {sorted(set(opened))}"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not on PATH")
+def test_network_scan_skips_tracked_file_deleted_from_disk(tmp_path):
+    repo = _tracked_repo(tmp_path, {"gone.txt": f"{SAMPLE_IP}\n"})
+    (repo / "gone.txt").unlink()
+    assert network_offenders(repo) == []
 
 
 def _imported_modules(tree: ast.AST) -> list[str]:
