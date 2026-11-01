@@ -16,14 +16,18 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 import pytest
 from aiohttp import web
 
-from fluxer_panel.__main__ import IDENTIFY_PROPERTIES
-from fluxer_panel.db import LATEST_VERSION
+import fluxer_panel.__main__ as panel_main
+from fluxer_client.gateway import FatalGatewayError
+from fluxer_panel.__main__ import IDENTIFY_PROPERTIES, purge_once, run
+from fluxer_panel.config import Config
+from fluxer_panel.db import LATEST_VERSION, Database
 from tests.fakes import (
     GATEWAY_STATE,
     FakeFluxerState,
@@ -60,6 +64,15 @@ def child_env(tmp_path: Path, **overrides: str | None) -> dict[str, str]:
 def json_lines(text: str) -> list[dict[str, Any]]:
     """Every line must be a JSON object: AC3.4."""
     return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
+async def wait_for_ok_status(path: Path) -> None:
+    """Poll until the purge status file records a success (the startup purge)."""
+    while True:
+        with contextlib.suppress(OSError, ValueError):
+            if json.loads(path.read_bytes()).get("ok") is True:
+                return
+        await asyncio.sleep(0.05)
 
 
 async def run_panel(env: dict[str, str], tmp_path: Path, *args: str) -> tuple[int, str, str]:
@@ -106,6 +119,8 @@ async def test_sigterm_after_ready_exits_zero(aiohttp_server, tmp_path):
             seen.append(line.decode())
             if json.loads(seen[-1]).get("event") == "ready":
                 break
+        # the startup purge runs right after the gateway task starts: wait for its status before stopping
+        await asyncio.wait_for(wait_for_ok_status(tmp_path / "data" / "purge-status.json"), BOUND)
         proc.send_signal(signal.SIGTERM)
         rest_out, err = await asyncio.wait_for(proc.communicate(), BOUND)
     finally:
@@ -119,6 +134,7 @@ async def test_sigterm_after_ready_exits_zero(aiohttp_server, tmp_path):
                       "event": "ready", "user_id": "5000"}]
     assert proc.returncode == 0
     assert "shutting_down" in [e["event"] for e in json_lines(out)]
+    assert "purge_done" in [e["event"] for e in json_lines(out)]
     assert TOKEN not in out
     assert TOKEN not in err.decode()
     assert "Traceback" not in err.decode()
@@ -230,16 +246,140 @@ async def test_sigterm_during_discovery_exits_zero_promptly(aiohttp_server, tmp_
     events = [e["event"] for e in json_lines(out.decode())]
     assert "shutting_down" in events
     assert "endpoints_resolved" not in events
+    assert not (tmp_path / "data" / "purge-status.json").exists()   # stop won the race: no purge ever started
     assert TOKEN not in out.decode() + err.decode()
     assert "Traceback" not in err.decode()
 
 
-async def test_purge_stub_exits_0_with_not_implemented_line(tmp_path):
-    code, out, err = await run_panel(child_env(tmp_path), tmp_path, "purge")
+DAY = 86400
+
+
+def _seed_purge_rows(conn: sqlite3.Connection, now: int) -> None:
+    """One expired session with an RSVP and an expired request, plus a kept session, RSVP and request."""
+    card = conn.execute("INSERT INTO cards (kind, title, created_by, created_at, updated_at) "
+                        "VALUES ('online', 'Game', '1001', ?, ?)", (now, now)).lastrowid
+    expired = conn.execute(
+        "INSERT INTO sessions (card_id, group_role_id, starts_at, ends_at, proposer_id, created_at) "
+        "VALUES (?, '2001', ?, ?, '1001', ?)", (card, now - 9 * DAY, now - 8 * DAY, now - 9 * DAY)).lastrowid
+    kept = conn.execute(
+        "INSERT INTO sessions (card_id, group_role_id, starts_at, ends_at, proposer_id, created_at) "
+        "VALUES (?, '2001', ?, ?, '1001', ?)", (card, now, now + DAY, now)).lastrowid
+    for session_id in (expired, kept):
+        conn.execute("INSERT INTO rsvps (session_id, user_id, status, responded_at) VALUES (?, '5000', 'yes', ?)",
+                     (session_id, now))
+    conn.execute("INSERT INTO requests (kind, card_id, requester_id, status, created_at) "
+                 "VALUES ('wake', ?, '5000', 'done', ?)", (card, now - 31 * DAY))
+    conn.execute("INSERT INTO requests (kind, card_id, requester_id, status, created_at) "
+                 "VALUES ('wake', ?, '5000', 'open', ?)", (card, now))
+
+
+async def test_purge_subcommand_runs_once_and_exits_zero(tmp_path):
+    now = int(time.time())
+    db = Database.open(tmp_path / "panel.db")
+    try:
+        await db.run(lambda conn: _seed_purge_rows(conn, now))
+    finally:
+        db.close()
+
+    code, out, err = await run_panel(child_env(tmp_path, DATA_DIR=str(tmp_path)), tmp_path, "purge")
 
     assert code == 0
-    assert "purge_not_implemented" in [e["event"] for e in json_lines(out)]
+    status = json.loads((tmp_path / "purge-status.json").read_text())
+    assert status["ok"] is True
+    assert status["deleted"] == {"sessions": 1, "rsvps": 1, "requests": 1}
+    assert "purge_done" in [e["event"] for e in json_lines(out)]
     assert TOKEN not in out + err
+    with contextlib.closing(sqlite3.connect(tmp_path / "panel.db")) as conn:
+        counts = [conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+                  for table in ("sessions", "rsvps", "requests")]
+    assert counts == [1, 1, 1]      # only the expired rows went; the kept session, RSVP and request remain
+
+
+def test_purge_once_exits_1_when_the_purge_fails(tmp_path):
+    db = Database.open(tmp_path / "panel.db")
+    # break the purge's query without touching the panel's own connection
+    with contextlib.closing(sqlite3.connect(tmp_path / "panel.db")) as conn:
+        conn.execute("DROP TABLE rsvps")
+        conn.commit()
+    config = Config.from_env({"FLUXER_TOKEN": TOKEN, "FLUXER_INSTANCE_URL": "https://fluxer.invalid",
+                              "ADMIN_USER_IDS": ADMIN_DEFAULT, "DATA_DIR": str(tmp_path)})
+    try:
+        assert purge_once(config, db) == 1
+    finally:
+        db.close()
+    assert json.loads((tmp_path / "purge-status.json").read_text())["ok"] is False
+
+
+class _PurgeProbe:
+    """Stands in for purge_loop: records that it started and whether it was cancelled."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.cancelled = False
+
+
+def _probe_purge_loop(monkeypatch: pytest.MonkeyPatch) -> _PurgeProbe:
+    probe = _PurgeProbe()
+
+    async def fake_purge_loop(db, status_path, interval, clock=None):
+        probe.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            probe.cancelled = True
+            raise
+
+    monkeypatch.setattr(panel_main, "purge_loop", fake_purge_loop)
+    return probe
+
+
+async def _in_process_panel(aiohttp_server, tmp_path: Path, gateway_script) -> tuple[Config, Database]:
+    gateway_server = await aiohttp_server(make_gateway_app(gateway_script))
+    gateway_url = str(gateway_server.make_url("/gateway").with_scheme("ws"))
+    rest = await aiohttp_server(make_rest_app(FakeFluxerState(gateway_url=gateway_url)))
+    config = Config.from_env({"FLUXER_TOKEN": TOKEN, "FLUXER_API_URL": str(rest.make_url("/api")).rstrip("/"),
+                              "FLUXER_GATEWAY_URL": gateway_url, "ADMIN_USER_IDS": ADMIN_DEFAULT,
+                              "DATA_DIR": str(tmp_path)})
+    return config, Database.open(tmp_path / "panel.db")
+
+
+async def test_purge_task_is_cancelled_when_the_gateway_fails_fatally(aiohttp_server, tmp_path, monkeypatch):
+    probe = _probe_purge_loop(monkeypatch)
+
+    async def gateway_script(ws, index, state):
+        await send(ws, 10, {"heartbeat_interval": 30000})
+        await expect(ws, 2)
+        await ws.close(code=4004)
+
+    config, db = await _in_process_panel(aiohttp_server, tmp_path, gateway_script)
+    try:
+        with pytest.raises(FatalGatewayError):
+            await run(config, db)
+    finally:
+        db.close()
+    assert probe.started.is_set()
+    assert probe.cancelled
+
+
+async def test_purge_task_is_cancelled_when_run_is_cancelled_from_outside(aiohttp_server, tmp_path, monkeypatch):
+    probe = _probe_purge_loop(monkeypatch)
+
+    async def gateway_script(ws, index, state):
+        await send(ws, 10, {"heartbeat_interval": 30000})
+        await expect(ws, 2)
+        await send(ws, 0, {"session_id": "S1", "user": {"id": "5000"}}, t="READY", s=1)
+        await hold(ws)
+
+    config, db = await _in_process_panel(aiohttp_server, tmp_path, gateway_script)
+    try:
+        task = asyncio.create_task(run(config, db))
+        await asyncio.wait_for(probe.started.wait(), BOUND)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, BOUND)
+    finally:
+        db.close()
+    assert probe.cancelled
 
 
 async def test_garbage_db_exits_3_and_is_quarantined(tmp_path):

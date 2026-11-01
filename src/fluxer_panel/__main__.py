@@ -13,6 +13,7 @@ import contextlib
 import logging
 import signal
 import sys
+import time
 
 import aiohttp
 
@@ -23,6 +24,7 @@ from fluxer_panel.bot import Bot
 from fluxer_panel.config import Config, ConfigError
 from fluxer_panel.db import Database, DatabaseRefused
 from fluxer_panel.logs import log_event, setup_logging
+from fluxer_panel.purge import purge_loop, run_purge
 
 log = logging.getLogger("fluxer_panel")
 
@@ -34,7 +36,6 @@ USAGE = "usage: python -m fluxer_panel [run|purge]"
 
 
 async def run(config: Config, db: Database) -> None:
-    # `db` is accepted now so Phase 6 can start the purge task; nothing in this phase reads it.
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -62,23 +63,33 @@ async def run(config: Config, db: Database) -> None:
             bot = Bot(rest=rest, config=config, roles=RoleCache(rest))
             gateway = Gateway(session, gateway_url, config.token, bot.on_dispatch, properties=IDENTIFY_PROPERTIES)
             gw_task = asyncio.create_task(gateway.run())
-            done, _ = await asyncio.wait({gw_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
-            if gw_task in done:
-                gw_task.result()      # re-raises FatalGatewayError
-                return
-            log_event(log, "shutting_down")
-            await gateway.stop()
-            gw_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await gw_task
+            # Started only now: a stop that won discovery above never starts a purge. The loop purges at once,
+            # then every interval, and never ends by itself.
+            purge_task = asyncio.create_task(purge_loop(db, config.purge_status_path, config.purge_interval_seconds))
+            try:
+                done, _ = await asyncio.wait({gw_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+                if gw_task in done:
+                    gw_task.result()      # re-raises FatalGatewayError
+                    return
+                log_event(log, "shutting_down")
+                await gateway.stop()
+                gw_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await gw_task
+            finally:
+                # every exit (fatal gateway, stop, external cancel). A transaction already on the DB thread runs
+                # to commit or rollback; main's db.close() waits for it.
+                purge_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await purge_task
     finally:
         stop_task.cancel()
 
 
 def purge_once(config: Config, db: Database) -> int:
-    """Stub until Phase 6."""
-    log_event(log, "purge_not_implemented", level=logging.WARNING)
-    return 0
+    """`purge` subcommand: one purge and one status write, never the network. 0 on success, 1 if the purge failed."""
+    result = asyncio.run(run_purge(db, config.purge_status_path, int(time.time())))
+    return 0 if result is not None else 1
 
 
 def main(argv: list[str] | None = None) -> int:
