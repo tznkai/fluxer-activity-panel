@@ -10,7 +10,7 @@ from io import StringIO
 
 import pytest
 
-from fluxer_panel.logs import log_event, setup_logging
+from fluxer_panel.logs import log_event, setup_logging, token_variants
 
 TOKEN = "SENTINEL-TOKEN-7f3a9c"
 CONTENT = "SENTINEL-CONTENT-b41e"
@@ -162,6 +162,34 @@ def test_repr_escaped_token_in_exception_traceback_is_redacted(captured_escapy):
     (record,) = parsed(captured_escapy)
     assert "[REDACTED]" in record["exc"]
     assert_no_token_forms(captured_escapy.getvalue(), ESCAPY)
+
+
+def test_token_escaped_twice_in_exception_message_is_redacted(captured_escapy):
+    # The token is repr'd into the exception message, then the exception is repr'd again by %r.
+    logging.getLogger("x").warning("%r", RuntimeError(f"x {ESCAPY!r}"))
+    (record,) = parsed(captured_escapy)
+    assert "[REDACTED]" in record["event"]
+    assert_no_token_forms(captured_escapy.getvalue(), ESCAPY)
+    assert ESCAPY.split("-")[-1] not in captured_escapy.getvalue()   # the unique suffix survives every escape
+
+
+def test_token_escaped_three_levels_is_redacted(captured_escapy):
+    inner = RuntimeError(f"x {ESCAPY!r}")
+    outer = RuntimeError(f"y {inner!r}")
+    logging.getLogger("x").warning("%r", outer)
+    (record,) = parsed(captured_escapy)
+    assert "[REDACTED]" in record["event"]
+    assert_no_token_forms(captured_escapy.getvalue(), ESCAPY)
+    assert ESCAPY.split("-")[-1] not in captured_escapy.getvalue()
+
+
+def test_token_variants_of_plain_token_is_only_the_token():
+    assert token_variants(TOKEN) == [TOKEN]
+
+
+def test_token_variants_is_bounded_for_escape_heavy_token():
+    # Three escape rounds, at most four escape functions each: 1 + 4 + 16 + 64 forms at most.
+    assert len(token_variants(ESCAPY)) <= 85
 
 
 def test_warning_text_with_token_is_json_and_redacted(captured):

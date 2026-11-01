@@ -58,17 +58,34 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(data, ensure_ascii=True, default=str)
 
 
+_ESCAPE_ROUNDS = 3   # a token can be escaped once per nested repr: an exception message repr'd inside a %r is two levels
+
+
+def _escapes(text: str) -> set[str]:
+    """One level of escaping: what `text` becomes when it is repr'd, json-dumped or quoted into another string."""
+    return {
+        repr(text)[1:-1],
+        json.dumps(text)[1:-1],
+        text.replace("\\", "\\\\").replace("'", "\\'"),
+        text.replace("\\", "\\\\").replace('"', '\\"'),
+    }
+
+
 def token_variants(token: str) -> list[str]:
-    """The token as it can appear in text: raw, and escaped by repr() or json.dumps() (e.g. inside a %r)."""
+    """The token as it can appear in text, raw or escaped up to _ESCAPE_ROUNDS levels (e.g. inside nested %r).
+
+    Each round escapes only the forms the previous round added, so a plain token stays just itself and the
+    set is bounded by 4 + 4**2 + 4**3 escaped forms.
+    """
     if not token:
         return []
-    variants = {
-        token,
-        repr(token)[1:-1],
-        json.dumps(token)[1:-1],
-        token.replace("\\", "\\\\").replace("'", "\\'"),
-        token.replace("\\", "\\\\").replace('"', '\\"'),
-    }
+    variants = {token}
+    frontier = {token}
+    for _ in range(_ESCAPE_ROUNDS):
+        frontier = {escaped for text in frontier for escaped in _escapes(text)} - variants
+        if not frontier:
+            break
+        variants |= frontier
     variants.discard("")
     return sorted(variants, key=len, reverse=True)   # longest first: an escaped form contains the raw one's pieces
 
