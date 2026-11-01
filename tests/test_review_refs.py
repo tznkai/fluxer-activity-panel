@@ -13,9 +13,22 @@ REVIEW = PROJECT / "REVIEW.md"
 # A reference line: "- `path:line` `anchor` — reason".
 REFERENCE = re.compile(r"^- `([^`:]+):(\d+)` `([^`]+)` — (.+)$", re.MULTILINE)
 
+# Spans that are not citations and are skipped: a span containing "://" (a URL, with or without a
+# port) and a bare IPv4 address with a port. A clock time such as 12:30 has no letter before its
+# colon, so it is never treated as a citation candidate.
+URL_OR_IPV4_PORT = r"(?![^`\s]*://)(?!\d{1,3}(?:\.\d{1,3}){3}:\d+`)"
+
 # Any citation anywhere in the file: a path containing a dot or a slash, a line number, and the
 # backticked anchor that must appear on that line. The anchor group is None when it is missing.
-CITATION = re.compile(r"`([^`\s]*[./][^`\s]*):(\d+)`(?: `([^`\n]*)`)?")
+CITATION = re.compile(r"`" + URL_OR_IPV4_PORT + r"([^`\s]*[./][^`\s]*):(\d+)`(?: `([^`\n]*)`)?")
+
+# Every backticked span, and the shapes that look like a citation but are not one CITATION can
+# check: a span with a letter before its colon and a digit after it (a range such as `:9-10`, or a
+# path with no dot or slash such as `Makefile:9`). Such a span fails rather than being skipped.
+SPAN = re.compile(r"`([^`\n]+)`")
+CITATION_LIKE = re.compile(r"[^`\s]*[A-Za-z][^`\s]*:\d[^`]*")
+CITATION_BODY = re.compile(r"([^`\s]*[./][^`\s]*):(\d+)")
+IPV4_PORT = re.compile(r"\d{1,3}(?:\.\d{1,3}){3}:\d+")
 
 # A line that starts a bullet with a citation, indented or not, whatever the bullet marker.
 BULLET_CITATION = re.compile(r"^\s*[-*+]\s+`[^`]*:\d+`")
@@ -58,8 +71,27 @@ def _read_review() -> str:
     return REVIEW.read_text(encoding="utf-8")
 
 
+def _unsupported_citations(text: str) -> list[str]:
+    problems: list[str] = []
+    for match in SPAN.finditer(text):
+        span = match.group(1)
+        if "://" in span or IPV4_PORT.fullmatch(span):
+            continue
+        if CITATION_LIKE.match(span) and not CITATION_BODY.fullmatch(span):
+            problems.append(
+                f"`{span}` -> unsupported citation form "
+                "(use a single path:line with a file extension or directory)"
+            )
+    return problems
+
+
 def test_review_file_exists() -> None:
     _read_review()
+
+
+def test_no_unsupported_citation_form() -> None:
+    problems = _unsupported_citations(_read_review())
+    assert not problems, "REVIEW.md unsupported citation forms:\n" + "\n".join(problems)
 
 
 def test_no_duplicate_headings() -> None:
