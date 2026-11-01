@@ -156,12 +156,14 @@ ALLOWED_HOSTS = frozenset({
 RESERVED_SUFFIXES = (".invalid", ".test", ".example", ".localhost")  # RFC 2606 and RFC 6761
 # Bare dotted names are checked only when they end in one of these: public TLDs and the names a
 # private network uses. Other dotted words (file names, Python attribute access) are ignored.
-# "info" is left out on purpose: `log.info(...)` and `logging.INFO` would be findings on every run.
+# "info", "online", "network" and "site" are left out on purpose: `log.info(...)`, `CardKind.ONLINE`,
+# `self.network` and `self.site` are ordinary code and would be findings on every run. A host on one of
+# those TLDs is still caught inside a URL, because the URL branch has no TLD filter.
 # Tailnet names need no entry of their own: their last label is "net", which is already checked.
 CHECKED_TLDS = frozenset({
     "com", "net", "org", "io", "app", "cloud", "dev", "me", "xyz", "co", "uk", "de",
     "lan", "local", "home", "arpa", "internal", "intranet", "corp",
-    "family", "network", "site", "online", "tech", "biz", "us", "ca", "eu", "nl", "fr",
+    "family", "tech", "biz", "us", "ca", "eu", "nl", "fr",
 })
 URL_AUTHORITY = re.compile(r"\b(?:" + "|".join(NETWORK_SCHEMES) + r")://([^\s/?#'\"`<>]*)", re.IGNORECASE)
 # Every 4-part dotted quad is a finding unless it is literally allowlisted. No parse is required, so a
@@ -208,7 +210,7 @@ def network_kinds(line: str) -> list[str]:
         if match.group(1) not in ALLOWED_IPS:
             kinds.add("ipv4")
     for match in IPV6_CANDIDATE.finditer(line):
-        if _ip_outside_allowlist(match.group(1)) and ":" in match.group(1):
+        if _ip_outside_allowlist(match.group(1)):
             kinds.add("ipv6")
     for match in URL_AUTHORITY.finditer(line):
         host = _url_host(match.group(1))
@@ -334,10 +336,18 @@ def test_network_scan_catches_bare_ipv6_outside_url(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="git is not on PATH")
-@pytest.mark.parametrize("tld", ["family", "network", "site", "online", "tech", "biz", "us", "ca", "eu", "nl", "fr"])
+@pytest.mark.parametrize("tld", ["family", "tech", "biz", "us", "ca", "eu", "nl", "fr"])
 def test_network_scan_catches_host_on_added_tld(tmp_path, tld):
     repo = _tracked_repo(tmp_path, {"hosts.txt": f"ssh to nas.{tld} today\n"})
     assert network_offenders(repo) == ["hosts.txt:1 host"]
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not on PATH")
+@pytest.mark.parametrize("tld", ["online", "network", "site"])
+def test_network_scan_catches_url_host_on_tld_left_out_of_bare_names(tmp_path, tld):
+    url = "".join(["wss://", ".".join(["nas", tld]), "/socket"])
+    repo = _tracked_repo(tmp_path, {"gw.txt": f"open {url}\n"})
+    assert network_offenders(repo) == ["gw.txt:1 url-host"]
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="git is not on PATH")
@@ -352,6 +362,7 @@ def test_network_scan_passes_times_slices_and_logging_levels(tmp_path):
     text = "\n".join([
         "log.info(msg) logging.INFO timeout 12:30:45 xs[1:2] ys[::2] ops@example.com",
         "at 2026-11-01T12:30:45Z mac aa:bb:cc:dd:ee:ff",
+        "kind CardKind.ONLINE Kind.online self.network self.site",
     ]) + "\n"
     repo = _tracked_repo(tmp_path, {"code.txt": text})
     assert network_offenders(repo) == []
