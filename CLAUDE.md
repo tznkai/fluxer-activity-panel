@@ -11,7 +11,7 @@ Standalone project: `fluxer_client` (a reusable Fluxer REST and gateway client) 
 ## Purpose and boundary
 
 - `fluxer_client` (`src/fluxer_client/`) is the shared Fluxer layer. It never imports `fluxer_panel`.
-- `fluxer_panel` (planned, not yet in `src/`) imports only from `fluxer_client`'s public modules.
+- `fluxer_panel` (`src/fluxer_panel/`) is the activity panel. It imports only from `fluxer_client`'s public modules.
 - No code here imports the source bot package. A test (`tests/test_repo_hygiene.py`) enforces this.
 
 ## Commands (run from this directory)
@@ -20,6 +20,8 @@ Standalone project: `fluxer_client` (a reusable Fluxer REST and gateway client) 
 - Tests: `.venv/bin/python -m pytest -q -W error` (warnings are errors)
 - Lint: `.venv/bin/ruff check src tests tools`
 - Licensing: `.venv/bin/reuse --root . lint`
+- Run the panel: `.venv/bin/python -m fluxer_panel [run|purge]` (`run` is the default; `purge` is a stub until Phase 6).
+  Config comes from the environment only. The code never loads `.env`; the operator sources it in their shell.
 - CI (`.github/workflows/ci.yml`) runs these three on every push and pull request.
 
 ## Rules
@@ -55,3 +57,25 @@ Standalone project: `fluxer_client` (a reusable Fluxer REST and gateway client) 
 - `tools/live/` scripts: `reactions.py` (guild and DM reaction add and remove), `edit.py` (edit content and embeds),
   `reaction_remove.py` (removal with and without Manage Messages), `roles.py` (member role add and remove) and
   `dm.py` (open a DM, send, receive the reply and re-open).
+- `src/fluxer_panel/config.py`: `Config.from_env()` reads `FLUXER_TOKEN`, `FLUXER_INSTANCE_URL` or `FLUXER_API_URL`,
+  `FLUXER_GATEWAY_URL`, `ADMIN_USER_IDS` (required), `COMMAND_PREFIX`, `LOG_LEVEL`, `DATA_DIR`, `DB_PATH`,
+  `PURGE_STATUS_PATH` and `PURGE_INTERVAL_SECONDS`. Errors name the variable, never its value. The token is not in `repr`.
+- `src/fluxer_panel/logs.py`: `log_event`, `clean_fields`, `JsonFormatter` and `setup_logging`.
+- `src/fluxer_panel/admin.py`: `authorize`, `parse_command` and `handle` for `<prefix>admin <sub>` (`ping` only).
+- `src/fluxer_panel/bot.py`: `Bot.on_dispatch` routes typed gateway events. Guild messages are ignored; DMs go to `admin.handle`.
+- `src/fluxer_panel/__main__.py`: `main()` parses `run|purge`, loads config, sets up logging and runs. `run()` resolves
+  endpoints, then stops on SIGINT or SIGTERM and logs `shutting_down`.
+
+## fluxer_panel rules
+
+- Exit codes: 0 clean stop (a signal, or a gateway that returns without error); 1 fatal runtime or gateway error
+  (`FatalGatewayError` or any uncaught exception); 2 config or usage error. Exit code 3 arrives in Phase 5.
+- Logging: panel code logs only through `log_event(logger, name, level=..., **fields)`. It never logs message content,
+  user or channel names, or URLs. `clean_fields` allowlists the fields: id keys must be snowflakes, and other keys must be
+  numbers, bools or identifier-like strings. Known exception: the last-resort handler in `__main__.main` calls
+  `log.exception("fatal_error")`. A traceback can carry any exception text, so no code enforces the no-URL rule there.
+- `setup_logging` replaces the root handlers with one JSON handler on stdout. It installs `TokenRedactionFilter`, which
+  replaces the token in the message, args and traceback.
+- Authorization: `admin.authorize` is the single authorization check. It requires a DM (no guild id), a non-bot author,
+  and an author id in `ADMIN_USER_IDS`. Every admin command goes through `handle`, which calls `authorize` before acting.
+  A denial logs `admin_denied`.
