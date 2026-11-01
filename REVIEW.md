@@ -144,10 +144,10 @@ No code in `src/fluxer_panel` calls `add_member_role` or `remove_member_role` in
 
 - `tests/test_repo_hygiene.py:149` `ALLOWED_IPS = frozenset(` — the only addresses a tracked file may contain are the loopback and unspecified ones.
 - `tests/test_repo_hygiene.py:150` `ALLOWED_HOSTS = frozenset(` — the only named hosts allowed: reserved documentation names, the license host, Fluxer's public docs host and two test placeholders.
-- `tests/test_repo_hygiene.py:163` `URL_AUTHORITY = re.compile(` — every network-scheme URL host in a tracked file is checked against the allowlist.
-- `tests/test_repo_hygiene.py:164` `DOTTED_IPV4 = re.compile(` — every dotted IPv4 address is checked against the allowlist.
-- `tests/test_repo_hygiene.py:165` `BARE_NAME = re.compile(` — a bare dotted name is checked only when it ends in a listed TLD, so file names and Python attribute access are ignored.
-- `tests/test_repo_hygiene.py:215` `def network_offenders(` — the scan. Secrets are skipped before any read, and a finding names the file, line and kind, never the value.
+- `tests/test_repo_hygiene.py:166` `URL_AUTHORITY = re.compile(` — every network-scheme URL host in a tracked file is checked against the allowlist.
+- `tests/test_repo_hygiene.py:169` `DOTTED_IPV4 = re.compile(` — every dotted IPv4 address, zero-padded or not, is checked against the allowlist.
+- `tests/test_repo_hygiene.py:176` `BARE_NAME = re.compile(` — a bare dotted name is checked only when it ends in a listed TLD, so file names and Python attribute access are ignored.
+- `tests/test_repo_hygiene.py:232` `def network_offenders(` — the scan. Secrets are skipped before any read, and a finding names the file, line and kind, never the value.
 
 ## What the phase 1 prompt got wrong
 

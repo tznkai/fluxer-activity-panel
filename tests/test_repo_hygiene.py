@@ -146,7 +146,7 @@ def test_digit_scan_skips_tracked_path_that_became_directory(tmp_path):
 # Network scan. Everything not listed here is a finding. The allowlist holds only what tracked files
 # contain today, plus the reserved and public names a fixture or a doc may need.
 NETWORK_SCHEMES = ("http", "https", "ws", "wss", "ftp", "ssh")
-ALLOWED_IPS = frozenset({"127.0.0.1", "0.0.0.0", "::1"})  # loopback and unspecified addresses only
+ALLOWED_IPS = frozenset({"127.0.0.1", "0.0.0.0", "::1", "::"})  # loopback and unspecified addresses only
 ALLOWED_HOSTS = frozenset({
     "example.com", "example.org", "example.net",  # reserved for documentation (RFC 2606)
     "www.gnu.org", "fsf.org",                     # the AGPL text in LICENSES/
@@ -156,13 +156,24 @@ ALLOWED_HOSTS = frozenset({
 RESERVED_SUFFIXES = (".invalid", ".test", ".example", ".localhost")  # RFC 2606 and RFC 6761
 # Bare dotted names are checked only when they end in one of these: public TLDs and the names a
 # private network uses. Other dotted words (file names, Python attribute access) are ignored.
+# "info" is left out on purpose: `log.info(...)` and `logging.INFO` would be findings on every run.
+# Tailnet names need no entry of their own: their last label is "net", which is already checked.
 CHECKED_TLDS = frozenset({
     "com", "net", "org", "io", "app", "cloud", "dev", "me", "xyz", "co", "uk", "de",
     "lan", "local", "home", "arpa", "internal", "intranet", "corp",
+    "family", "network", "site", "online", "tech", "biz", "us", "ca", "eu", "nl", "fr",
 })
 URL_AUTHORITY = re.compile(r"\b(?:" + "|".join(NETWORK_SCHEMES) + r")://([^\s/?#'\"`<>]*)", re.IGNORECASE)
+# Every 4-part dotted quad is a finding unless it is literally allowlisted. No parse is required, so a
+# zero-padded form (octets with leading zeros) is still caught.
 DOTTED_IPV4 = re.compile(r"(?<![\w.])((?:\d{1,3}\.){3}\d{1,3})(?![\w]|\.\d)")
-BARE_NAME = re.compile(r"(?<![\w.@/-])((?:[a-z0-9-]+\.)+[a-z]{2,63})(?![\w-])", re.IGNORECASE)
+DOTTED_QUAD = re.compile(r"\d{1,3}(?:\.\d{1,3}){3}")
+# A bare IPv6 candidate has at least two colons and hex groups. It is a finding only if ipaddress parses
+# it as IPv6, which rules out times (12:30:45) and MAC-style runs (6 groups, no ::). Bracketed forms are
+# URL host syntax and are checked by the URL branch; inside brackets a candidate is a Python slice
+# (xs[::2]), so brackets are excluded here.
+IPV6_CANDIDATE = re.compile(r"(?<![\w:.\[])([0-9A-Fa-f]*(?::[0-9A-Fa-f]*){2,8})(?![\w:\]]|\.[0-9A-Za-z])")
+BARE_NAME = re.compile(r"(?<![\w./-])((?:[a-z0-9-]+\.)+[a-z]{2,63})(?![\w-])", re.IGNORECASE)
 
 
 def _is_ip(value: str) -> bool:
@@ -194,13 +205,19 @@ def network_kinds(line: str) -> list[str]:
     """The kinds of non-allowlisted address or host on one line. Values are never returned, only kinds."""
     kinds: set[str] = set()
     for match in DOTTED_IPV4.finditer(line):
-        if _ip_outside_allowlist(match.group(1)):
+        if match.group(1) not in ALLOWED_IPS:
             kinds.add("ipv4")
+    for match in IPV6_CANDIDATE.finditer(line):
+        if _ip_outside_allowlist(match.group(1)) and ":" in match.group(1):
+            kinds.add("ipv6")
     for match in URL_AUTHORITY.finditer(line):
         host = _url_host(match.group(1))
         if not host:
             continue
-        if _is_ip(host):
+        if DOTTED_QUAD.fullmatch(host):
+            if host not in ALLOWED_IPS:
+                kinds.add("ipv4")
+        elif _is_ip(host):
             if ":" in host and _ip_outside_allowlist(host):
                 kinds.add("ipv6")
         elif not _host_allowed(host):
@@ -274,12 +291,69 @@ def test_network_scan_catches_bare_private_host(tmp_path):
 def test_network_scan_passes_allowlisted_hosts_and_code_shapes(tmp_path):
     text = "\n".join([
         "https://fluxer.invalid/api", "ws://fake-gateway.test/gateway", "http://example.com/",
-        "ws://unused/gw", "docs.fluxer.app", "127.0.0.1:8080", "0.0.0.0", "http://[::1]:9000/",
+        "ws://unused/gw", "docs.fluxer.app", "127.0.0.1:8080", "0.0.0.0", "http://[::1]:9000/", "bind ::",
         "https://<instance>/api", "attachment://card.png",
         "self.rest.request(logging.getLogger(__name__))  # os.environ, asyncio.run",
         "panel.db ci.yml REVIEW.md pyproject.toml .env.example build 2026.1031.154542",
     ]) + "\n"
     repo = _tracked_repo(tmp_path, {"ok.txt": text})
+    assert network_offenders(repo) == []
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not on PATH")
+def test_network_scan_catches_private_host_after_at_sign(tmp_path):
+    repo = _tracked_repo(tmp_path, {"mail.txt": f"write to k@{SAMPLE_HOST} for access\n"})
+    assert network_offenders(repo) == ["mail.txt:1 host"]
+
+
+# Built from parts: a dotted quad with leading zeros, which ipaddress does not parse.
+LEADING_ZERO_IP = ".".join(["192", "168", "001", "005"])
+# Built from parts: a unique-local IPv6 address, not on the allowlist.
+SAMPLE_IPV6 = ":".join(["fd00", "", "1"])
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not on PATH")
+def test_network_scan_catches_dotted_ip_with_leading_zeros(tmp_path):
+    repo = _tracked_repo(tmp_path, {"notes.txt": f"reach it at {LEADING_ZERO_IP}\n"})
+    assert network_offenders(repo) == ["notes.txt:1 ipv4"]
+    assert LEADING_ZERO_IP not in "".join(network_offenders(repo)), "a finding must not echo the value"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not on PATH")
+def test_network_scan_catches_leading_zero_ip_in_url(tmp_path):
+    url = "".join(["http://", LEADING_ZERO_IP, "/api"])
+    repo = _tracked_repo(tmp_path, {"u.txt": f"call {url}\n"})
+    assert network_offenders(repo) == ["u.txt:1 ipv4"]
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not on PATH")
+def test_network_scan_catches_bare_ipv6_outside_url(tmp_path):
+    repo = _tracked_repo(tmp_path, {"r.txt": f"route via {SAMPLE_IPV6}.\n"})
+    assert network_offenders(repo) == ["r.txt:1 ipv6"]
+    assert SAMPLE_IPV6 not in "".join(network_offenders(repo)), "a finding must not echo the value"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not on PATH")
+@pytest.mark.parametrize("tld", ["family", "network", "site", "online", "tech", "biz", "us", "ca", "eu", "nl", "fr"])
+def test_network_scan_catches_host_on_added_tld(tmp_path, tld):
+    repo = _tracked_repo(tmp_path, {"hosts.txt": f"ssh to nas.{tld} today\n"})
+    assert network_offenders(repo) == ["hosts.txt:1 host"]
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not on PATH")
+def test_network_scan_catches_tailnet_host(tmp_path):
+    host = ".".join(["box", "tail1234", "ts", "net"])
+    repo = _tracked_repo(tmp_path, {"t.txt": f"ssh {host}\n"})
+    assert network_offenders(repo) == ["t.txt:1 host"]
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not on PATH")
+def test_network_scan_passes_times_slices_and_logging_levels(tmp_path):
+    text = "\n".join([
+        "log.info(msg) logging.INFO timeout 12:30:45 xs[1:2] ys[::2] ops@example.com",
+        "at 2026-11-01T12:30:45Z mac aa:bb:cc:dd:ee:ff",
+    ]) + "\n"
+    repo = _tracked_repo(tmp_path, {"code.txt": text})
     assert network_offenders(repo) == []
 
 
