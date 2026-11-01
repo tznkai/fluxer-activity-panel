@@ -347,3 +347,122 @@ def test_unexpected_parser_error_logs_placeholder_and_never_the_value(
     message = record.getMessage()
     assert message == 'malformed READY payload: field "?"'
     assert "SENTINEL-VALUE" not in message
+
+
+# Observed live shapes (2026-10-31). Ids are fake placeholders; the extra keys are as observed and must be ignored.
+
+
+def test_observed_guild_reaction_add_without_emoji_id_key() -> None:
+    event = parse("MESSAGE_REACTION_ADD", {
+        "channel_id": "3001",
+        "emoji": {"name": "👌"},
+        "guild_id": "2001",
+        "member": {
+            "accent_color": None, "avatar": None, "banner": None, "communication_disabled_until": None,
+            "deaf": False, "joined_at": "2026-01-01T00:00:00.000000+00:00", "mute": False, "nick": None,
+            "roles": ["4001"],
+            "user": {"avatar": None, "avatar_color": None, "discriminator": "0001", "flags": 0,
+                     "global_name": "Alice", "id": "1001", "username": "alice"},
+        },
+        "message_id": "5001",
+        "user_id": "1001",
+    })
+    assert event == ReactionAdd(
+        user_id="1001",
+        channel_id="3001",
+        message_id="5001",
+        guild_id="2001",
+        emoji=Emoji(name="👌", id=None),
+        member_role_ids=frozenset({"4001"}),
+    )
+
+
+def test_observed_guild_reaction_remove_matches_add_shape() -> None:
+    event = parse("MESSAGE_REACTION_REMOVE", {
+        "channel_id": "3001",
+        "emoji": {"name": "👌"},
+        "guild_id": "2001",
+        "member": {"deaf": False, "mute": False, "nick": None, "roles": ["4001"],
+                   "user": {"id": "1001", "username": "alice"}},
+        "message_id": "5001",
+        "user_id": "1001",
+    })
+    assert event == ReactionRemove(
+        user_id="1001",
+        channel_id="3001",
+        message_id="5001",
+        guild_id="2001",
+        emoji=Emoji(name="👌", id=None),
+        member_role_ids=frozenset({"4001"}),
+    )
+
+
+def test_observed_dm_reaction_add_with_session_id_has_no_guild_or_member() -> None:
+    event = parse("MESSAGE_REACTION_ADD", {
+        "channel_id": "3002",
+        "emoji": {"name": "🎉"},
+        "message_id": "5002",
+        "session_id": "sess-0123456789abcdef0123456789abcdef",
+        "user_id": "1001",
+    })
+    assert event == ReactionAdd(
+        user_id="1001",
+        channel_id="3002",
+        message_id="5002",
+        guild_id=None,
+        emoji=Emoji(name="🎉", id=None),
+        member_role_ids=None,
+    )
+    assert "sess-0123456789abcdef0123456789abcdef" not in repr(event)
+
+
+def test_observed_dm_reaction_remove_with_session_id() -> None:
+    event = parse("MESSAGE_REACTION_REMOVE", {
+        "channel_id": "3002",
+        "emoji": {"name": "🎉"},
+        "message_id": "5002",
+        "session_id": "sess-0123456789abcdef0123456789abcdef",
+        "user_id": "1001",
+    })
+    assert event == ReactionRemove(
+        user_id="1001",
+        channel_id="3002",
+        message_id="5002",
+        guild_id=None,
+        emoji=Emoji(name="🎉", id=None),
+        member_role_ids=None,
+    )
+
+
+def test_observed_dm_message_create_has_no_guild_member_or_bot_key() -> None:
+    event = parse("MESSAGE_CREATE", {
+        "attachments": [],
+        "author": {"avatar": None, "avatar_color": None, "discriminator": "0001", "flags": 0,
+                   "global_name": "Alice", "id": "1001", "username": "alice"},
+        "channel_id": "3002",
+        "channel_type": 1,
+        "content": "reply 1",
+        "edited_timestamp": None,
+        "embeds": [],
+        "flags": 0,
+        "id": "5003",
+        "mention_everyone": False,
+        "mention_roles": [],
+        "mentions": [],
+        "nonce": "6003",
+        "pinned": False,
+        "stickers": [],
+        "timestamp": "2026-01-01T00:00:00.000000+00:00",
+        "tts": False,
+        "type": 0,
+    })
+    assert event == MessageCreate(
+        message_id="5003",
+        channel_id="3002",
+        guild_id=None,
+        author_id="1001",
+        author_is_bot=False,
+        member_role_ids=None,
+        content="reply 1",
+    )
+

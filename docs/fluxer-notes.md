@@ -136,3 +136,5 @@ channel ID.
 - No edit rate limit was seen in 6 rapid edits. The panel must still handle 429 generically, since the limit is
   unmeasured.
 - The interactive scripts must run in a real terminal. Any future live script that reads stdin needs the same.
+- `events.py` matched all observed shapes; no parser changes. Observed-shape fixtures are in `tests/test_events.py`.
+- `MESSAGE_REACTION_ADD_MANY` was not observed, and is left unparsed in this phase.
