@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import signal
 import sqlite3
@@ -361,16 +362,22 @@ async def test_purge_task_is_cancelled_when_the_gateway_fails_fatally(aiohttp_se
     assert probe.cancelled
 
 
-async def test_purge_task_is_cancelled_when_run_is_cancelled_from_outside(aiohttp_server, tmp_path, monkeypatch):
+def _pending_gateway_tasks() -> list[asyncio.Task]:
+    return [t for t in asyncio.all_tasks() if getattr(t.get_coro(), "__qualname__", "") == "Gateway.run"]
+
+
+async def _ready_gateway_script(ws, index, state):
+    await send(ws, 10, {"heartbeat_interval": 30000})
+    await expect(ws, 2)
+    await send(ws, 0, {"session_id": "S1", "user": {"id": "5000"}}, t="READY", s=1)
+    await hold(ws)
+
+
+async def test_purge_task_is_cancelled_when_run_is_cancelled_from_outside(
+        aiohttp_server, tmp_path, monkeypatch, caplog):
     probe = _probe_purge_loop(monkeypatch)
-
-    async def gateway_script(ws, index, state):
-        await send(ws, 10, {"heartbeat_interval": 30000})
-        await expect(ws, 2)
-        await send(ws, 0, {"session_id": "S1", "user": {"id": "5000"}}, t="READY", s=1)
-        await hold(ws)
-
-    config, db = await _in_process_panel(aiohttp_server, tmp_path, gateway_script)
+    caplog.set_level(logging.WARNING, logger="fluxer_client.gateway")
+    config, db = await _in_process_panel(aiohttp_server, tmp_path, _ready_gateway_script)
     try:
         task = asyncio.create_task(run(config, db))
         await asyncio.wait_for(probe.started.wait(), BOUND)
@@ -380,6 +387,33 @@ async def test_purge_task_is_cancelled_when_run_is_cancelled_from_outside(aiohtt
     finally:
         db.close()
     assert probe.cancelled
+    # the gateway task is finished before run returns, so the session never closes under a live reconnect
+    assert _pending_gateway_tasks() == []
+    assert not any("Connector is closed" in r.getMessage() for r in caplog.records)
+
+
+async def test_gateway_task_is_cancelled_when_stop_fails_during_shutdown(
+        aiohttp_server, tmp_path, monkeypatch):
+    probe = _probe_purge_loop(monkeypatch)
+
+    async def failing_stop(self) -> None:
+        raise RuntimeError("stop failed")
+
+    monkeypatch.setattr(panel_main.Gateway, "stop", failing_stop)
+    config, db = await _in_process_panel(aiohttp_server, tmp_path, _ready_gateway_script)
+    loop = asyncio.get_running_loop()
+    try:
+        task = asyncio.create_task(run(config, db))
+        await asyncio.wait_for(probe.started.wait(), BOUND)
+        os.kill(os.getpid(), signal.SIGTERM)      # run() installed the handler: this is a stop request
+        with pytest.raises(RuntimeError, match="stop failed"):
+            await asyncio.wait_for(task, BOUND)
+    finally:
+        loop.remove_signal_handler(signal.SIGTERM)
+        loop.remove_signal_handler(signal.SIGINT)
+        db.close()
+    assert probe.cancelled
+    assert _pending_gateway_tasks() == []
 
 
 async def test_garbage_db_exits_3_and_is_quarantined(tmp_path):

@@ -23,10 +23,10 @@ SESSION_RETENTION = 7 * DAY
 REQUEST_RETENTION = 30 * DAY
 STATUS_SCHEMA_VERSION = 1
 
-_EXPIRED_SESSIONS = """
+_EXPIRED_SESSIONS = """(
     (recurrence IS NULL AND ends_at < :cutoff)
     OR (recurrence IS NOT NULL AND recurrence_until IS NOT NULL AND recurrence_until < :cutoff)
-"""
+)"""
 
 
 @dataclass(frozen=True)
@@ -53,9 +53,10 @@ async def purge(db: Database, now: int) -> PurgeResult:
 
 
 def _previous_success(path: Path) -> int | None:
+    """The previous status file is advisory: any way it can fail to parse (even a RecursionError or MemoryError) means None."""
     try:
         value = json.loads(path.read_bytes()).get("last_success_at")
-    except (OSError, ValueError, AttributeError):
+    except Exception:  # noqa: BLE001 - never let a bad status file stop the purge from being recorded
         return None
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
@@ -87,14 +88,21 @@ async def run_purge(db: Database, status_path: Path, now: int) -> PurgeResult | 
                   duration_ms=round((time.monotonic() - started) * 1000))
     try:
         write_status(status_path, now=now, result=result)
-    except OSError:
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 - a failed status write is logged; the purge result still stands
         log.exception("purge_status_write_failed")
     return result
 
 
 async def purge_loop(db: Database, status_path: Path, interval: float,
                      clock: Callable[[], float] = time.time) -> None:
-    """Purge now, then every `interval` seconds, until cancelled."""
+    """Purge now, then every `interval` seconds, until cancelled. An iteration that fails is logged and the loop goes on."""
     while True:
-        await run_purge(db, status_path, int(clock()))
+        try:
+            await run_purge(db, status_path, int(clock()))
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - nothing watches this task: it must never end on its own
+            log.exception("purge_loop_error")
         await asyncio.sleep(interval)

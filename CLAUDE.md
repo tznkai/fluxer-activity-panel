@@ -117,6 +117,8 @@ Standalone project: `fluxer_client` (a reusable Fluxer REST and gateway client) 
   mode 0644 so a monitor running as another user can read it. It holds only timestamps and counts: `last_success_at`
   (unix seconds, or null until the first success; a failed attempt keeps the previous value), `last_attempt_at`, `ok`,
   `deleted` (`sessions`, `rsvps`, `requests`; zeros on failure) and `schema_version` (1).
+  A checkpoint failure after the commit is reported as `ok: false` with zero `deleted`, but the rows may already be gone;
+  the next run checkpoints again.
   Monitoring rule: alert when `last_success_at` is null or older than twice `PURGE_INTERVAL_SECONDS`.
 - `purge` subcommand: one purge and one status write. Exit 0 on success, 1 when the purge failed, 2 on a config error,
   3 when the DB is refused. It needs the same config as `run`, but never touches the network.

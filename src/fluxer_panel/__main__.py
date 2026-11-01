@@ -73,15 +73,19 @@ async def run(config: Config, db: Database) -> None:
                     return
                 log_event(log, "shutting_down")
                 await gateway.stop()
-                gw_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await gw_task
             finally:
-                # every exit (fatal gateway, stop, external cancel). A transaction already on the DB thread runs
-                # to commit or rollback; main's db.close() waits for it.
-                purge_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await purge_task
+                # every exit (fatal gateway, stop, a failing stop, external cancel). The gateway task goes first, so
+                # the session never closes under a live reconnect. On a fatal exit it already finished, so cancel()
+                # is a no-op and awaiting it re-raises the same FatalGatewayError. A transaction already on the DB
+                # thread runs to commit or rollback; main's db.close() waits for it.
+                try:
+                    gw_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await gw_task
+                finally:
+                    purge_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await purge_task
     finally:
         stop_task.cancel()
 

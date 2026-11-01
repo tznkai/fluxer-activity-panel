@@ -16,8 +16,9 @@ from pathlib import Path
 
 import pytest
 
+from fluxer_panel import purge as purge_module
 from fluxer_panel.db import Database
-from fluxer_panel.purge import PurgeResult, purge, purge_loop, run_purge
+from fluxer_panel.purge import PurgeResult, purge, purge_loop, run_purge, write_status
 
 NOW = 2_000_000_000
 DAY = 86400
@@ -25,6 +26,7 @@ CUT = NOW - 7 * DAY          # session cutoff
 REQ_CUT = NOW - 30 * DAY     # request cutoff
 ANCIENT = NOW - 400 * DAY
 FAIL_TRIGGER = "CREATE TRIGGER fail_requests BEFORE DELETE ON requests BEGIN SELECT RAISE(ABORT, 'boom'); END"
+DEEP_NESTED = b"[" * 100_000  # json.loads raises RecursionError on this
 
 
 @pytest.fixture
@@ -285,3 +287,109 @@ async def test_purge_loop_keeps_running_through_failures_and_recovers(db: Databa
         task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+async def test_purge_loop_survives_an_iteration_that_raises(db: Database, status: Path,
+                                                            monkeypatch: pytest.MonkeyPatch,
+                                                            caplog: pytest.LogCaptureFixture) -> None:
+    original = purge_module.run_purge
+    calls = 0
+
+    async def first_call_raises(database: Database, status_path: Path, now: int) -> PurgeResult | None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("unexpected failure outside the purge")
+        return await original(database, status_path, now)
+
+    monkeypatch.setattr(purge_module, "run_purge", first_call_raises)
+    caplog.set_level(logging.ERROR, logger="fluxer_panel.purge")
+    clock = itertools.count(NOW)
+    task = asyncio.create_task(purge_loop(db, status, interval=0.05, clock=lambda: next(clock)))
+    try:
+        await _wait_until(lambda: task.done() or (_read_status(status) or {}).get("ok") is True)
+        assert not task.done()
+        assert calls >= 2
+    finally:
+        task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert any(r.getMessage() == "purge_loop_error" for r in caplog.records)
+
+
+# Status file edge cases -------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("previous", [
+    b"not json at all",
+    b"\x80\x81\x82",                      # not UTF-8
+    b"[1, 2]",                            # a list has no .get
+    b'"a string"',
+    b"null",
+    b"42",
+    b'{"last_success_at": true}',         # a bool is not a timestamp
+    b'{"last_success_at": 1.5}',          # a float is not a timestamp
+    b'{"last_success_at": "1767225600"}',
+    b'{"last_success_at": null}',
+    DEEP_NESTED,                          # RecursionError while decoding
+], ids=["non-json", "non-utf8", "list", "string", "null", "number", "bool", "float", "text-timestamp",
+        "explicit-null", "deeply-nested"])
+def test_write_status_treats_a_malformed_previous_file_as_no_success(tmp_path: Path, previous: bytes) -> None:
+    path = tmp_path / "purge-status.json"
+    path.write_bytes(previous)
+
+    write_status(path, now=NOW, result=None)
+
+    data = json.loads(path.read_text("utf-8"))
+    assert data["last_success_at"] is None
+    assert data["ok"] is False
+    assert data["last_attempt_at"] == NOW
+    assert data["deleted"] == {"sessions": 0, "rsvps": 0, "requests": 0}
+
+
+async def test_deeply_nested_previous_status_does_not_stop_a_failed_run(db: Database, status: Path) -> None:
+    status.write_bytes(DEEP_NESTED)
+    await db.run(lambda conn: _request(conn, _card(conn), status="open", created_at=REQ_CUT - 1))
+    await db.run(lambda conn: conn.execute(FAIL_TRIGGER))
+
+    assert await run_purge(db, status, NOW) is None
+
+    data = json.loads(status.read_text("utf-8"))
+    assert data["ok"] is False
+    assert data["last_success_at"] is None
+
+
+async def test_any_status_write_failure_is_logged_and_survived(db: Database, status: Path,
+                                                               monkeypatch: pytest.MonkeyPatch,
+                                                               caplog: pytest.LogCaptureFixture) -> None:
+    def broken_write(path: Path, *, now: int, result: PurgeResult | None) -> None:
+        raise RuntimeError("not an OSError")
+
+    monkeypatch.setattr(purge_module, "write_status", broken_write)
+    caplog.set_level(logging.ERROR, logger="fluxer_panel.purge")
+
+    assert await run_purge(db, status, NOW) == PurgeResult(sessions=0, rsvps=0, requests=0)
+    assert any(r.getMessage() == "purge_status_write_failed" for r in caplog.records)
+
+
+async def test_checkpoint_failure_after_commit_reports_not_ok_and_keeps_the_rows_deleted(
+        db: Database, status: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    await run_purge(db, status, NOW - 100)
+    await db.run(lambda conn: _rsvps(conn, _session(conn, _card(conn), ends_at=CUT - 1), "1001", "1002"))
+
+    async def broken_checkpoint() -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(db, "checkpoint", broken_checkpoint)
+
+    assert await run_purge(db, status, NOW) is None
+
+    assert json.loads(status.read_text("utf-8")) == {
+        "last_success_at": NOW - 100,
+        "last_attempt_at": NOW,
+        "ok": False,
+        "deleted": {"sessions": 0, "rsvps": 0, "requests": 0},
+        "schema_version": 1,
+    }
+    # the commit happened before the checkpoint failed: the expired rows are gone
+    assert await db.run(lambda c: _count(c, "sessions")) == 0
+    assert await db.run(lambda c: _count(c, "rsvps")) == 0
