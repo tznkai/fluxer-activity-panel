@@ -149,6 +149,7 @@ async def test_garbage_db_is_quarantined_with_side_files(tmp_path: Path, caplog:
     path.write_bytes(b"not a database" * 100)
     path.with_name(path.name + "-wal").write_bytes(b"wal junk")
     path.with_name(path.name + "-shm").write_bytes(b"shm junk")
+    path.with_name(path.name + "-journal").write_bytes(b"")
 
     with caplog.at_level(logging.ERROR):
         with pytest.raises(DatabaseRefused) as info:
@@ -159,7 +160,9 @@ async def test_garbage_db_is_quarantined_with_side_files(tmp_path: Path, caplog:
     assert path.with_name("panel.db.corrupt").exists()
     assert path.with_name("panel.db.corrupt-wal").exists()
     assert path.with_name("panel.db.corrupt-shm").exists()
+    assert path.with_name("panel.db.corrupt-journal").exists()
     assert not path.with_name("panel.db-wal").exists()
+    assert not path.with_name("panel.db-journal").exists()
     records = [r for r in caplog.records if r.getMessage() == "db_quarantined"]
     assert records, "expected a db_quarantined record"
     assert all(str(tmp_path) not in r.getMessage() for r in caplog.records)
@@ -278,3 +281,176 @@ async def test_concurrent_runs_both_complete_serialised(db: Database) -> None:
 
     assert sorted(results) == [1, 2]
     assert await db.run(lambda c: c.execute("SELECT COUNT(*) FROM families").fetchone()[0]) == 2
+
+
+# Review fixes: unwritable files, lock contention, hot journals, side effects ----------------------
+
+requires_permissions = pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0,
+                                          reason="root ignores file permissions")
+
+
+def _add_pending_migration(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_v1 = dbmod.load_migrations()[0][1]
+    monkeypatch.setattr(dbmod, "load_migrations", lambda: [(1, real_v1), (2, "CREATE TABLE extra(x TEXT) STRICT;")])
+    monkeypatch.setattr(dbmod, "LATEST_VERSION", 2)
+
+
+def _unavailable_codes(caplog: pytest.LogCaptureFixture) -> list[object]:
+    return [r.panel_fields.get("code") for r in caplog.records if r.getMessage() == "db_unavailable"]
+
+
+@requires_permissions
+async def test_read_only_db_file_is_unavailable_and_untouched(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    path = tmp_path / "panel.db"
+    Database.open(path).close()
+    before = path.read_bytes()
+    path.chmod(0o444)
+    try:
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(DatabaseRefused) as info:
+                Database.open(path)
+        assert info.value.reason == "unavailable"
+        assert path.read_bytes() == before
+        assert list(tmp_path.glob("panel.db.corrupt*")) == []
+        assert _unavailable_codes(caplog) == ["SQLITE_READONLY"]
+    finally:
+        path.chmod(0o600)
+
+
+@requires_permissions
+async def test_db_in_read_only_directory_is_unavailable_and_untouched(tmp_path: Path) -> None:
+    folder = tmp_path / "ro"
+    folder.mkdir()
+    path = folder / "panel.db"
+    Database.open(path).close()
+    before = path.read_bytes()
+    folder.chmod(0o555)
+    try:
+        with pytest.raises(DatabaseRefused) as info:
+            Database.open(path)
+        assert info.value.reason == "unavailable"
+        assert path.read_bytes() == before
+        assert list(folder.glob("panel.db.corrupt*")) == []
+    finally:
+        folder.chmod(0o755)
+
+
+@pytest.mark.parametrize("pending", [False, True])
+async def test_write_lock_held_by_another_connection_is_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                                    caplog: pytest.LogCaptureFixture,
+                                                                    pending: bool) -> None:
+    path = tmp_path / "panel.db"
+    Database.open(path).close()
+    if pending:
+        _add_pending_migration(monkeypatch)
+    monkeypatch.setattr(dbmod, "BUSY_TIMEOUT_SECONDS", 0.1)
+    holder = sqlite3.connect(path, isolation_level=None)
+    holder.execute("BEGIN IMMEDIATE")
+    try:
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(DatabaseRefused) as info:
+                Database.open(path)
+    finally:
+        holder.execute("ROLLBACK")
+        holder.close()
+    assert info.value.reason == "unavailable"
+    assert _unavailable_codes(caplog) == ["SQLITE_BUSY"]
+
+
+async def test_migration_lock_failure_maps_to_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                          caplog: pytest.LogCaptureFixture) -> None:
+    path = tmp_path / "panel.db"
+    Database.open(path).close()
+    _add_pending_migration(monkeypatch)
+    monkeypatch.setattr(dbmod, "BUSY_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(dbmod, "_write_probe", lambda conn: None)   # reach the migration's own write lock
+    holder = sqlite3.connect(path, isolation_level=None)
+    holder.execute("BEGIN IMMEDIATE")
+    try:
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(DatabaseRefused) as info:
+                Database.open(path)
+    finally:
+        holder.execute("ROLLBACK")
+        holder.close()
+    assert info.value.reason == "unavailable"
+    assert _unavailable_codes(caplog) == ["SQLITE_BUSY"]
+
+
+async def test_hot_rollback_journal_is_unavailable_and_not_quarantined(tmp_path: Path) -> None:
+    """A rollback-journal DB left mid-transaction by a crash: a read-only inspect cannot roll the journal back."""
+    live_dir = tmp_path / "live"
+    live_dir.mkdir()
+    live = live_dir / "panel.db"
+    with contextlib.closing(sqlite3.connect(live)) as c:
+        c.execute("PRAGMA journal_mode = DELETE")
+        c.execute("CREATE TABLE t(x)")
+        c.executemany("INSERT INTO t VALUES (?)", [(i,) for i in range(50)])
+        c.commit()
+    writer = sqlite3.connect(live, isolation_level=None)
+    writer.execute("PRAGMA cache_size = 1")          # small cache: pages spill into the DB file mid-transaction
+    writer.execute("BEGIN IMMEDIATE")
+    writer.executemany("INSERT INTO t VALUES (?)", [("x" * 1000,) for _ in range(500)])
+    crashed = tmp_path / "crashed"
+    crashed.mkdir()
+    path = crashed / "panel.db"
+    path.write_bytes(live.read_bytes())
+    path.with_name("panel.db-journal").write_bytes(live.with_name("panel.db-journal").read_bytes())
+    writer.execute("ROLLBACK")
+    writer.close()
+
+    with pytest.raises(DatabaseRefused) as info:
+        Database.open(path)
+
+    assert info.value.reason == "unavailable"
+    assert list(crashed.glob("panel.db.corrupt*")) == []
+    assert path.with_name("panel.db-journal").exists()
+
+
+async def test_connect_closes_the_connection_when_setup_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    opened: list[sqlite3.Connection] = []
+    real_connect = sqlite3.connect
+
+    def spy(*args, **kwargs) -> sqlite3.Connection:
+        conn = real_connect(*args, **kwargs)
+        opened.append(conn)
+        return conn
+
+    def failing_probe(conn: sqlite3.Connection) -> None:
+        raise sqlite3.OperationalError("simulated failure after the PRAGMAs")
+
+    monkeypatch.setattr(dbmod.sqlite3, "connect", spy)
+    monkeypatch.setattr(dbmod, "_write_probe", failing_probe)
+    with pytest.raises(sqlite3.OperationalError):
+        Database._connect(tmp_path / "panel.db")
+
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError):
+        opened[0].execute("SELECT 1")                # closed: the failed setup did not leak it
+
+
+async def test_backup_directory_is_fsynced_after_the_backup_is_written(tmp_path: Path,
+                                                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "panel.db"
+    _make_legacy_v0(path)
+    backup = path.with_name(path.name + ".pre-v1")
+    real_fsync_dir = dbmod.fsync_dir
+    seen: list[tuple[Path, bool]] = []
+
+    def recording_fsync_dir(directory: Path) -> None:
+        seen.append((directory, backup.exists()))
+        real_fsync_dir(directory)
+
+    monkeypatch.setattr(dbmod, "fsync_dir", recording_fsync_dir)
+    Database.open(path).close()
+
+    assert (tmp_path, True) in seen
+
+
+async def test_checkpoint_truncates_the_wal(db: Database, tmp_path: Path) -> None:
+    wal = tmp_path / "d" / "panel.db-wal"
+    await db.run(lambda c: c.execute("INSERT INTO families (id, created_at) VALUES (1, 1)"))
+    await db.run(lambda c: c.execute("DELETE FROM families"))
+    assert wal.stat().st_size > 0
+    await db.checkpoint()
+    assert wal.stat().st_size == 0

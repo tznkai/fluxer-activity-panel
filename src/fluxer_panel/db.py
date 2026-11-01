@@ -21,7 +21,9 @@ from fluxer_panel.logs import log_event
 
 log = logging.getLogger(__name__)
 _MIGRATION = re.compile(r"(\d{4})_[a-z0-9_]+\.sql")
-SIDE_FILES = ("-wal", "-shm")
+SIDE_FILES = ("-wal", "-shm", "-journal")
+# How long a connection waits for another connection's write lock before the panel refuses (db_unavailable).
+BUSY_TIMEOUT_SECONDS = 5.0
 
 
 class DatabaseRefused(Exception):
@@ -54,14 +56,28 @@ def _integrity_ok(conn: sqlite3.Connection) -> bool:
 
 
 _CORRUPT_CODES = frozenset({sqlite3.SQLITE_NOTADB, sqlite3.SQLITE_CORRUPT})
+# Primary codes that mean "this process cannot use the file right now", not "the file is damaged".
+_UNAVAILABLE_CODES = frozenset({sqlite3.SQLITE_READONLY, sqlite3.SQLITE_CANTOPEN,
+                                sqlite3.SQLITE_BUSY, sqlite3.SQLITE_PERM})
+
+
+def _primary_code(exc: sqlite3.Error) -> int:
+    # compare the primary code: extended codes such as SQLITE_CORRUPT_INDEX (779) & 0xFF == SQLITE_CORRUPT
+    return getattr(exc, "sqlite_errorcode", 0) & 0xFF
+
+
+def _unavailable(exc: sqlite3.Error) -> DatabaseRefused:
+    """Log db_unavailable with the SQLite error name (no path, no message) and build the refusal."""
+    log_event(log, "db_unavailable", level=logging.ERROR, code=getattr(exc, "sqlite_errorname", "unknown"))
+    return DatabaseRefused("unavailable")
 
 
 def _inspect(path: Path) -> tuple[bool, int]:
     """(healthy, user_version) from a read-only connection; never modifies the file.
 
     Only real corruption (integrity not ok, SQLITE_NOTADB, SQLITE_CORRUPT) returns healthy=False and leads to
-    quarantine. Any other SQLite error (permissions, locked, read-only WAL recovery) raises
-    DatabaseRefused("unavailable") and leaves the file where it is.
+    quarantine. Any other SQLite error (permissions, locked, a hot rollback journal that needs a write to roll
+    back) raises DatabaseRefused("unavailable") and leaves the file where it is.
     """
     try:
         with contextlib.closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as conn:
@@ -69,11 +85,25 @@ def _inspect(path: Path) -> tuple[bool, int]:
                 return False, 0
             return True, conn.execute("PRAGMA user_version").fetchone()[0]
     except sqlite3.Error as exc:
-        # compare the primary code: extended codes such as SQLITE_CORRUPT_INDEX (779) & 0xFF == SQLITE_CORRUPT
-        if (getattr(exc, "sqlite_errorcode", 0) & 0xFF) in _CORRUPT_CODES:
+        if _primary_code(exc) in _CORRUPT_CODES:
             return False, 0
-        log_event(log, "db_unavailable", level=logging.ERROR, code=getattr(exc, "sqlite_errorname", "unknown"))
-        raise DatabaseRefused("unavailable") from None
+        raise _unavailable(exc) from None
+
+
+def _write_probe(conn: sqlite3.Connection) -> None:
+    """Prove the file can be written and its write lock taken, without changing anything.
+
+    A file that is not writable opens silently read-only, and BEGIN IMMEDIATE alone can still succeed on it,
+    so the probe attempts a write (the same user_version it read) and always rolls back. Nothing is committed,
+    so neither the DB file nor the WAL changes.
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        conn.execute(f"PRAGMA user_version = {int(version)}")
+    finally:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
 
 
 def _quarantine(path: Path) -> None:
@@ -112,24 +142,33 @@ class Database:
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="panel-db")
         try:
             conn = executor.submit(cls._connect, path).result()
-        except BaseException:
+        except BaseException as exc:
             executor.shutdown(wait=True)
+            if isinstance(exc, sqlite3.Error) and _primary_code(exc) in _UNAVAILABLE_CODES:
+                raise _unavailable(exc) from None
             raise
         db = cls(conn, executor)
         try:
             executor.submit(db._migrate, path, version, existed).result()
-        except BaseException:
+        except BaseException as exc:
             db.close()
+            if isinstance(exc, sqlite3.Error) and _primary_code(exc) in _UNAVAILABLE_CODES:
+                raise _unavailable(exc) from None
             raise
         return db
 
     @staticmethod
     def _connect(path: Path) -> sqlite3.Connection:
-        conn = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA synchronous = FULL")
-        conn.execute("PRAGMA secure_delete = ON")
+        conn = sqlite3.connect(path, isolation_level=None, check_same_thread=False, timeout=BUSY_TIMEOUT_SECONDS)
+        try:
+            conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = FULL")
+            conn.execute("PRAGMA secure_delete = ON")
+            _write_probe(conn)
+        except BaseException:
+            conn.close()
+            raise
         return conn
 
     def _migrate(self, path: Path, current: int, existed: bool) -> None:
@@ -143,6 +182,7 @@ class Database:
                 self._conn.backup(dest)
             finally:
                 dest.close()
+            fsync_dir(path.parent)      # the backup's directory entry must survive a crash before the migration commits
             log_event(log, "db_backup_written", count=pending[0][0])
         for version, sql in pending:
             try:

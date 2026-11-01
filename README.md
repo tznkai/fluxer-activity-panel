@@ -34,7 +34,7 @@ cannot be used safely, it exits with code 3 and logs one of these events. Nothin
 connected and the file is not written to except as described.
 
 - **`db_quarantined` or `db_quarantine_pending`**: the database was corrupt (or failed
-  its integrity check). The panel moved `panel.db` (and any `-wal`/`-shm` files) to
+  its integrity check). The panel moved `panel.db` (and any `-wal`, `-shm` or `-journal` files) to
   `panel.db.corrupt`, or `.corrupt.1` and so on on repeat. The panel refuses every
   start until the operator acts. Either restore `panel.db` from `panel.db.corrupt` if
   that file is recoverable, from a `panel.db.pre-v<N>` backup, or from an external
@@ -45,9 +45,21 @@ connected and the file is not written to except as described.
   schema version is higher than this build knows). The file is left unchanged. Deploy
   the code that knows that schema version (for example, the code was rolled back, and
   the newer release should be redeployed).
-- **`db_unavailable`**: the database exists but could not be opened (permissions, or a
-  lock held by another process). The file was not touched. Fix the file permissions or
-  release the lock, then start again.
+- **`db_unavailable`**: the database exists but this process cannot use it. The file was
+  not touched. The panel checks that it can write the database before it connects, so
+  this covers:
+  - a database file, or its directory, that is not writable (the panel needs to write the
+    database and its `-wal` and `-shm` files there). Fix the permissions, then start again.
+  - another connection holding the write lock for longer than 5 seconds. Stop the other
+    process, then start again.
+  - a `panel.db-journal` file next to `panel.db`. This is a pre-WAL rollback journal left
+    behind by an interrupted transaction, and the panel refuses to read past it. The panel
+    does not roll it back itself. Open the database once with a read-write SQLite client (for
+    example the `sqlite3` shell, where it is installed, running `PRAGMA user_version;`). That
+    open rolls the journal back and removes it. Do not delete the journal by hand.
+
+The panel does not prevent a second instance from running against the same database.
+Running two panels against one database is unsupported.
 
 Exit 1 with a `fatal_error` event means something else failed while opening the database,
 such as an unwritable data directory. That is not a refusal and does not quarantine anything.

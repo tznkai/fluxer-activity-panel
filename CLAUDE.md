@@ -80,7 +80,12 @@ Standalone project: `fluxer_client` (a reusable Fluxer REST and gateway client) 
 - Database: `db.py` owns the single SQLite connection. All DB work goes through `await db.run(fn)`, one transaction
   per call, on a single-thread executor. Startup order: read-only integrity and version check; quarantine (never reset
   to an empty DB) on corruption; refuse on a newer schema without touching the file; otherwise back up to
-  `<db>.pre-v<N>` and apply the numbered migrations. Never add an unused DB parameter to `Bot`.
+  `<db>.pre-v<N>` and apply the numbered migrations. `_connect` ends with a write probe (`BEGIN IMMEDIATE`, a
+  same-value `user_version` write, then `ROLLBACK`), so an unwritable file or a held write lock is found before any
+  network use. Primary codes READONLY, CANTOPEN, BUSY and PERM (from `_connect`, the probe or `_migrate`) map to
+  `db_unavailable` and `DatabaseRefused("unavailable")`; the file is not touched. Corruption codes quarantine.
+  The panel does not enforce a single instance: two panels on one DB are unsupported. Never add an unused DB
+  parameter to `Bot`.
 - Logging: panel code logs only through `log_event(logger, name, level=..., **fields)`. It never logs message content,
   user or channel names, or URLs. `clean_fields` allowlists the fields: id keys must be snowflakes, and other keys must be
   numbers, bools or identifier-like strings. Known exception: the last-resort handler in `__main__.main` calls

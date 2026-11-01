@@ -283,3 +283,25 @@ async def test_db_open_failure_exits_1_with_fatal_error_not_refusal(tmp_path):
     assert "fatal_error" in [e["event"] for e in json_lines(out)]
     assert TOKEN not in out + err
     assert "Traceback" not in err
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores file permissions")
+async def test_read_only_db_exits_3_as_unavailable_and_is_untouched(tmp_path):
+    db = tmp_path / "panel.db"
+    with contextlib.closing(sqlite3.connect(db)) as conn:
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("CREATE TABLE kept(x)")
+        conn.commit()
+    before = db.read_bytes()
+    db.chmod(0o444)
+    try:
+        code, out, err = await run_panel(child_env(tmp_path, DB_PATH=str(db)), tmp_path)
+    finally:
+        db.chmod(0o600)
+
+    assert code == 3
+    assert db.read_bytes() == before
+    assert not list(tmp_path.glob("panel.db.corrupt*"))
+    assert "db_unavailable" in [e["event"] for e in json_lines(out)]
+    assert TOKEN not in out + err
+    assert "Traceback" not in err
