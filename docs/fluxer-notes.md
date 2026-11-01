@@ -143,3 +143,7 @@ channel ID.
 - The interactive scripts must run in a real terminal. Any future live script that reads stdin needs the same.
 - `events.py` matched all observed shapes; no parser changes. Observed-shape fixtures are in `tests/test_events.py`.
 - `MESSAGE_REACTION_ADD_MANY` was not observed, and is left unparsed in this phase.
+
+## Panel smoke test (Phase 4)
+
+- 2026-11-01, server 2026.1031.154542: `python -m fluxer_panel` resolved endpoints, logged `ready`, answered an admin's DM `!admin ping` with `pong` (`admin_command` `ping`; a bare or unknown subcommand got the list, `admin_command` `unknown`), and on SIGTERM from `timeout` logged `shutting_down` then closed the gateway cleanly. No message content appeared in any log line.
