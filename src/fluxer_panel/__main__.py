@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Entry point: python -m fluxer_panel [run|purge]
 
-Exit codes: 0 clean stop, 1 fatal runtime or gateway error, 2 config or usage error.
+Exit codes: 0 clean stop, 1 fatal runtime or gateway error, 2 config or usage error,
+3 database refused (quarantined, schema newer than the code, or unavailable; see README).
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from fluxer_client.rest import FluxerREST, resolve_endpoints
 from fluxer_client.roles import RoleCache
 from fluxer_panel.bot import Bot
 from fluxer_panel.config import Config, ConfigError
+from fluxer_panel.db import Database, DatabaseRefused
 from fluxer_panel.logs import log_event, setup_logging
 
 log = logging.getLogger("fluxer_panel")
@@ -31,7 +33,8 @@ IDENTIFY_PROPERTIES = {"os": "linux", "browser": "fluxer-activity-panel", "devic
 USAGE = "usage: python -m fluxer_panel [run|purge]"
 
 
-async def run(config: Config) -> None:
+async def run(config: Config, db: Database) -> None:
+    # `db` is accepted now so Phase 6 can start the purge task; nothing in this phase reads it.
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -72,7 +75,7 @@ async def run(config: Config) -> None:
         stop_task.cancel()
 
 
-def purge_once(config: Config) -> int:
+def purge_once(config: Config, db: Database) -> int:
     """Stub until Phase 6."""
     log_event(log, "purge_not_implemented", level=logging.WARNING)
     return 0
@@ -91,15 +94,24 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     setup_logging(config.log_level, config.token)
     try:
+        db = Database.open(config.db_path)
+    except DatabaseRefused:
+        return 3        # db.py already logged db_quarantined / db_quarantine_pending / db_schema_newer / db_unavailable
+    except Exception:  # noqa: BLE001 - e.g. a failing migration or mkdir: redacted JSON log, never a raw traceback
+        log.exception("fatal_error")
+        return 1
+    try:
         if command == "purge":
-            return purge_once(config)
-        asyncio.run(run(config))
+            return purge_once(config, db)
+        asyncio.run(run(config, db))
     except FatalGatewayError:
         log_event(log, "gateway_fatal", level=logging.ERROR)
         return 1
     except Exception:  # noqa: BLE001 - last resort: log (redacted) and exit 1, never a raw traceback on stderr
         log.exception("fatal_error")
         return 1
+    finally:
+        db.close()
     return 0
 
 

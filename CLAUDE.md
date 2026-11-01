@@ -60,6 +60,11 @@ Standalone project: `fluxer_client` (a reusable Fluxer REST and gateway client) 
 - `src/fluxer_panel/config.py`: `Config.from_env()` reads `FLUXER_TOKEN`, `FLUXER_INSTANCE_URL` or `FLUXER_API_URL`,
   `FLUXER_GATEWAY_URL`, `ADMIN_USER_IDS` (required), `COMMAND_PREFIX`, `LOG_LEVEL`, `DATA_DIR`, `DB_PATH`,
   `PURGE_STATUS_PATH` and `PURGE_INTERVAL_SECONDS`. Errors name the variable, never its value. The token is not in `repr`.
+- `src/fluxer_panel/fsutil.py`: `atomic_write`, `fsync_dir`, `next_free_path` and `quarantine_target` (never overwrites).
+- `src/fluxer_panel/db.py`: `Database.open`, `Database.run`, `DatabaseRefused` (`reason` is `quarantined`,
+  `schema_newer` or `unavailable`) and `LATEST_VERSION`.
+- `src/fluxer_panel/migrations/`: numbered SQL migrations (`NNNN_name.sql`), contiguous from 0001. No `BEGIN`/`COMMIT`
+  or `PRAGMA user_version` inside a file: the runner adds them.
 - `src/fluxer_panel/logs.py`: `log_event`, `clean_fields`, `JsonFormatter` and `setup_logging`.
 - `src/fluxer_panel/admin.py`: `authorize`, `parse_command` and `handle` for `<prefix>admin <sub>` (`ping` only).
 - `src/fluxer_panel/bot.py`: `Bot.on_dispatch` routes typed gateway events. Guild messages are ignored; DMs go to `admin.handle`.
@@ -69,7 +74,13 @@ Standalone project: `fluxer_client` (a reusable Fluxer REST and gateway client) 
 ## fluxer_panel rules
 
 - Exit codes: 0 clean stop (a signal, or a gateway that returns without error); 1 fatal runtime or gateway error
-  (`FatalGatewayError` or any uncaught exception); 2 config or usage error. Exit code 3 arrives in Phase 5.
+  (`FatalGatewayError` or any uncaught exception, including a failure to open the DB that is not a refusal); 2 config
+  or usage error; 3 database refused (`DatabaseRefused`: quarantined, schema newer, or unavailable). The DB is opened
+  before `asyncio.run`, so a refused DB exits before any network connection. Recovery steps: README "Exit 3".
+- Database: `db.py` owns the single SQLite connection. All DB work goes through `await db.run(fn)`, one transaction
+  per call, on a single-thread executor. Startup order: read-only integrity and version check; quarantine (never reset
+  to an empty DB) on corruption; refuse on a newer schema without touching the file; otherwise back up to
+  `<db>.pre-v<N>` and apply the numbered migrations. Never add an unused DB parameter to `Bot`.
 - Logging: panel code logs only through `log_event(logger, name, level=..., **fields)`. It never logs message content,
   user or channel names, or URLs. `clean_fields` allowlists the fields: id keys must be snowflakes, and other keys must be
   numbers, bools or identifier-like strings. Known exception: the last-resort handler in `__main__.main` calls

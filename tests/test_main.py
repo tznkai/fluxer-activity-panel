@@ -9,9 +9,11 @@ The child runs with cwd=tmp_path. Every wait is bounded, and a child still alive
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import signal
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -21,6 +23,7 @@ import pytest
 from aiohttp import web
 
 from fluxer_panel.__main__ import IDENTIFY_PROPERTIES
+from fluxer_panel.db import LATEST_VERSION
 from tests.fakes import (
     GATEWAY_STATE,
     FakeFluxerState,
@@ -119,6 +122,8 @@ async def test_sigterm_after_ready_exits_zero(aiohttp_server, tmp_path):
     assert TOKEN not in out
     assert TOKEN not in err.decode()
     assert "Traceback" not in err.decode()
+    with contextlib.closing(sqlite3.connect(tmp_path / "data" / "panel.db")) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == LATEST_VERSION
     gateway_state = gateway_app[GATEWAY_STATE]
     assert gateway_state.errors == []
     [identify] = [f for f in gateway_state.connections[0] if f.get("op") == 2]
@@ -235,3 +240,46 @@ async def test_purge_stub_exits_0_with_not_implemented_line(tmp_path):
     assert code == 0
     assert "purge_not_implemented" in [e["event"] for e in json_lines(out)]
     assert TOKEN not in out + err
+
+
+async def test_garbage_db_exits_3_and_is_quarantined(tmp_path):
+    db = tmp_path / "panel.db"
+    db.write_bytes(b"not a database" * 100)
+    code, out, err = await run_panel(child_env(tmp_path, DB_PATH=str(db)), tmp_path)
+
+    assert code == 3
+    assert not db.exists()
+    assert (tmp_path / "panel.db.corrupt").exists()
+    assert "db_quarantined" in [e["event"] for e in json_lines(out)]
+    assert TOKEN not in out + err
+    assert "Traceback" not in err
+
+
+async def test_newer_schema_exits_3_and_leaves_file_unchanged(tmp_path):
+    db = tmp_path / "panel.db"
+    with contextlib.closing(sqlite3.connect(db)) as conn:
+        conn.execute("CREATE TABLE future(x)")
+        conn.execute("PRAGMA user_version = 99")
+        conn.commit()
+    before = db.read_bytes()
+    mtime = db.stat().st_mtime_ns
+    code, out, err = await run_panel(child_env(tmp_path, DB_PATH=str(db)), tmp_path)
+
+    assert code == 3
+    assert db.read_bytes() == before
+    assert db.stat().st_mtime_ns == mtime
+    assert sorted(p.name for p in tmp_path.glob("panel.db*")) == ["panel.db"]
+    assert "db_schema_newer" in [e["event"] for e in json_lines(out)]
+    assert TOKEN not in out + err
+    assert "Traceback" not in err
+
+
+async def test_db_open_failure_exits_1_with_fatal_error_not_refusal(tmp_path):
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+    code, out, err = await run_panel(child_env(tmp_path, DATA_DIR=str(blocker / "data")), tmp_path)
+
+    assert code == 1
+    assert "fatal_error" in [e["event"] for e in json_lines(out)]
+    assert TOKEN not in out + err
+    assert "Traceback" not in err
