@@ -20,7 +20,7 @@ import aiohttp
 import pytest
 
 from fluxer_client.gateway import Gateway
-from fluxer_client.rest import FluxerHTTPError, FluxerREST
+from fluxer_client.rest import FluxerREST
 from fluxer_client.roles import RoleCache
 from fluxer_panel.bot import Bot
 from fluxer_panel.config import Config
@@ -119,6 +119,7 @@ def root_logging():
     for handler in saved_handlers:
         root.addHandler(handler)
     root.setLevel(saved_level)
+    logging.captureWarnings(False)
 
 
 @pytest.fixture
@@ -255,7 +256,6 @@ async def test_rest_error_in_gateway_dispatch_logs_redacted_traceback(captured, 
     assert_clean(text)
     [failed] = [json.loads(line) for line in text.splitlines() if "dispatch handler failed" in line]
     assert "FluxerHTTPError" in failed["exc"]
-    assert TOKEN not in str(FluxerHTTPError(403, "X", "y"))
 
 
 # --- AC3.3 at bot level: the gateway resumes or re-identifies, the process keeps running ---

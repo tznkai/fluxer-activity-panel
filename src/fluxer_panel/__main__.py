@@ -36,26 +36,40 @@ async def run(config: Config) -> None:
     stop = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
-    async with aiohttp.ClientSession(timeout=HTTP_TIMEOUT) as session:
-        api, gateway_url = await resolve_endpoints(
-            session, token=config.token, instance_url=config.instance_url,
-            api_url=config.api_url, gateway_url=config.gateway_url)
-        log_event(log, "endpoints_resolved")             # URLs are instance details: not logged
-        rest = FluxerREST(session, api, config.token)
-        bot = Bot(rest=rest, config=config, roles=RoleCache(rest))
-        gateway = Gateway(session, gateway_url, config.token, bot.on_dispatch, properties=IDENTIFY_PROPERTIES)
-        gw_task = asyncio.create_task(gateway.run())
-        stop_task = asyncio.create_task(stop.wait())
-        done, _ = await asyncio.wait({gw_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
-        if gw_task in done:
-            stop_task.cancel()
-            gw_task.result()      # re-raises FatalGatewayError
-            return
-        log_event(log, "shutting_down")
-        await gateway.stop()
-        gw_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await gw_task
+    stop_task = asyncio.create_task(stop.wait())
+    try:
+        async with aiohttp.ClientSession(timeout=HTTP_TIMEOUT) as session:
+            # Discovery can take up to HTTP_TIMEOUT per request: a stop signal must not wait for it.
+            resolve_task = asyncio.create_task(resolve_endpoints(
+                session, token=config.token, instance_url=config.instance_url,
+                api_url=config.api_url, gateway_url=config.gateway_url))
+            try:
+                await asyncio.wait({resolve_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                if not resolve_task.done():
+                    resolve_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await resolve_task
+            if resolve_task.cancelled():          # a stop signal arrived first
+                log_event(log, "shutting_down")
+                return
+            api, gateway_url = resolve_task.result()      # re-raises a discovery error
+            log_event(log, "endpoints_resolved")             # URLs are instance details: not logged
+            rest = FluxerREST(session, api, config.token)
+            bot = Bot(rest=rest, config=config, roles=RoleCache(rest))
+            gateway = Gateway(session, gateway_url, config.token, bot.on_dispatch, properties=IDENTIFY_PROPERTIES)
+            gw_task = asyncio.create_task(gateway.run())
+            done, _ = await asyncio.wait({gw_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+            if gw_task in done:
+                gw_task.result()      # re-raises FatalGatewayError
+                return
+            log_event(log, "shutting_down")
+            await gateway.stop()
+            gw_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await gw_task
+    finally:
+        stop_task.cancel()
 
 
 def purge_once(config: Config) -> int:

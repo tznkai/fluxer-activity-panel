@@ -190,6 +190,45 @@ async def test_discovery_500_exits_1_with_fatal_error_and_no_token(aiohttp_serve
     assert "Traceback" not in err
 
 
+SHUTDOWN_BOUND = 5  # seconds: a stop during discovery must not wait for the discovery request (30 s timeout)
+
+
+async def test_sigterm_during_discovery_exits_zero_promptly(aiohttp_server, tmp_path):
+    discovery_seen = asyncio.Event()
+    release = asyncio.Event()
+
+    async def hanging_well_known(request: web.Request) -> web.Response:
+        discovery_seen.set()
+        await asyncio.wait_for(release.wait(), BOUND)   # hangs until the test lets go
+        return web.Response(status=500, text="released")
+
+    app = web.Application()
+    app.router.add_get("/.well-known/fluxer", hanging_well_known)
+    server = await aiohttp_server(app)
+    env = child_env(tmp_path, FLUXER_INSTANCE_URL=str(server.make_url("/")))
+
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, "-m", "fluxer_panel", env=env, cwd=str(tmp_path),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        await asyncio.wait_for(discovery_seen.wait(), BOUND)   # ready: discovery is in flight
+        proc.send_signal(signal.SIGTERM)
+        out, err = await asyncio.wait_for(proc.communicate(), SHUTDOWN_BOUND)
+    finally:
+        release.set()
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+
+    assert proc.returncode == 0
+    events = [e["event"] for e in json_lines(out.decode())]
+    assert "shutting_down" in events
+    assert "endpoints_resolved" not in events
+    assert TOKEN not in out.decode() + err.decode()
+    assert "Traceback" not in err.decode()
+
+
 async def test_purge_stub_exits_0_with_not_implemented_line(tmp_path):
     code, out, err = await run_panel(child_env(tmp_path), tmp_path, "purge")
 

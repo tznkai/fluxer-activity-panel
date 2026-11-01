@@ -58,18 +58,39 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(data, ensure_ascii=True, default=str)
 
 
+def token_variants(token: str) -> list[str]:
+    """The token as it can appear in text: raw, and escaped by repr() or json.dumps() (e.g. inside a %r)."""
+    if not token:
+        return []
+    variants = {
+        token,
+        repr(token)[1:-1],
+        json.dumps(token)[1:-1],
+        token.replace("\\", "\\\\").replace("'", "\\'"),
+        token.replace("\\", "\\\\").replace('"', '\\"'),
+    }
+    variants.discard("")
+    return sorted(variants, key=len, reverse=True)   # longest first: an escaped form contains the raw one's pieces
+
+
 class TokenRedactionFilter(logging.Filter):
     """Handler-level backstop: replaces the token in the message, args and traceback before formatting."""
 
     def __init__(self, token: str) -> None:
         super().__init__()
-        self._token = token
+        self._variants = token_variants(token)
 
     def _redact(self, text: str) -> str:
-        return text.replace(self._token, "[REDACTED]") if self._token else text
+        for variant in self._variants:
+            text = text.replace(variant, "[REDACTED]")
+        return text
 
     def filter(self, record: logging.LogRecord) -> bool:
-        record.msg = self._redact(record.getMessage())
+        try:
+            message = record.getMessage()
+        except Exception:  # noqa: BLE001 - a malformed call must not raise into the caller (stdlib would swallow it)
+            message = f"{record.msg!s} (unformattable args)"
+        record.msg = self._redact(message)
         record.args = None
         if record.exc_info:
             record.exc_text = self._redact(logging.Formatter().formatException(record.exc_info))
@@ -82,7 +103,11 @@ class TokenRedactionFilter(logging.Filter):
 
 
 def setup_logging(level: str, token: str, stream: TextIO | None = None) -> logging.Handler:
-    """Replace root handlers with one JSON handler on stdout (or `stream`); returns it (tests remove it)."""
+    """Replace root handlers with one JSON handler on stdout (or `stream`); returns it (tests remove it).
+
+    Also routes `warnings` through logging so warning text gets the same JSON format and redaction.
+    Tests that call this must restore it with `logging.captureWarnings(False)`.
+    """
     handler = logging.StreamHandler(stream if stream is not None else sys.stdout)
     handler.setFormatter(JsonFormatter())
     handler.addFilter(TokenRedactionFilter(token))
@@ -91,4 +116,5 @@ def setup_logging(level: str, token: str, stream: TextIO | None = None) -> loggi
         root.removeHandler(old)
     root.addHandler(handler)
     root.setLevel(level)
+    logging.captureWarnings(True)
     return handler

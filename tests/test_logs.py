@@ -4,7 +4,8 @@
 
 import json
 import logging
-from collections.abc import Iterator
+import warnings
+from collections.abc import Callable, Iterator
 from io import StringIO
 
 import pytest
@@ -13,21 +14,37 @@ from fluxer_panel.logs import log_event, setup_logging
 
 TOKEN = "SENTINEL-TOKEN-7f3a9c"
 CONTENT = "SENTINEL-CONTENT-b41e"
+ESCAPY = 'SENT-"\'-\\-7f3a9c'   # quote, apostrophe and backslash: repr() and json.dumps() both escape it
 
 
 @pytest.fixture
-def captured() -> Iterator[StringIO]:
-    """setup_logging replaces every root handler and the root level: save and restore both."""
+def install() -> Iterator[Callable[[str], StringIO]]:
+    """setup_logging replaces every root handler and the root level, and captures warnings: undo all three."""
     root = logging.getLogger()
     saved_handlers = root.handlers[:]
     saved_level = root.level
-    stream = StringIO()
-    setup_logging("DEBUG", TOKEN, stream)
+
+    def _install(token: str) -> StringIO:
+        stream = StringIO()
+        setup_logging("DEBUG", token, stream)
+        return stream
+
     try:
-        yield stream
+        yield _install
     finally:
         root.handlers[:] = saved_handlers
         root.setLevel(saved_level)
+        logging.captureWarnings(False)
+
+
+@pytest.fixture
+def captured(install) -> StringIO:
+    return install(TOKEN)
+
+
+@pytest.fixture
+def captured_escapy(install) -> StringIO:
+    return install(ESCAPY)
 
 
 def lines(stream: StringIO) -> list[str]:
@@ -36,6 +53,12 @@ def lines(stream: StringIO) -> list[str]:
 
 def parsed(stream: StringIO) -> list[dict]:
     return [json.loads(line) for line in lines(stream)]
+
+
+def assert_no_token_forms(text: str, token: str) -> None:
+    """The raw token, and its repr() and json.dumps() escaped forms, must all be absent."""
+    for form in {token, repr(token)[1:-1], json.dumps(token)[1:-1]}:
+        assert form not in text
 
 
 def test_allowlist_keeps_known_keys_and_drops_content_and_guild_snowflake(captured):
@@ -110,3 +133,43 @@ def test_token_in_chained_cause_is_redacted(captured):
     (record,) = parsed(captured)
     assert "[REDACTED]" in record["exc"]
     assert TOKEN not in captured.getvalue()
+
+
+def test_mismatched_format_args_do_not_raise_and_still_redact(captured):
+    log = logging.getLogger("x")
+    log.warning(f"bad {TOKEN} %s %s", 1)            # stdlib would raise TypeError from getMessage()
+    log.warning("two args, one given %s %s", TOKEN)
+    records = parsed(captured)
+    assert len(records) == 2
+    assert records[0]["event"] == "bad [REDACTED] %s %s (unformattable args)"
+    assert records[1]["event"] == "two args, one given %s %s (unformattable args)"   # args are dropped, not printed
+    assert_no_token_forms(captured.getvalue(), TOKEN)
+
+
+def test_repr_escaped_token_in_args_is_redacted(captured_escapy):
+    logging.getLogger("x").warning("headers %r and raw %s", ESCAPY, ESCAPY)
+    (record,) = parsed(captured_escapy)
+    assert record["event"] == "headers '[REDACTED]' and raw [REDACTED]"   # %r keeps its own quotes
+    assert_no_token_forms(captured_escapy.getvalue(), ESCAPY)
+
+
+def test_repr_escaped_token_in_exception_traceback_is_redacted(captured_escapy):
+    log = logging.getLogger("x")
+    try:
+        raise RuntimeError(f"gateway connection failed: {ESCAPY!r}")
+    except RuntimeError:
+        log.exception("gateway connection failed: %r", ESCAPY)
+    (record,) = parsed(captured_escapy)
+    assert "[REDACTED]" in record["exc"]
+    assert_no_token_forms(captured_escapy.getvalue(), ESCAPY)
+
+
+def test_warning_text_with_token_is_json_and_redacted(captured):
+    with warnings.catch_warnings():
+        warnings.simplefilter("always")               # -W error would otherwise raise instead of showing it
+        warnings.warn(f"leaky {TOKEN}", UserWarning, stacklevel=1)
+    (record,) = parsed(captured)
+    assert record["logger"] == "py.warnings"
+    assert record["level"] == "WARNING"
+    assert "[REDACTED]" in record["event"]
+    assert_no_token_forms(captured.getvalue(), TOKEN)
