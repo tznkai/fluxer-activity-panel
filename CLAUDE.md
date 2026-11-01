@@ -3,125 +3,123 @@
 
 # Fluxer Activity Panel
 
-Last verified: 2026-10-31
+Last verified: 2026-11-01
 
-Standalone project: `fluxer_client` (a reusable Fluxer REST and gateway client) and, from Phase 4,
-`fluxer_panel` (the activity panel built on it). `README.md` has the user-facing description.
+Standalone project with two packages under `src/`: `fluxer_client` (a panel-agnostic Fluxer REST and
+gateway client) and `fluxer_panel` (the activity panel bot built on it). `README.md` has the
+user-facing description, the purge status file format and the "Exit 3" recovery steps.
 
 ## Purpose and boundary
 
-- `fluxer_client` (`src/fluxer_client/`) is the shared Fluxer layer. It never imports `fluxer_panel`.
-- `fluxer_panel` (`src/fluxer_panel/`) is the activity panel. It imports only from `fluxer_client`'s public modules.
-- No code here imports the source bot package. A test (`tests/test_repo_hygiene.py`) enforces this.
+- `fluxer_client` never imports `fluxer_panel`. `fluxer_panel` imports only `fluxer_client`'s public modules.
+- No code here imports the source bot package (`tests/test_repo_hygiene.py` enforces both).
+
+## Layout
+
+- `src/fluxer_client/`: `ids.py` (snowflake checks), `rest.py` (REST client), `gateway.py`, `events.py`
+  (gateway dispatches to frozen dataclasses; unknown or malformed payloads give `None` and log the field name only),
+  `roles.py`.
+- `src/fluxer_panel/`: `__main__.py` (`run|purge` entry point), `config.py`, `db.py` (single SQLite connection),
+  `migrations/` (numbered SQL, see Database), `purge.py`, `admin.py`, `bot.py`, `logs.py`, `fsutil.py`.
+- `tests/`: pytest suite. `tests/fakes.py` holds the fake REST and gateway servers. `tests/test_review_refs.py`
+  and `tests/test_repo_hygiene.py` are the structural checks.
+- `tools/live/`: hand-run live scripts and the shared harness `_live.py` (see Live tools).
+- `docs/`: `panel-brief.md` (the brief), `fluxer-notes.md` (live-run observations, recorded against a server build),
+  `fluxer-game-panel.mermaid` (diagram).
+- `REVIEW.md`: review guide. Its references are checked by `tests/test_review_refs.py`.
+- `.github/workflows/ci.yml`: the CI workflow.
 
 ## Commands (run from this directory)
 
-- Venv: `uv venv -p 3.12 .venv` then `uv pip install --python .venv/bin/python -e '.[dev]'`
+- Setup: `uv venv -p 3.12 .venv` then `uv pip install --python .venv/bin/python -e '.[dev]'`
 - Tests: `.venv/bin/python -m pytest -q -W error` (warnings are errors)
 - Lint: `.venv/bin/ruff check src tests tools`
 - Licensing: `.venv/bin/reuse --root . lint`
-- Run the panel: `.venv/bin/python -m fluxer_panel [run|purge]` (`run` is the default). `purge` runs one retention purge and exits; it never connects to Fluxer.
-  Config comes from the environment only. The code never loads `.env`; the operator sources it in their shell.
-- CI (`.github/workflows/ci.yml`) runs these three on every push and pull request.
+- Run: `.venv/bin/python -m fluxer_panel [run|purge]` (`run` is the default). `purge` runs one retention purge,
+  writes the status file and exits without connecting to Fluxer.
+- CI runs exactly these three checks on every push and pull request.
+- Config comes from environment variables only (names in `config.py` and `.env.example`). The code never loads
+  `.env`; the operator sources it in the shell.
 
 ## Rules
 
 - This directory is public: it is published by git subtree split. Keep it self-contained.
 - No secrets, IDs, hostnames or instance details in tracked files. Test fixtures use fake values
   (`"1001"`, `"https://fluxer.invalid"`). Never write a run of 15+ digits.
-- Never read or print `.env`. `.env.example` is the template and is the only tracked env file.
+- Never read or print `.env`. `.env.example` is the only tracked env file.
 - Every new file needs an SPDX header or a `REUSE.toml` entry, or `reuse lint` fails.
 - Do not modify `../green-oaks-bot`. It is the source of the copied client code and is read-only here.
+- Do not re-add the source bot's imports (card rendering, Pillow). `fluxer_client` was cut loose from them on purpose.
 
-## Layout
+## REVIEW.md
 
-- `src/fluxer_client/ids.py`, `rest.py`, `gateway.py`, `roles.py`: the client modules.
-- `src/fluxer_client/events.py`: parses gateway dispatches into frozen dataclasses; unknown or malformed payloads return `None` and log the field name only.
-- `rest.py` `encode_emoji(emoji)`: validates a reaction emoji and percent-encodes unicode (or passes `name:id` custom emoji).
-- `rest.py` `UNSET`: sentinel for "argument not given", distinct from `None` (which means JSON null).
-- `rest.py` `FluxerREST.edit_message(channel_id, message_id, *, content, embeds)`: PATCH with only the fields given.
-- `rest.py` `FluxerREST.add_reaction(channel_id, message_id, emoji)`: PUT the caller's reaction.
-- `rest.py` `FluxerREST.remove_reaction(channel_id, message_id, emoji, user_id)`: DELETE one user's reaction.
-- `rest.py` `FluxerREST.add_member_role(guild_id, user_id, role_id, *, reason)`: PUT a member role, with an optional audit reason.
-- `rest.py` `FluxerREST.remove_member_role(guild_id, user_id, role_id, *, reason)`: DELETE a member role, with an optional audit reason.
-- `rest.py` `FluxerREST.open_dm(user_id)`: POST to open or reuse a DM channel and return its id.
-- `tests/fakes.py`: fake Fluxer REST and gateway servers used by the tests.
-- `tools/live/_live.py`: the shared harness for the hand-run live scripts (never run by CI; they need a local `.env`).
-  `load_env` refuses unless the required variables are set; `check_safety` refuses unless the channel is in the guild,
-  the user is a member and the guild has at most 2 members. Refusals name the check, never a value. `Redactor` replaces
-  the token with `[REDACTED]`, known ids with labels and other 15+ digit runs with `<id>`; `out()` is the only print path.
-  `main()` exits 0 on pass, 1 on any FAIL or error (type and redacted message, no traceback), 2 on a refusal and 130 on Ctrl+C.
-  The redactor is resolved when an error is printed, so it applies even when the error happens inside the run.
-  Scripts wait for the operator with `wait_for_enter()` (stdin read in a daemon thread), never `input()` or
-  `to_thread(input)`: a blocked non-daemon read keeps Ctrl+C from exiting 130 until Enter is pressed.
-- `tools/live/` scripts: `reactions.py` (guild and DM reaction add and remove), `edit.py` (edit content and embeds),
-  `reaction_remove.py` (removal with and without Manage Messages), `roles.py` (member role add and remove) and
-  `dm.py` (open a DM, send, receive the reply and re-open).
-- `src/fluxer_panel/config.py`: `Config.from_env()` reads `FLUXER_TOKEN`, `FLUXER_INSTANCE_URL` or `FLUXER_API_URL`,
-  `FLUXER_GATEWAY_URL`, `ADMIN_USER_IDS` (required), `COMMAND_PREFIX`, `LOG_LEVEL`, `DATA_DIR`, `DB_PATH`,
-  `PURGE_STATUS_PATH` and `PURGE_INTERVAL_SECONDS`. Errors name the variable, never its value. The token is not in `repr`.
-- `src/fluxer_panel/fsutil.py`: `atomic_write`, `fsync_dir`, `next_free_path` and `quarantine_target` (never overwrites).
-- `src/fluxer_panel/db.py`: `Database.open`, `Database.run`, `DatabaseRefused` (`reason` is `quarantined`,
-  `schema_newer` or `unavailable`) and `LATEST_VERSION`.
-- `src/fluxer_panel/migrations/`: numbered SQL migrations (`NNNN_name.sql`), contiguous from 0001. No `BEGIN`/`COMMIT`
-  or `PRAGMA user_version` inside a file: the runner adds them.
-- `src/fluxer_panel/logs.py`: `log_event`, `clean_fields`, `JsonFormatter` and `setup_logging`.
-- `src/fluxer_panel/admin.py`: `authorize`, `parse_command` and `handle` for `<prefix>admin <sub>` (`ping` only).
-- `src/fluxer_panel/bot.py`: `Bot.on_dispatch` routes typed gateway events. Guild messages are ignored; DMs go to `admin.handle`.
-- `src/fluxer_panel/__main__.py`: `main()` parses `run|purge`, loads config, sets up logging and runs. `run()` resolves
-  endpoints, then stops on SIGINT or SIGTERM and logs `shutting_down`. The purge task starts once the gateway task exists
-  and is cancelled and awaited on every exit. `purge_once` runs one purge for the `purge` subcommand.
-- `src/fluxer_panel/purge.py`: `purge` (one transaction), `run_purge` (purge, checkpoint, status file; never raises
-  except cancellation), `purge_loop` (purge now, then every interval) and `write_status`.
+`REVIEW.md` lists security- and privacy-sensitive spots as `path:line` references with the text expected on that
+line. `tests/test_review_refs.py` checks every reference, so a code move or edit that shifts an anchor fails the test.
+Any change that moves referenced code must update `REVIEW.md` in the same change.
 
 ## fluxer_panel rules
 
 - Exit codes: 0 clean stop (a signal, or a gateway that returns without error); 1 fatal runtime or gateway error
   (`FatalGatewayError` or any uncaught exception, including a failure to open the DB that is not a refusal); 2 config
-  or usage error; 3 database refused (`DatabaseRefused`: quarantined, schema newer, or unavailable). The DB is opened
-  before `asyncio.run`, so a refused DB exits before any network connection. Recovery steps: README "Exit 3".
-- Database: `db.py` owns the single SQLite connection. All DB work goes through `await db.run(fn)`, one transaction
-  per call, on a single-thread executor. Startup order: read-only integrity and version check; quarantine (never reset
-  to an empty DB) on corruption; refuse on a newer schema without touching the file; otherwise back up to
-  `<db>.pre-v<N>` and apply the numbered migrations. `_connect` ends with a write probe (`BEGIN IMMEDIATE`, a
-  same-value `user_version` write, then `ROLLBACK`), so an unwritable file or a held write lock is found before any
-  network use. `_check_directory` runs right after the `mkdir` and before any lookup in the directory: it refuses
-  with `db_unavailable` unless `os.access` says the directory is readable and searchable (`SQLITE_CANTOPEN`) and
-  writable (`SQLITE_READONLY`). A `PermissionError` from `mkdir` is also `db_unavailable`; other `mkdir` errors
-  stay exit 1. `_check_writable` runs next, before `_inspect`, and refuses with `db_unavailable` when `os.access`
-  says the existing DB file is not readable or writable. Both must come first: `exists()` needs the search bit,
-  the `.corrupt*` glob needs the read bit (an unreadable directory makes it silently return nothing), and even the
-  read-only `_inspect` connection creates `-wal` and `-shm` for a WAL-mode DB. They are pre-checks only; the probe
-  stays authoritative.
-  Primary codes READONLY, CANTOPEN, BUSY and PERM (from `_connect`, the probe or `_migrate`) map to
-  `db_unavailable` and `DatabaseRefused("unavailable")`; the file is not touched. Corruption codes quarantine.
-  The panel does not enforce a single instance: two panels on one DB are unsupported. Never add an unused DB
-  parameter to `Bot`.
+  or usage error; 3 database refused (`DatabaseRefused`: quarantined, schema newer or unavailable). The DB is opened
+  before `asyncio.run`, so a refused DB exits before any network connection.
 - Logging: panel code logs only through `log_event(logger, name, level=..., **fields)`. It never logs message content,
-  user or channel names, or URLs. `clean_fields` allowlists the fields: id keys must be snowflakes, and other keys must be
-  numbers, bools or identifier-like strings. Known exception: the last-resort handler in `__main__.main` calls
-  `log.exception("fatal_error")`. A traceback can carry any exception text, so no code enforces the no-URL rule there.
-  `fluxer_client` records (gateway and rest) are plain-text messages that only get token redaction and may contain URLs and exception text.
-- `setup_logging` replaces the root handlers with one JSON handler on stdout. It installs `TokenRedactionFilter`, which
-  replaces the token, raw and repr- or json-escaped up to three nested levels (`_ESCAPE_ROUNDS` in `logs.py`), in the
-  message, args and traceback. Example: a token repr'd into an exception message that is then logged with `%r` is two
-  levels. Deeper nesting is not covered. A malformed format call does not raise. It also calls `logging.captureWarnings(True)`, so Python warnings are JSON lines too.
-- Retention purge (`purge.py`): a non-recurring session is deleted when `ends_at` is more than 7 days before now, and
-  a recurring session when `recurrence_until` is more than 7 days before now. An open-ended series (`recurrence_until`
-  NULL) is never purged. RSVPs go with their session by `ON DELETE CASCADE`. A request is deleted when `created_at` is
-  more than 30 days before now, whatever its status. Cutoffs are strict: a row exactly at a cutoff is kept. One
-  transaction per run, then a WAL checkpoint.
-- Purge schedule: `run` purges at startup and then every `PURGE_INTERVAL_SECONDS` (default 3600). A failed purge logs
-  `purge_failed`, is recorded in the status file, and the bot keeps running.
-- Status file: `PURGE_STATUS_PATH` (default `DATA_DIR/purge-status.json`), written atomically after every attempt with
-  mode 0644 so a monitor running as another user can read it. It holds only timestamps and counts: `last_success_at`
-  (unix seconds, or null until the first success; a failed attempt keeps the previous value), `last_attempt_at`, `ok`,
-  `deleted` (`sessions`, `rsvps`, `requests`; zeros on failure) and `schema_version` (1).
-  A checkpoint failure after the commit is reported as `ok: false` with zero `deleted`, but the rows may already be gone;
-  the next run checkpoints again.
-  Monitoring rule: alert when `last_success_at` is null or older than twice `PURGE_INTERVAL_SECONDS`.
-- `purge` subcommand: one purge and one status write. Exit 0 on success, 1 when the purge failed, 2 on a config error,
-  3 when the DB is refused. It needs the same config as `run`, but never touches the network.
-- Authorization: `admin.authorize` is the single authorization check. It requires a DM (no guild id), a non-bot author,
-  and an author id in `ADMIN_USER_IDS`. Every admin command goes through `handle`, which calls `authorize` before acting.
-  A denial logs `admin_denied`.
+  user or channel names, or URLs. `clean_fields` allowlists fields: id keys must be snowflakes, other keys must be
+  numbers, bools or identifier-like strings. Known exception: `__main__.main` calls `log.exception("fatal_error")`,
+  and no code enforces the no-URL rule for traceback text there. `fluxer_client` records are plain text that only
+  get token redaction and may contain URLs.
+- `setup_logging` installs one JSON stdout handler with `TokenRedactionFilter`, which replaces the token (raw and
+  repr- or json-escaped up to three nested levels, `_ESCAPE_ROUNDS`) in message, args and traceback. Deeper nesting
+  is not covered. It also calls `logging.captureWarnings(True)`.
+- Token handling: the token is `repr=False` in `Config`, config errors name the variable and never its value, and
+  the token goes only in the `Authorization` header or the gateway identify/resume frames.
+- Admin: `admin.authorize` is the single check: DM only (no guild id), non-bot author, author id in
+  `ADMIN_USER_IDS`. Every admin command goes through `handle`, which calls `authorize` first. Denials log `admin_denied`.
+  The bot ignores its own and other bots' messages before routing.
+- No code in `fluxer_panel` calls the role methods yet. Role changes are a privilege change: a future caller must
+  check the role allowlist and hierarchy before the call, because Fluxer returns the same 403 for a hierarchy refusal
+  and a missing permission.
+
+## Database
+
+- `db.py` owns the single SQLite connection. All DB work goes through `await db.run(fn)`: one transaction per call,
+  on a single-thread executor.
+- Startup order: read-only integrity and version check; quarantine on corruption (never reset to an empty DB);
+  refuse a newer schema without touching the file; otherwise back up to `<db>.pre-v<N>` and apply pending migrations.
+  The directory and file pre-checks (`_check_directory`, `_check_writable`) run before any lookup or `_inspect`,
+  and the write probe in `_connect` stays authoritative.
+- Primary codes READONLY, CANTOPEN, BUSY and PERM map to `DatabaseRefused("unavailable")` and leave the file alone.
+  Only corruption codes quarantine. Quarantine moves files aside under new names and never overwrites.
+- Schema: every table is `STRICT`. Ids are `TEXT` with CHECKs that they are digits only and at most 25 long; names are not
+  stored. The snowflake bound is 25 in code and schema; Fluxer documents at most 19, so do not tighten without a new migration.
+- Migrations: `src/fluxer_panel/migrations/NNNN_name.sql`, numbered and contiguous from `0001`. Never edit a migration
+  after release; add a new file instead. Do not put `BEGIN`, `COMMIT` or `PRAGMA user_version` in a file: the runner adds them.
+- `secure_delete = ON` is set, so purged rows do not survive in free pages. `.pre-v<N>` backups are not covered by that
+  and keep rows purged before they were taken.
+
+## Retention purge (`purge.py`)
+
+- A non-recurring session expires when `ends_at` is more than 7 days ago. A recurring session expires when
+  `recurrence_until` is more than 7 days ago. An open-ended series (`recurrence_until` NULL) is never purged.
+  RSVPs go with their session by `ON DELETE CASCADE`.
+- A request expires when `created_at` is more than 30 days ago, whatever its status.
+- Cutoffs are strict: a row exactly at a cutoff is kept. One transaction per run, then a WAL checkpoint.
+- `run` purges at startup and then every `PURGE_INTERVAL_SECONDS`. A failed purge logs `purge_failed`, is recorded
+  in the status file, and the bot keeps running.
+- The status file (`PURGE_STATUS_PATH`, default `DATA_DIR/purge-status.json`) is written atomically, mode 0644, and
+  holds only timestamps and counts. A checkpoint failure after the commit is reported as `ok: false` with zero counts,
+  though the rows may already be gone.
+- `purge` subcommand exit codes: 0 success, 1 purge failed, 2 config error, 3 database refused.
+
+## Live tools (`tools/live/`)
+
+- Hand-run only. CI never runs them, and they need a local `.env`.
+- Only the private guild may be used. `check_safety` refuses unless the channel is in the guild, the user is a member
+  and the guild has at most two members.
+- Never print the token or raw ids. `Redactor` replaces the token with `[REDACTED]`, labels known ids and replaces any
+  other 15+ digit run with `<id>`. `out()` is the only print path. Error output is the exception type and redacted message.
+- Exit codes: 0 pass; 1 any FAIL or error; 2 refusal; 130 Ctrl+C.
+- Scripts wait with `wait_for_enter()` (a daemon-thread read), never `input()`, so Ctrl+C still exits 130.
+  Run them in a real terminal, not a non-interactive prompt.
+- Scripts: `reactions.py`, `edit.py`, `reaction_remove.py`, `roles.py`, `dm.py`. Removal is exercised only in a guild channel;
+  DM removal is untested (see `docs/fluxer-notes.md`).
