@@ -25,7 +25,11 @@ in this run, except where a section below says so.
 - Identify without an `intents` field was accepted. Re-confirmed in this run: reaction events arrived
   with identify sending no intents.
 - On guild MESSAGE_CREATE, `author.bot` is present (`true` for bot-sent messages) and `member.roles`
-  is present (an array of snowflake strings). Re-confirmed only for guild messages; see the DM section below.
+  is present (an array of snowflake strings). These were NOT re-observed in this run: no script in
+  `tools/live/` captures a guild MESSAGE_CREATE, so these facts come from the green-oaks-bot run only.
+  The DM MESSAGE_CREATE differs (no `guild_id`, no `member`, no `bot` key for humans); see the `dm.py`
+  section below. `member.roles` was re-observed in this run on guild MESSAGE_REACTION_ADD and
+  MESSAGE_REACTION_REMOVE payloads, not on MESSAGE_CREATE.
 
 ## reactions.py (AC2.1)
 
@@ -131,8 +135,9 @@ channel ID.
   parser already reads it.
 - Hierarchy refusals and missing-permission refusals both return 403 `MISSING_PERMISSIONS`. Do not branch on the
   code to tell them apart; check role hierarchy before calling the API.
-- `content: null` on an edit clears the message content to an empty string. An embed-only edit should send
-  `content` explicitly as needed.
+- To make a message embed-only, send `content: null` on the edit. The text is erased and the embed is kept.
+- To change only the embed and keep the text, omit `content` (the client's `UNSET`). Sending `null` erases
+  the text, so never send `content: null` in that case.
 - No edit rate limit was seen in 6 rapid edits. The panel must still handle 429 generically, since the limit is
   unmeasured.
 - The interactive scripts must run in a real terminal. Any future live script that reads stdin needs the same.
