@@ -369,6 +369,13 @@ async def wait_for_enter() -> str:
     return await future
 
 
+def use_redactor(redactor: Redactor) -> None:
+    """Registers the redactor that main() uses when it reports an error. A script that does not call live() calls
+    this as soon as it builds its Redactor, so an escaped exception is redacted the same way as script output."""
+    global _redactor
+    _redactor = redactor
+
+
 def error_redactor() -> Redactor:
     """The live() redactor, resolved when an error is reported (live() sets it after the run has started).
     Before live() has loaded a token there is nothing to redact but long ids."""

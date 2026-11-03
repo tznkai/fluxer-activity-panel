@@ -9,18 +9,34 @@ Schedule names, the Panel URL and the API key are never printed.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 
 import aiohttp
+from yarl import URL
 
-from _live import LiveRefused, Redactor, Results, main, out, read_env, redacted_logging, require_vars
+from _live import LiveRefused, Redactor, Results, main, out, read_env, redacted_logging, require_vars, use_redactor
 from fluxer_panel.sources.base import PowerAction, SourceError
 from fluxer_panel.sources.pterodactyl import PterodactylManager, Schedule, parse_schedules, select_next
 
 SERVER_ID = re.compile(r"[0-9a-f]{8}")
 EXPECTED_PERMISSIONS = frozenset({"schedule.read", "websocket.connect"})   # websocket.connect is forced by the Panel
 REQUIRED = ("PTERODACTYL_URL", "PTERODACTYL_API_KEY", "LIVE_PTERO_SERVERS")
+
+
+def ptero_secrets(env: Mapping[str, str]) -> tuple[str, ...]:
+    """Values the redactor must hide: the Panel URL, its host (an aiohttp error names host:port, not the URL), and the
+    bot token. Empty values are left out."""
+    host = URL(env["PTERODACTYL_URL"]).host
+    candidates = (env["PTERODACTYL_URL"], host, env.get("FLUXER_TOKEN"))
+    return tuple(value for value in candidates if value)
+
+
+def ptero_redactor(env: Mapping[str, str]) -> Redactor:
+    """The script's redactor, registered for main()'s error line before any request is made."""
+    redactor = Redactor(token=env["PTERODACTYL_API_KEY"], extra_secrets=ptero_secrets(env))
+    use_redactor(redactor)
+    return redactor
 
 
 def parse_server_ids(raw: str) -> list[str]:
@@ -99,8 +115,7 @@ async def run() -> Results:
     env = read_env()
     require_vars(env, REQUIRED)
     servers = parse_server_ids(env["LIVE_PTERO_SERVERS"])
-    redactor = Redactor(token=env["PTERODACTYL_API_KEY"],
-                        extra_secrets=(env["PTERODACTYL_URL"], env.get("FLUXER_TOKEN", "")))
+    redactor = ptero_redactor(env)
     res = Results(redactor)
     now = datetime.now(UTC)
     with redacted_logging(redactor):

@@ -781,3 +781,73 @@ def test_parse_verdict_maps_y_n_and_notes(line, expected):
 def test_burst_line_counts_successes_rate_limits_and_other_errors():
     line = markup_live.burst_line([None, None, 429, 429, 500], 1.234)
     assert line == "edits=5 ok=2 rate_limited_429=2 other_errors=1 seconds=1.23"
+
+
+# Scripts that do not call live() register their redactor, so main() redacts an escaped error. The fixture restores
+# the registered redactor after each test, so a registration never leaks into another test.
+PANEL_HOST = ".".join(["panel", "invalid"])
+PANEL_URL = "https://" + PANEL_HOST + ":8443/"
+PANEL_KEY = "ptero" + "-KEY-SECRET"
+PROBE_HOST = ".".join(["probe", "invalid"])
+
+
+@pytest.fixture
+def unregistered_error_redactor(monkeypatch):
+    monkeypatch.setattr(_live, "_redactor", None)
+
+
+def test_error_line_is_redacted_by_the_registered_redactor(unregistered_error_redactor, capsys):
+    _live.use_redactor(Redactor(token=PANEL_KEY, extra_secrets=(PANEL_URL, PANEL_HOST)))
+
+    async def failing_run():
+        raise RuntimeError(f"cannot reach {PANEL_HOST}:443 with key {PANEL_KEY}")
+
+    with pytest.raises(SystemExit) as info:
+        _live.main(failing_run)
+
+    assert info.value.code == 1
+    assert capsys.readouterr().out.strip() == "ERROR RuntimeError: cannot reach [REDACTED]:443 with key [REDACTED]"
+
+
+def test_error_redactor_is_empty_when_no_script_registered_one(unregistered_error_redactor):
+    assert _live.error_redactor().token == ""
+
+
+def test_ptero_secrets_cover_the_panel_url_its_host_and_the_bot_token():
+    env = {"PTERODACTYL_URL": PANEL_URL, "PTERODACTYL_API_KEY": PANEL_KEY, "FLUXER_TOKEN": "bot-token-value"}
+    assert ptero_live.ptero_secrets(env) == (PANEL_URL, PANEL_HOST, "bot-token-value")
+
+
+def test_ptero_secrets_skip_a_host_that_is_not_there_and_a_missing_bot_token():
+    assert ptero_live.ptero_secrets({"PTERODACTYL_URL": "/relative/path"}) == ("/relative/path",)
+
+
+def test_a_panel_error_naming_the_host_is_redacted_through_ptero_redactor(unregistered_error_redactor, capsys):
+    env = {"PTERODACTYL_URL": PANEL_URL, "PTERODACTYL_API_KEY": PANEL_KEY}
+    ptero_live.ptero_redactor(env)
+
+    async def failing_run():
+        raise RuntimeError(f"{PANEL_HOST}:443 rejected {PANEL_KEY}")
+
+    with pytest.raises(SystemExit):
+        _live.main(failing_run)
+
+    out = capsys.readouterr().out
+    assert PANEL_HOST not in out
+    assert PANEL_KEY not in out
+    assert "ERROR RuntimeError: [REDACTED]:443 rejected [REDACTED]" in out
+
+
+def test_a_probe_error_naming_the_target_is_redacted_through_probe_redactor(unregistered_error_redactor, capsys):
+    env = {"FLUXER_TOKEN": "bot-token-value"}
+    probes_live.probe_redactor(env, [probes_live.Target(kind="a2s", host=PROBE_HOST, port=27015)])
+
+    async def failing_run():
+        raise RuntimeError(f"probe of {PROBE_HOST}:27015 failed")
+
+    with pytest.raises(SystemExit):
+        _live.main(failing_run)
+
+    out = capsys.readouterr().out
+    assert PROBE_HOST not in out
+    assert "ERROR RuntimeError: probe of [REDACTED]:27015 failed" in out

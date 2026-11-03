@@ -9,10 +9,20 @@ labelled <target#n> and <port#n>. An unreachable target is recorded with its rea
 from __future__ import annotations
 
 import re
-from collections.abc import Collection
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 
-from _live import LiveRefused, Redactor, Results, main, out, read_env, redacted_logging, require_vars
+from _live import (
+    LiveRefused,
+    Redactor,
+    Results,
+    main,
+    out,
+    read_env,
+    redacted_logging,
+    require_vars,
+    use_redactor,
+)
 from fluxer_panel.sources.base import ProbeFailed, ProbeResult
 from fluxer_panel.sources.registry import PROBES
 
@@ -53,11 +63,18 @@ def probe_summary(result: ProbeResult | ProbeFailed) -> str:
     return " ".join([f"reachable counts={result.counts.online}/{result.counts.max}", *details])
 
 
+def probe_redactor(env: Mapping[str, str], targets: Sequence[Target]) -> Redactor:
+    """The script's redactor, with each target host hidden and registered for main()'s error line."""
+    redactor = Redactor(token=env.get("FLUXER_TOKEN", ""), extra_secrets=tuple(target.host for target in targets))
+    use_redactor(redactor)
+    return redactor
+
+
 async def run() -> Results:
     env = read_env()
     require_vars(env, ("LIVE_PROBES",))
     targets = parse_probe_targets(env["LIVE_PROBES"], PROBES.keys())
-    redactor = Redactor(token=env.get("FLUXER_TOKEN", ""), extra_secrets=tuple(target.host for target in targets))
+    redactor = probe_redactor(env, targets)
     res = Results(redactor)
     with redacted_logging(redactor):
         for target in targets:

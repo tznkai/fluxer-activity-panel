@@ -127,8 +127,8 @@ No code in `src/fluxer_panel` calls `add_member_role` or `remove_member_role` in
 - `tools/live/_live.py:225` `LIVE_USER_ID is not a member of LIVE_GUILD_ID` — a 404 on the membership check refuses. A mistyped user id never gets a DM.
 - `tools/live/_live.py:236` `"Authorization": f"Bot {env['FLUXER_TOKEN']}"` — the version capture sends the token in a header and prints nothing from it.
 - `tools/live/_live.py:250` `def gateway_failure(` — a gateway failure reports only the exception's type name. Its message is never printed, since it may echo the token or a payload.
-- `tools/live/_live.py:372` `def error_redactor(` — resolved at the moment an error is printed, so a redactor set up later in the run still applies.
-- `tools/live/_live.py:391` `f"ERROR {type(exc).__name__}: {exc}"` — error output is the type and the redacted message only, with no traceback.
+- `tools/live/_live.py:379` `def error_redactor(` — resolved at the moment an error is printed, so a redactor set up later in the run still applies.
+- `tools/live/_live.py:398` `f"ERROR {type(exc).__name__}: {exc}"` — error output is the type and the redacted message only, with no traceback.
 
 ## .env handling
 
