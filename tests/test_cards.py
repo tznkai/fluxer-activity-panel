@@ -440,6 +440,46 @@ async def test_set_text_channel_replaces_only_its_own_slot(db: Database) -> None
     assert card.text_channels == (Voice("1001", "1002", "general", True), Voice("1001", "1004", "new", True), None)
 
 
+@pytest.mark.parametrize("slot", [1, 2, 3])
+async def test_replacing_a_verified_link_with_an_unverified_one_drops_the_name(db: Database, slot: int) -> None:
+    card_id = await _create(db)
+    await db.run(lambda c: cards.set_text_channel(c, card_id, slot, Voice("1001", "1003", "general", True)))
+    await db.run(lambda c: cards.set_text_channel(c, card_id, slot, Voice("1001", "1003", None, False)))
+
+    card = await _get(db, "alpha")
+
+    assert card is not None
+    assert card.text_channels[slot - 1] == Voice("1001", "1003", None, False)
+
+
+async def test_set_text_channel_name_if_renames_only_slot_two_when_both_slots_hold_one_channel(db: Database) -> None:
+    card_id = await _create(db)
+    await db.run(lambda c: cards.set_text_channel(c, card_id, 1, Voice("1001", "1003", "Old", True)))
+    await db.run(lambda c: cards.set_text_channel(c, card_id, 2, Voice("1001", "1003", "Old", True)))
+
+    changed = await db.run(lambda c: cards.set_text_channel_name_if(
+        c, card_id, 2, Voice("1001", "1003", "Old", True), "New"))
+
+    assert changed is True
+    card = await _get(db, "alpha")
+    assert card is not None
+    assert card.text_channels == (Voice("1001", "1003", "Old", True), Voice("1001", "1003", "New", True), None)
+
+
+async def test_set_text_channel_name_if_refuses_an_expected_verified_link_over_an_unverified_one(db: Database) -> None:
+    card_id = await _create(db)
+    stored = Voice("1001", "1003", None, False)
+    await db.run(lambda c: cards.set_text_channel(c, card_id, 2, stored))
+
+    changed = await db.run(lambda c: cards.set_text_channel_name_if(
+        c, card_id, 2, Voice("1001", "1003", None, True), "New"))
+
+    assert changed is False
+    card = await _get(db, "alpha")
+    assert card is not None
+    assert card.text_channels[1] == stored
+
+
 async def test_clear_text_channel_removes_only_its_slot(db: Database) -> None:
     card_id = await _create(db)
     await db.run(lambda c: cards.set_text_channel(c, card_id, 1, Voice("1001", "1002", "a", True)))
