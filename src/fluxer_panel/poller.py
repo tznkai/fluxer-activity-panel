@@ -263,10 +263,10 @@ class Poller:
             log_event(log, "card_message_recreated", card_id=card_id)
             await self._post(card_id, channel_id, rendered, payload)
             return
-        # Conditional: a message deleted while the edit was in flight is not written back.
-        stored = await self._db.run(lambda c: cards.set_hash_if(c, card_id, channel_id, message_id, rendered))
-        if stored:
-            await self._undo_if_deleted(channel_id, message_id)
+        # Conditional: a message deleted while the edit was in flight is not written back. A delete that commits
+        # before this write leaves the card without the message, and one that commits after it clears the message,
+        # so no undo is needed here.
+        await self._db.run(lambda c: cards.set_hash_if(c, card_id, channel_id, message_id, rendered))
 
     async def _undo_if_deleted(self, channel_id: str, message_id: str) -> None:
         """A message that was deleted before its id was stored is forgotten, and the card is posted again."""
