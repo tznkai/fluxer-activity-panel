@@ -9,7 +9,8 @@ import re
 
 from fluxer_panel import card_fields, text
 from fluxer_panel.card_commands import PREVIEW_LIMIT, SETTABLE, help_fields_reply
-from fluxer_panel.sources.registry import PROBES
+from fluxer_panel.sources import registry
+from fluxer_panel.sources.registry import PROBES, known_manager_kinds
 
 TEXT_FIELDS = ("title", "description", "join", "first_time", "location")
 
@@ -67,6 +68,17 @@ def test_probe_kinds_and_show_items_in_the_help_are_the_ones_the_code_accepts() 
         assert kind in lines["probe"]
     for item in ("map", "version", "game_mode"):
         assert item in lines["show"]
+
+
+def test_manager_kinds_in_the_help_are_the_registry_kinds_in_sorted_order(monkeypatch) -> None:
+    # Extra kinds go into the registry, so the help must list them and not one hard-coded name. The set's own order is
+    # hash-dependent per process; with eight kinds, an unsorted listing is almost never the sorted one.
+    for name in ("kind-b", "kind-c", "kind-d", "kind-e", "kind-f", "kind-g", "kind-h"):
+        monkeypatch.setitem(registry.MANAGER_FACTORIES, name, lambda session, config: None)
+    line = _field_lines()["manager"]
+    for kind in known_manager_kinds():
+        assert kind in line
+    assert "|".join(sorted(known_manager_kinds())) in line
 
 
 def test_each_help_reply_fits_one_message() -> None:

@@ -94,7 +94,7 @@ HELP_FIELDS = (
     "text_channel3: a text channel, as voice: <community id> <channel id> or a pasted channel link.\n"
     "address: <host>:<port>, the server address. An IPv6 host goes in brackets: [host]:port.\n"
     "address_public: yes or no (default no). Shows the address outside Fluxer. Needs an address first.\n"
-    "manager: pterodactyl <8-character server id>.\n"
+    "manager: <kind> <ref>, kind one of {manager_kinds}. The ref is the id that kind expects.\n"
     "probe: <{probe_kinds}> <host> <port>.\n"
     "show: any of {show_items}, comma separated, or none."
 )

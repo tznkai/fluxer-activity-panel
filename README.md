@@ -107,9 +107,9 @@ file means the bot has never run a purge.
 ## Cards
 
 Admins manage cards by direct message with `!card` commands. A card is one message in the games
-channel. It shows how to join, what a first-timer should know, and optional extras: a voice
-channel, up to three text channels, a server address, an in-person location and seats. A card for a game server can also
-show a status line, such as Asleep, Waking up or Ready with a player count.
+channel. It shows how to join, what a first-timer should know, and optional extras: a voice channel,
+up to three text channels, a server address, an in-person location and seats. A card for a game
+server can also show a status line, such as Asleep, Waking up or Ready with a player count.
 
 ### Lifecycle
 
