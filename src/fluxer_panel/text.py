@@ -75,6 +75,8 @@ HELP_COMMANDS = (
     "!card list: every card, by sort order\n"
     "!card publish <slug>: make the card live\n"
     "!card archive <slug>: remove the posted message and keep the card\n"
+    "!card subscribe <slug> <channel>: post a copy of the card in another text channel\n"
+    "!card unsubscribe <slug> <channel>: remove that copy and stop posting there\n"
     "!card help fields: each field, its format and its limits\n"
     "Fields: title, description, join, first_time, sort, seats, location, voice, text_channel1, text_channel2, "
     "text_channel3, address, address_public, manager, probe, show"
@@ -122,6 +124,24 @@ CHANNEL_KIND_TEXT = "a text channel"
 CHANNEL_OTHER_COMMUNITY = "That channel is in a different community."
 CHANNEL_RETRY = "I couldn't reach Fluxer to check that channel. Try again in a minute."
 PROBE_ALERT = "Heads up: card {slug} reports its server running, but the game isn't answering queries."
+# Card subscriptions: a copy of a card in another text channel. The channel is shown as a mention, the only input here.
+SUBSCRIPTION_USAGE = ("Usage: !card subscribe <slug> <channel>, where <channel> is a channel link or "
+                      "<community id> <channel id>.")
+UNSUBSCRIBE_USAGE = "Usage: !card unsubscribe <slug> <channel>, with the channel given as for subscribe."
+SUBSCRIBED = "Subscribed. The card will post in that channel on the next check."
+SUBSCRIPTION_RESUMED = "Resumed. The card will post in that channel on the next check."
+SUBSCRIPTION_ALREADY = "That channel is already subscribed to this card."
+SUBSCRIPTION_LIMIT = "A card can be subscribed to at most {limit} channels. Unsubscribe one first."
+SUBSCRIPTION_IS_GAMES = "That is the games channel, where the card is already posted."
+SUBSCRIPTION_NOT_IN_COMMUNITY = "I can't post there: the bot isn't in that community."
+SUBSCRIPTION_NOT_FOUND = "That channel isn't subscribed to this card."
+UNSUBSCRIBED = "Unsubscribed. The copy in that channel is removed."
+UNSUBSCRIBED_COPY_LEFT = ("Unsubscribed, but I couldn't remove the copy in <#{channel_id}>, so it is still there. "
+                          "Delete it by hand.")
+SUBSCRIPTIONS_HEADING = "Subscribed channels:"
+SUBSCRIPTION_PAUSED_SUFFIX = " (paused)"
+SUBSCRIPTION_PAUSED_ALERT = ("Heads up: Fluxer refused the bot's card post in <#{channel_id}>, so that copy is paused. "
+                             "Run !card subscribe for that channel to resume it. !card show lists each card's channels.")
 # The summary board: one message in the games channel. None of these strings contains user input.
 BOARD_TITLE = "Games"
 BOARD_EMPTY = "No games are live."

@@ -218,7 +218,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/card_commands.py:247` `if channel.get("type") != channel_type:` — the channel must be the type its slot takes: a voice channel for the voice slot, a text channel for a text slot.
 - `src/fluxer_panel/card_commands.py:30` `TEXT_CHANNEL_TYPE = 0` — the text channel type. It is Discord's value and is not yet confirmed on a live instance; `tools/live/markup_live.py` prints the posting channel's type so the operator can check it.
 - `src/fluxer_panel/card_commands.py:249` `str(channel.get("guild_id")) != guild_id` — the channel must belong to the community the admin named.
-- `src/fluxer_panel/card_commands.py:417` `cards.set_state(conn, card_id, "archived", now)` — archive keeps the card row and its slots. It clears the message and sets the state, so the card can be read again.
+- `src/fluxer_panel/card_commands.py:424` `cards.set_state(conn, card_id, "archived", now)` — archive keeps the card row and its slots. It clears the message and sets the state, so the card can be read again.
 
 ## Card poller
 

@@ -15,7 +15,7 @@ import aiohttp
 
 from fluxer_client.events import MessageCreate
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
-from fluxer_panel import card_fields, cards, render, text
+from fluxer_panel import card_fields, cards, render, subscriptions, text
 from fluxer_panel.cards import SHOW_ITEMS, CardFieldError, ChannelLink
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
@@ -32,7 +32,7 @@ _CHANNEL_KINDS = {VOICE_CHANNEL_TYPE: text.CHANNEL_KIND_VOICE, TEXT_CHANNEL_TYPE
 CHANNEL_NAME_MAX = 100
 LIST_CHUNK = 1900  # UTF-16 units: a list message stays under Fluxer's 2000-unit message limit
 PREVIEW_LIMIT = 2000  # Fluxer's message content limit
-SUBCOMMANDS = ("new", "set", "clear", "show", "list", "publish", "archive", "help")
+SUBCOMMANDS = ("new", "set", "clear", "show", "list", "publish", "archive", "subscribe", "unsubscribe", "help")
 SETTABLE = ("title", "description", "join", "first_time", "sort", "seats", "location", "voice",
             "text_channel1", "text_channel2", "text_channel3", "address", "address_public", "manager", "probe", "show")
 CLEARABLE = ("description", "join", "first_time", "sort", "seats", "location", "voice",
@@ -310,6 +310,12 @@ async def _show(event: MessageCreate, ctx: CardContext, rest: str) -> _Result:
     label = text.SHOW_OUTSIDE_LABEL
     body = render.fit(render.escape(render.outside_text(card, None, None)), PREVIEW_LIMIT - render.units(label) - 1)
     await _say(ctx, event, label + "\n" + body)
+    # Only a card with subscriptions gets this message, so a card without them shows exactly what it always did.
+    subs = await ctx.db.run(lambda c: subscriptions.list_for_card(c, card.id))
+    if subs:
+        lines = [text.SUBSCRIPTIONS_HEADING]
+        lines += [f"<#{sub.channel_id}>" + (text.SUBSCRIPTION_PAUSED_SUFFIX if sub.paused else "") for sub in subs]
+        await _say(ctx, event, "\n".join(lines))
     return _Result(card.id)
 
 
@@ -400,26 +406,129 @@ async def _archive(event: MessageCreate, ctx: CardContext, rest: str) -> _Result
         if current.state == "archived":
             await _say(ctx, event, text.ALREADY_ARCHIVED)
             return _Result(card_id)
+        # The card's message first, then every subscription copy. Any copy that cannot be deleted stops the archive
+        # before anything is stored, so a retry finds the same messages; a copy already gone counts as deleted.
+        copies = await ctx.db.run(lambda c: subscriptions.list_for_card(c, card_id))
+        posted = [(sub.channel_id, sub.message_id) for sub in copies if sub.message_id is not None]
         if current.channel_id and current.message_id:
-            try:
-                await ctx.rest.delete_message(current.channel_id, current.message_id)
-            except FluxerHTTPError as exc:
-                if exc.status != 404:
-                    await _say(ctx, event, text.ARCHIVE_RETRY)
-                    return _Result(card_id)
-            except (aiohttp.ClientError, TimeoutError):
+            posted.insert(0, (current.channel_id, current.message_id))
+        for channel_id, message_id in posted:
+            if not await _delete_copy(ctx.rest, channel_id, message_id):
                 await _say(ctx, event, text.ARCHIVE_RETRY)
                 return _Result(card_id)
         now = int(ctx.clock())
 
         def archive_tx(conn: Any) -> None:
             cards.set_message(conn, card_id, None, None, None)
+            subscriptions.clear_messages(conn, card_id)
             cards.set_state(conn, card_id, "archived", now)
 
         await ctx.db.run(archive_tx)
     ctx.kick()
     await _say(ctx, event, text.CARD_ARCHIVED)
     return _Result(card_id)
+
+
+async def _delete_copy(rest: FluxerREST, channel_id: str, message_id: str) -> bool:
+    """Deletes one posted message. True when it is gone: deleted, or already a 404. False for any other failure, which
+    is logged with the channel id and the exception type only."""
+    try:
+        await rest.delete_message(channel_id, message_id)
+    except FluxerHTTPError as exc:
+        if exc.status == 404:
+            return True
+        log_event(log, "copy_delete_failed", level=logging.WARNING, channel_id=channel_id,
+                  reason=type(exc).__name__)
+        return False
+    except (aiohttp.ClientError, TimeoutError) as exc:
+        log_event(log, "copy_delete_failed", level=logging.WARNING, channel_id=channel_id,
+                  reason=type(exc).__name__)
+        return False
+    return True
+
+
+# subscribe, unsubscribe ------------------------------------------------------------------------------
+
+async def _subscribe(event: MessageCreate, ctx: CardContext, rest: str) -> _Result:
+    parts = rest.split(maxsplit=1)
+    if len(parts) != 2:
+        await _say(ctx, event, text.SUBSCRIPTION_USAGE)
+        return _Result()
+    slug_raw, target = parts
+    try:
+        guild_id, channel_id = card_fields.channel_target("channel", target)
+    except CardFieldError:
+        await _say(ctx, event, text.SUBSCRIPTION_USAGE)
+        return _Result()
+    card = await _find(ctx, slug_raw)
+    if card is None:
+        await _say(ctx, event, text.NO_SUCH_CARD)
+        return _Result()
+    if channel_id == ctx.config.games_channel_id:
+        await _say(ctx, event, text.SUBSCRIPTION_IS_GAMES)
+        return _Result(card.id)
+    # The lock is shared with the poller and archive, so a subscription cannot change under a post or an archive.
+    async with ctx.locks.get(card.id):
+        reply = await _subscribe_locked(ctx, card.id, guild_id, channel_id)
+    await _say(ctx, event, reply)
+    return _Result(card.id)
+
+
+async def _subscribe_locked(ctx: CardContext, card_id: int, guild_id: str, channel_id: str) -> str:
+    """Adds or resumes one subscription, under the card lock. An active one is refused before any Fluxer request, and a
+    full card too. A new or paused channel is checked with the same flow as a card's text channel slot: the bot must be
+    in the community, and the channel must be a text channel of it."""
+    existing = await ctx.db.run(lambda c: subscriptions.get(c, card_id, channel_id))
+    if existing is not None and not existing.paused:
+        return text.SUBSCRIPTION_ALREADY
+    limit_reply = text.SUBSCRIPTION_LIMIT.format(limit=subscriptions.MAX_SUBSCRIPTIONS)
+    if existing is None and await ctx.db.run(lambda c: subscriptions.count(c, card_id)) >= subscriptions.MAX_SUBSCRIPTIONS:
+        return limit_reply
+    link, reply = await _check_channel(ctx.rest, guild_id, channel_id, TEXT_CHANNEL_TYPE)
+    if link is None:
+        return reply
+    if not link.verified:
+        return text.SUBSCRIPTION_NOT_IN_COMMUNITY
+    try:
+        if existing is None:
+            await ctx.db.run(lambda c: subscriptions.add(c, card_id, guild_id, channel_id))
+            done = text.SUBSCRIBED
+        else:
+            await ctx.db.run(lambda c: subscriptions.resume(c, card_id, channel_id))
+            done = text.SUBSCRIPTION_RESUMED
+    except subscriptions.SubscriptionFull:
+        return limit_reply
+    ctx.kick()
+    return done
+
+
+async def _unsubscribe(event: MessageCreate, ctx: CardContext, rest: str) -> _Result:
+    """Deletes the copy and removes the row. A copy the bot cannot delete (any failure but a 404) still loses its row, is
+    logged, and the reply says the copy is still there. Unsubscribing is final, unlike archive, which keeps the rows."""
+    parts = rest.split(maxsplit=1)
+    if len(parts) != 2:
+        await _say(ctx, event, text.UNSUBSCRIBE_USAGE)
+        return _Result()
+    slug_raw, target = parts
+    try:
+        _, channel_id = card_fields.channel_target("channel", target)
+    except CardFieldError:
+        await _say(ctx, event, text.UNSUBSCRIBE_USAGE)
+        return _Result()
+    card = await _find(ctx, slug_raw)
+    if card is None:
+        await _say(ctx, event, text.NO_SUCH_CARD)
+        return _Result()
+    async with ctx.locks.get(card.id):
+        sub = await ctx.db.run(lambda c: subscriptions.get(c, card.id, channel_id))
+        if sub is None:
+            reply = text.SUBSCRIPTION_NOT_FOUND
+        else:
+            copy_gone = sub.message_id is None or await _delete_copy(ctx.rest, channel_id, sub.message_id)
+            await ctx.db.run(lambda c: subscriptions.remove(c, card.id, channel_id))
+            reply = text.UNSUBSCRIBED if copy_gone else text.UNSUBSCRIBED_COPY_LEFT.format(channel_id=channel_id)
+    await _say(ctx, event, reply)
+    return _Result(card.id)
 
 
 # help ------------------------------------------------------------------------------------------------
@@ -462,5 +571,7 @@ _HANDLERS: dict[str, Callable[[MessageCreate, CardContext, str], Any]] = {
     "list": _list,
     "publish": _publish,
     "archive": _archive,
+    "subscribe": _subscribe,
+    "unsubscribe": _unsubscribe,
     "help": _help,
 }
