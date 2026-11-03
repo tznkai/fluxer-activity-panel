@@ -746,7 +746,7 @@ async def test_list_of_astral_titles_keeps_every_message_within_the_message_limi
     contents = [payload["content"] for payload in world.payloads()]
     assert len(contents) > 1
     assert all(render.units(content) <= 2000 for content in contents)
-    listed = [line.split(" · ")[0] for content in contents for line in content.splitlines()]
+    listed = [line.split(" \u00b7 ")[0] for content in contents for line in content.splitlines()]
     assert listed == [f"a{n:02d}" for n in range(20)]
 
 
