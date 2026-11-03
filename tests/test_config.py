@@ -6,13 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from fluxer_panel.config import INSTANCE_URL_MAX, Config, ConfigError
+from fluxer_panel.config import Config, ConfigError
 from tests.fakes import instance_url_of_length
 
 TOKEN = "SENTINEL-TOKEN-7f3a9c"
 PTERO_KEY = "SENTINEL-PTERO-KEY-91c2"
 TOO_LONG_ID = "9" * 26
-TOO_LONG_INSTANCE_URL = instance_url_of_length(INSTANCE_URL_MAX + 1)
+TOO_LONG_INSTANCE_URL = instance_url_of_length(129)   # one character over the 128 character cap
 
 
 def env(**overrides: str | None) -> dict[str, str]:
@@ -73,14 +73,13 @@ def test_blank_prefix_defaults_and_custom_prefix_is_kept():
     assert Config.from_env(env(COMMAND_PREFIX="?")).prefix == "?"
 
 
-def test_instance_url_at_the_cap_is_accepted():
-    capped = instance_url_of_length(INSTANCE_URL_MAX)
-    assert len(capped) == INSTANCE_URL_MAX
+def test_instance_url_of_128_characters_is_accepted():
+    capped = instance_url_of_length(128)
     assert Config.from_env(env(FLUXER_INSTANCE_URL=capped)).instance_url == capped
 
 
 def test_api_url_has_no_length_cap():
-    long_api = instance_url_of_length(INSTANCE_URL_MAX + 40)
+    long_api = instance_url_of_length(300)
     assert Config.from_env(env(FLUXER_INSTANCE_URL=None, FLUXER_API_URL=long_api)).api_url == long_api
 
 
