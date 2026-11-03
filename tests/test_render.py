@@ -419,22 +419,34 @@ def test_details_are_absent_without_a_status() -> None:
     assert not set(fields_of(embed)) & {text.FIELD_MAP, text.FIELD_VERSION, text.FIELD_GAME_MODE}
 
 
+def repeated(unit: str, length: int) -> str:
+    """`unit` repeated to exactly `length` characters; `length` must be a multiple of len(unit)."""
+    assert length % len(unit) == 0
+    return unit * (length // len(unit))
+
+
+# `*` doubles when escaped and `<#` grows 2.5 times, the worst case, so both are exercised.
+GROWTH_UNITS = ["*", "<#"]
+
+
 # Title, description and text values are fitted to the Discord-compatible limits.
-def test_maximum_length_card_stays_within_embed_limits() -> None:
-    star = "*"
+@pytest.mark.parametrize("unit", GROWTH_UNITS)
+def test_maximum_length_card_stays_within_embed_limits(unit: str) -> None:
     card = make_card(
-        title=star * 200,
-        description=star * 1000,
-        how_to_join=star * 1000,
-        first_time=star * 1000,
-        location=Location(star * 200),
-        voice=Voice(guild_id="1001", channel_id="2001", channel_name=star * 100, verified=True),
+        title=repeated(unit, 200),
+        description=repeated(unit, 1000),
+        how_to_join=repeated(unit, 1000),
+        first_time=repeated(unit, 1000),
+        location=Location(repeated(unit, 200)),
+        voice=Voice(guild_id="1001", channel_id="2001", channel_name=repeated(unit, 100), verified=True),
         address=Address(host="mc.example.invalid", port=19132, public=True),
         show_details=ALL_DETAILS,
     )
     status = CardStatus(
         StatusKind.READY,
-        details=ProbeDetails(map=star * 48, version=star * 48, game_mode=star * 48),
+        details=ProbeDetails(
+            map=repeated(unit, 48), version=repeated(unit, 48), game_mode=repeated(unit, 48),
+        ),
     )
     embed = render.render_embed(card, status, "Restarts in 30 min", instance_url=INSTANCE)
     assert render.LIMITS["description"] == 1024
@@ -451,19 +463,21 @@ def test_maximum_length_card_stays_within_embed_limits() -> None:
         assert not re.search(r"(?<!\\)(\\\\)*\\$", value)
 
 
-# A location and each detail at the validated maximum are rendered whole, so no ellipsis is added.
-def test_maximum_location_and_details_are_rendered_whole() -> None:
-    star = "*"
-    card = make_card(location=Location(star * 200), show_details=ALL_DETAILS)
+# A location (200 characters) and each detail (48 characters) at the validated maximum are rendered whole.
+@pytest.mark.parametrize("unit", GROWTH_UNITS)
+def test_maximum_location_and_details_are_rendered_whole(unit: str) -> None:
+    location = repeated(unit, 200)
+    detail = repeated(unit, 48)
+    card = make_card(location=Location(location), show_details=ALL_DETAILS)
     status = CardStatus(
         StatusKind.READY,
-        details=ProbeDetails(map=star * 48, version=star * 48, game_mode=star * 48),
+        details=ProbeDetails(map=detail, version=detail, game_mode=detail),
     )
     embed = render.render_embed(card, status, None, instance_url=INSTANCE)
     fields = fields_of(embed)
-    assert fields[text.FIELD_LOCATION] == render.escape(star * 200)
+    assert fields[text.FIELD_LOCATION] == render.escape(location)
     for name in (text.FIELD_MAP, text.FIELD_VERSION, text.FIELD_GAME_MODE):
-        assert fields[name] == render.escape(star * 48), name
+        assert fields[name] == render.escape(detail), name
     for name in (text.FIELD_LOCATION, text.FIELD_MAP, text.FIELD_VERSION, text.FIELD_GAME_MODE):
         assert "…" not in fields[name], name
 

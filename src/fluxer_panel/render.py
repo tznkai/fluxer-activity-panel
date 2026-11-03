@@ -40,8 +40,11 @@ LIMITS = {
     "description": 1024,
     "join": 900,
     "first_time": 900,
-    # Defensive bounds: validated location (at most 200 characters) and detail (at most 48) cannot reach these.
-    "location": 400,
+    # Limits for the rendered (escaped) text. The worst-case growth is 2.5x, from `<#`: neutralise adds a
+    # zero-width joiner, then both characters are escaped, so two characters become five. A validated location
+    # (at most 200 characters, enforced by the database CHECK) and a validated detail (at most 48) therefore
+    # render whole at 500 and 120.
+    "location": 500,
     "detail": 120,
     "voice_name": 100,
 }
