@@ -766,6 +766,26 @@ async def test_an_archive_during_a_probe_stops_the_post(world: World, poller: Po
     assert card.state == "archived"
 
 
+async def test_an_archive_during_a_post_waits_for_the_post_and_deletes_the_message(
+        world: World, poller: Poller, db: Database):
+    card_id = await seed(db, "alpha")
+    world.fluxer.delays[f"POST {GAMES_MESSAGES}"] = 0.3
+    tick = asyncio.create_task(poller.tick())
+    await asyncio.sleep(0.1)     # the POST is delayed 0.3 s, so it is still in flight here
+    assert not tick.done()
+
+    ctx = CardContext(db=db, rest=world.rest, config=world.config, sources=world.sources, locks=world.locks)
+    await admin.handle(_admin_message("!card archive alpha"), world.config, world.rest, ctx)
+    await tick
+
+    deletes = [r for r in world.fluxer.requests if r.method == "DELETE" and r.path == POSTED]
+    assert [r.status for r in deletes] == [204]     # the archive removed the message the post stored
+    card = await load(db, card_id)
+    assert card.state == "archived"
+    assert card.message_id is None
+    assert_card_writes_safe(world.fluxer)
+
+
 def _admin_message(content: str) -> MessageCreate:
     return MessageCreate(message_id="8001", channel_id=ADMIN_DM, guild_id=None, author_id=AUTHOR,
                          author_is_bot=False, member_role_ids=None, content=content)
