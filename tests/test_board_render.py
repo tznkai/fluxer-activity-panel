@@ -20,6 +20,35 @@ GUILD = "1001"
 GAMES = "3001"
 MESSAGE = "5001"
 READY = CardStatus(StatusKind.READY)
+FULL_URL = instance_url_of_length(128)   # the longest instance URL config allows
+MAX_ID = "2" * 25                        # the longest snowflake the schema allows
+ASTRAL = "\U0001F3AE"                    # one code point outside the Basic Multilingual Plane: two UTF-16 units
+# Board cells of a linked card with no status: the dash in a jump link, 220 units with the full URL and 25-digit ids.
+# A title of 29 units and the 220-unit cell cost 249 together. The last cell's title is 48 units, or 49 for the
+# one-more-unit case, so that the title alone sets the 6000-unit total.
+FILL = ASTRAL * 14 + "a"                  # 29 units
+LAST_EXACT = ASTRAL * 24                 # 48 units
+LAST_OVER = ASTRAL * 24 + "a"            # 49 units
+
+
+def units_of(s: str) -> int:
+    return len(s.encode("utf-16-le")) // 2
+
+
+def message_units(payload: dict[str, Any]) -> int:
+    """Every embed's title and description, and every field's name and value, in UTF-16 units."""
+    total = 0
+    for embed in payload["embeds"]:
+        total += units_of(embed.get("title", "")) + units_of(embed.get("description", ""))
+        for field in embed.get("fields", []):
+            total += units_of(field["name"]) + units_of(field["value"])
+    return total
+
+
+def linked_board(titles: list[str]) -> dict[str, Any]:
+    """A board of cards with no status, each with a message in the board's channel, so every value is a jump link."""
+    entries = [(card(title, id=n + 1, channel=MAX_ID, message=MAX_ID), None) for n, title in enumerate(titles)]
+    return render.board_message(entries, games_channel_id=MAX_ID, games_guild_id=MAX_ID, instance_url=FULL_URL)
 
 
 def card(title: str = "Card", *, id: int = 1, sort: int = 0, channel: str | None = GAMES,
@@ -148,7 +177,7 @@ def test_a_title_is_escaped_neutralised_and_fitted_to_the_board_limit() -> None:
 
     assert "@everyone" not in name
     assert "<#" not in name
-    assert len(name) <= render.LIMITS["board_title"]
+    assert units_of(name) <= render.LIMITS["board_title"]
     assert name.endswith("…")
 
 
@@ -156,6 +185,13 @@ def test_a_short_title_is_not_truncated() -> None:
     [(name, _)] = cells(board([(card("Dune *night*"), READY)]))
 
     assert name == render.escape("Dune *night*")
+
+
+def test_an_astral_title_is_fitted_in_utf16_units_so_each_emoji_counts_two() -> None:
+    [(name, _)] = cells(board([(card(ASTRAL * 30), READY)]))
+
+    assert name == ASTRAL * 24 + "\u2026"
+    assert units_of(name) == 49
 
 
 def test_board_title_limit_is_in_the_limits_table() -> None:
@@ -224,26 +260,37 @@ def test_card_241_is_not_shown_and_the_fixed_note_is_added() -> None:
     assert all(name != "Card 240" for name, _ in cells(payload))
 
 
-def test_the_message_total_stays_within_6000_characters_in_the_worst_case() -> None:
-    worst_url = instance_url_of_length(128)
-    max_id = "2" * 25
-    worst_title = "*" * 200
-    entries = [(card(worst_title, id=n, channel=max_id, message=max_id), CardStatus(
+@pytest.mark.parametrize("worst_title", ["*" * 200, ASTRAL * 200])
+def test_the_message_total_stays_within_6000_utf16_units_at_the_url_cap_and_25_digit_ids(worst_title: str) -> None:
+    entries = [(card(worst_title, id=n, channel=MAX_ID, message=MAX_ID), CardStatus(
         StatusKind.READY, counts=PlayerCounts(999, 999))) for n in range(240)]
 
-    payload = render.board_message(entries, games_channel_id=max_id, games_guild_id=max_id,
-                                   instance_url=worst_url)
+    payload = render.board_message(entries, games_channel_id=MAX_ID, games_guild_id=MAX_ID,
+                                   instance_url=FULL_URL)
 
-    total = len(text.BOARD_TITLE)
     for embed in payload["embeds"]:
-        total += len(embed.get("title", "")) + len(embed.get("description", ""))
         for field in embed.get("fields", []):
-            assert len(field["name"]) <= 256
-            assert len(field["value"]) <= 1024
-            total += len(field["name"]) + len(field["value"])
-    assert total <= render.BOARD_CHAR_LIMIT == 6000
+            assert units_of(field["name"]) <= 256
+            assert units_of(field["value"]) <= 1024
+    assert message_units(payload) <= render.BOARD_CHAR_LIMIT == 6000
     assert len(cells(payload)) < 240
     assert payload["embeds"][-1]["description"] == text.BOARD_TRUNCATED
+
+
+def test_a_message_of_exactly_6000_units_with_its_title_shows_every_cell() -> None:
+    payload = linked_board([FILL] * 23 + [LAST_EXACT])
+
+    assert message_units(payload) == 6000
+    assert len(cells(payload)) == 24
+    assert all("description" not in embed for embed in payload["embeds"])
+
+
+def test_one_more_unit_drops_the_last_cell_and_adds_the_note() -> None:
+    payload = linked_board([FILL] * 23 + [LAST_OVER])
+
+    assert len(cells(payload)) == 23
+    assert payload["embeds"][-1]["description"] == text.BOARD_TRUNCATED
+    assert message_units(payload) == 5 + 23 * 249 + units_of(text.BOARD_TRUNCATED) <= 6000
 
 
 def test_a_board_that_fits_the_total_is_not_truncated_even_at_full_count() -> None:

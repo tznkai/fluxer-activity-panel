@@ -38,6 +38,9 @@ Cards and sources:
 
 - `GAMES_CHANNEL_ID` (optional): the channel where published cards and the summary board are posted.
   Without it, no card or board is posted, and the log says `games_channel_unset`.
+  Changing it does not move anything already posted. A card or the board stays in the channel it was
+  posted in, and its edits go there. New cards go to the new channel. To move the board or a card,
+  delete its message by hand, and the bot posts it again in the current channel.
 - `PTERODACTYL_URL` and `PTERODACTYL_API_KEY`: the Panel's base URL and a client API key. Set both
   or neither. Setting only one refuses to start with exit code 2. Without both, no Panel host
   manager is registered.
@@ -127,19 +130,29 @@ repost does not wait for the next poll interval.
 When `GAMES_CHANNEL_ID` is set, the bot keeps one more message in the games channel: the summary
 board. It is always on, with no setting of its own. It lists every live card, in the same order as
 `!card list`, as one inline cell: the card's title as the name and its status line as the value. A
-card with no manager and no probe shows a dash. When the card is posted in the games channel, its
-status is a link to the card's message. The board is laid out for the desktop and web clients. Phones
-show the full cards as before.
+card with no manager and no probe shows a dash, and so does a card whose status check failed in the
+last poll. When the card's message is in the board's channel, its status is a link to the card's
+message. The board is laid out for the desktop and web clients. Phones show the full cards as before.
 
-- **Posting:** the board is posted before the cards on a fresh start, so it sits above them. The first
-  post may show plain status text for cards that are not posted yet. The next edit adds the links.
+- **Posting:** when no board is stored, the board is posted before the cards on a fresh start, so it sits
+  above them. The first post may show plain status text for cards that are not posted yet. The next edit
+  adds the links.
+- **The board's channel:** the board is posted in the games channel and then stays there. A stored board
+  is edited where it was posted, whatever `GAMES_CHANNEL_ID` is now. Its links go to the channel's own
+  community, and a card is linked only when its message is in the same channel as the board. To move the
+  board, delete its message by hand. The bot then posts a new board in the current games channel.
 - **Edits:** the board is edited when its content changes, for example when a status or a title changes.
+  When a board is stored, each card is posted as soon as its own check ends, so a slow check does not hold
+  back the other cards. The board is brought up to date after all the cards.
 - **Pinning is manual.** When the bot posts a new board message, it sends each admin one direct message:
-  "I posted the summary board in the games channel. Pin it so it stays at the top." Pin it in the games
-  channel. The bot does not pin it, and it sends that message once per new board message.
+  "I posted the summary board in the games channel. Pin it so it stays at the top." Pin it in the channel
+  where the board was posted. The bot does not pin it, and it sends that message once per new board message.
 - **Size:** the board shows at most 240 cards. The bot keeps the whole board message under 6000 characters of
-  text, which is Fluxer's limit on embed text. A board with long titles, long links or many cards shows only
-  the cards that fit, and a note at the bottom says that some games are not shown.
+  text, which is Fluxer's limit on embed text. The count is in UTF-16 code units, so an emoji counts two. A
+  board with long titles, long links or many cards shows only the cards that fit, and a note at the bottom
+  says that some games are not shown.
+- **Failed checks:** a card whose status check fails in a poll stays on the board, with the dash. Its
+  message is not edited in that poll.
 - **Deleted by hand:** a board message that is deleted is posted again, the same way a card is.
 - **No live cards:** the board still posts, with "No games are live."
 

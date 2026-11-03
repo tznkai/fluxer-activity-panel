@@ -192,22 +192,23 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 
 ## Card rendering
 
-- `src/fluxer_panel/render.py:67` `def neutralise(` — breaks the mention forms (`@everyone`, `<@id>`, `<#id>`) with a zero-width joiner, so card text cannot ping anyone or form a mention.
+- `src/fluxer_panel/render.py:68` `def neutralise(` — breaks the mention forms (`@everyone`, `<@id>`, `<#id>`) with a zero-width joiner, so card text cannot ping anyone or form a mention.
 - `src/fluxer_panel/render.py:27` `_MD = re.compile(` — the markdown control characters that `escape` backslashes.
-- `src/fluxer_panel/render.py:72` `def escape(` — the escape for all card text: neutralise first, then escape markdown. Every user text passes through it before it enters an embed.
-- `src/fluxer_panel/render.py:88` `def code(` — a code span. Backticks are removed, because they cannot be escaped inside one.
-- `src/fluxer_panel/render.py:77` `def fit(` — cuts escaped text without leaving a dangling backslash that would escape the ellipsis.
-- `src/fluxer_panel/render.py:230` `"allowed_mentions": {"parse": []}` — every card send and edit carries empty `allowed_mentions`.
-- `src/fluxer_panel/render.py:256` `def outside_location(has_location: bool)` — takes a bool, so the location text cannot reach the outside line.
-- `src/fluxer_panel/render.py:166` `fit(escape(channel.channel_name)` — a voice or text channel's name is escaped before it enters the field, so a name cannot form a link or a mention.
-- `src/fluxer_panel/render.py:240` `def _outside_channel(` — a channel name on the outside line is mention-neutralised, and the line shows it only when the link is verified.
-- `tests/test_render.py:673` `SENTINEL_LOCATION not in outside` — the test that the location text never appears in the outside rendering.
-- `src/fluxer_panel/render.py:98` `def channel_link(` — the only place a channel link is built. Both ids pass the snowflake check first.
+- `src/fluxer_panel/render.py:73` `def escape(` — the escape for all card text: neutralise first, then escape markdown. Every user text passes through it before it enters an embed.
+- `src/fluxer_panel/render.py:103` `def code(` — a code span. Backticks are removed, because they cannot be escaped inside one.
+- `src/fluxer_panel/render.py:84` `def fit(` — cuts escaped text to a limit in UTF-16 units, the unit Fluxer counts in, without leaving a dangling backslash that would escape the ellipsis.
+- `src/fluxer_panel/render.py:248` `"allowed_mentions": {"parse": []}` — every card send and edit carries empty `allowed_mentions`.
+- `src/fluxer_panel/render.py:274` `def outside_location(has_location: bool)` — takes a bool, so the location text cannot reach the outside line.
+- `src/fluxer_panel/render.py:181` `fit(escape(channel.channel_name)` — a voice or text channel's name is escaped before it enters the field, so a name cannot form a link or a mention.
+- `src/fluxer_panel/render.py:258` `def _outside_channel(` — a channel name on the outside line is mention-neutralised, and the line shows it only when the link is verified.
+- `tests/test_render.py:694` `SENTINEL_LOCATION not in outside` — the test that the location text never appears in the outside rendering.
+- `src/fluxer_panel/render.py:113` `def channel_link(` — the only place a channel link is built. Both ids pass the snowflake check first.
 - `tests/test_text.py:27` `"guild" in node.value.lower()` — the scan that fails on any user-facing string that mentions a guild.
 
-- `src/fluxer_panel/render.py:106` `def jump_link(` — the only place a masked jump link is built. Its ids pass the snowflake check first.
-- `src/fluxer_panel/render.py:178` `fit(escape(card.title), LIMITS["board_title"])` — a board cell's title is escaped before it is fitted, so a title cannot ping anyone or form a link.
-- `src/fluxer_panel/render.py:194` `return {"embeds": embeds, "allowed_mentions": {"parse": []}}` — the summary board message carries empty `allowed_mentions`.
+- `src/fluxer_panel/render.py:121` `def jump_link(` — the only place a masked jump link is built. Its ids pass the snowflake check first.
+- `src/fluxer_panel/render.py:195` `fit(escape(card.title), LIMITS["board_title"])` — a board cell's title is escaped before it is fitted, so a title cannot ping anyone or form a link.
+- `src/fluxer_panel/render.py:218` `card.channel_id == games_channel_id` — a board status is a jump link only for a card whose message is in the board's channel, so the link's community is the one looked up for that channel, and no link leaves it.
+- `src/fluxer_panel/render.py:211` `return {"embeds": embeds, "allowed_mentions": {"parse": []}}` — the summary board message carries empty `allowed_mentions`.
 
 ## Card commands
 
@@ -221,22 +222,23 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 
 ## Card poller
 
-- `src/fluxer_panel/poller.py:164` `log_event(log, "card_poll_failed"` — one card's failure is logged with the card id and the exception type only. The other cards still run.
-- `src/fluxer_panel/poller.py:398` `await self._rest.edit_message(channel_id, message_id, embeds=` — the edit sends embeds and `allowed_mentions` and never `content`, so an edit cannot erase the message text.
-- `src/fluxer_panel/poller.py:199` `cards.set_probe_tracking(c, card.id` — the alert state is saved before the DM goes out. A crash or a failed DM cannot send the alert a second time.
-- `src/fluxer_panel/poller.py:201` `await self._alert(card)` — the admin DM that follows that save.
-- `src/fluxer_panel/poller.py:243` `cards.set_voice_name_if(c, card_id` — a refreshed voice name is written only if the voice still matches the one that was read, so an admin's change during the lookup wins.
-- `src/fluxer_panel/poller.py:245` `cards.set_text_channel_name_if(c, card_id, slot` — the same compare-and-set for a text channel, keyed by slot: a name is written only while that slot still holds the link that was read.
-- `src/fluxer_panel/poller.py:232` `event = "voice_refresh_failed" if slot is None` — a failed name check is logged with the card id and the exception type only. No channel name reaches the log.
-- `src/fluxer_panel/poller.py:409` `cards.set_hash_if(c, card_id` — the rendered hash is stored only if the message is still the same one, so a delete during an edit is not written back.
+- `src/fluxer_panel/poller.py:178` `log_event(log, "card_poll_failed"` — one card's failure is logged with the card id and the exception type only. The other cards still run.
+- `src/fluxer_panel/poller.py:427` `await self._rest.edit_message(channel_id, message_id, embeds=` — the edit sends embeds and `allowed_mentions` and never `content`, so an edit cannot erase the message text.
+- `src/fluxer_panel/poller.py:214` `cards.set_probe_tracking(c, card.id` — the alert state is saved before the DM goes out. A crash or a failed DM cannot send the alert a second time.
+- `src/fluxer_panel/poller.py:216` `await self._alert(card)` — the admin DM that follows that save.
+- `src/fluxer_panel/poller.py:258` `cards.set_voice_name_if(c, card_id` — a refreshed voice name is written only if the voice still matches the one that was read, so an admin's change during the lookup wins.
+- `src/fluxer_panel/poller.py:260` `cards.set_text_channel_name_if(c, card_id, slot` — the same compare-and-set for a text channel, keyed by slot: a name is written only while that slot still holds the link that was read.
+- `src/fluxer_panel/poller.py:247` `event = "voice_refresh_failed" if slot is None` — a failed name check is logged with the card id and the exception type only. No channel name reaches the log.
+- `src/fluxer_panel/poller.py:438` `cards.set_hash_if(c, card_id` — the rendered hash is stored only if the message is still the same one, so a delete during an edit is not written back.
 - `src/fluxer_panel/poller.py:46` `_DELETED_CAP = 256` — the remembered deletes are bounded. The oldest entries are evicted, which covers the window between a send and its commit.
-- `src/fluxer_panel/poller.py:423` `self._deleted[(channel_id, message_id)] = None` — a repeated delete keeps its place, so eviction is by insertion order.
+- `src/fluxer_panel/poller.py:452` `self._deleted[(channel_id, message_id)] = None` — a repeated delete keeps its place, so eviction is by insertion order.
 - `src/fluxer_panel/__main__.py:98` `poller_task.cancel()` — the poller is cancelled and awaited before the purge task, so no card write is in flight when the session closes.
 
-- `src/fluxer_panel/poller.py:302` `log_event(log, "board_post_failed"` — a failed board post is logged with the games channel id and the exception type only. No title or status is logged.
-- `src/fluxer_panel/poller.py:368` `board.set_hash_if(c, channel_id` — the board hash is stored only while the board still holds that message, so a delete during an edit is not written back.
-- `src/fluxer_panel/poller.py:445` `if cards.clear_message_if(conn, channel_id, message_id) is not None:` — a MESSAGE_DELETE forgets a card message or the board message in one transaction. Message ids are unique, so only one can match.
-- `src/fluxer_panel/poller.py:355` `await self._dm_admins(text.BOARD_PIN_ALERT` — each admin gets the pin request once per new board message. A board message deleted before its id is stored sends none.
+- `src/fluxer_panel/poller.py:327` `log_event(log, "board_post_failed"` — a failed board post is logged with the games channel id and the exception type only. No title or status is logged.
+- `src/fluxer_panel/poller.py:397` `board.set_hash_if(c, channel_id` — the board hash is stored only while the board still holds that message, so a delete during an edit is not written back.
+- `src/fluxer_panel/poller.py:474` `if cards.clear_message_if(conn, channel_id, message_id) is not None:` — a MESSAGE_DELETE forgets a card message or the board message in one transaction. Message ids are unique, so only one can match.
+- `src/fluxer_panel/poller.py:384` `await self._dm_admins(text.BOARD_PIN_ALERT` — each admin gets the pin request once per new board message. A board message deleted before its id is stored sends none.
+- `src/fluxer_panel/poller.py:338` `channel_id = state.channel_id if state.channel_id is not None else games_channel_id` — a stored board is edited in the channel it was posted in, so a change of `GAMES_CHANNEL_ID` never moves it. Its community is looked up for that channel.
 
 ## Private denylist
 

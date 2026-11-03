@@ -71,6 +71,10 @@ class FakeFluxerState:
     deleted: set[tuple[str, str]] = field(default_factory=set)
     # "METHOD /path" -> seconds to sleep before the handler runs (for timeout tests).
     delays: dict[str, float] = field(default_factory=dict)
+    # "METHOD /path" -> an Event the request waits on before the handler runs, so a test can hold requests in flight.
+    # `gated` records each request that reached its gate, in arrival order.
+    gates: dict[str, asyncio.Event] = field(default_factory=dict)
+    gated: list[str] = field(default_factory=list)
     # "METHOD /path" -> the connection is closed before any response, so the client raises an aiohttp
     # ClientError. A dropped request is recorded with status 0 and changes no state (no handler runs).
     drops: set[str] = field(default_factory=set)
@@ -255,6 +259,10 @@ def make_rest_app(state: FakeFluxerState) -> web.Application:
         delay = state.delays.get(key, 0.0)
         if delay:
             await asyncio.sleep(delay)
+        gate = state.gates.get(key)
+        if gate is not None:
+            state.gated.append(key)
+            await gate.wait()
         return await handler(request)
 
     app = web.Application(middlewares=[_delay_or_drop])

@@ -121,13 +121,18 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
 - `outside_location` takes a bool, never the location text.
 - Card replies and card text live in `text.py`, which never says "guild". `tests/test_text.py` enforces it.
 - Adding a plugin is one module plus one line in `sources/registry.py`.
-- Summary board (`render.board_message`, `board.py`, `poller.py`): one message in `GAMES_CHANNEL_ID`, always on when
-  that is set. Its payload comes only from `render.board_message`, which escapes each title with `escape`, fits it to
-  `LIMITS["board_title"]` and keeps the whole message under `BOARD_CHAR_LIMIT`. Its statuses are the cards' own status
-  lines from the resolver. A status is a link only through `jump_link`, and only for a card whose message is in the
-  games channel. Board sends and edits use `allowed_mentions={"parse": []}`. The poller posts the board before the
-  cards when none is stored, edits it after the cards when its hash changed, and sends the admins the pin request once
-  per new message. The poller logs the board's ids and exception types only: never a title, a status or a link.
+- Summary board (`render.board_message`, `board.py`, `poller.py`): one message, always on when `GAMES_CHANNEL_ID` is
+  set. It is posted to that channel when none is stored, and then it stays in the channel it was posted in: a changed
+  `GAMES_CHANNEL_ID` never moves it, as with cards. Its payload comes only from `render.board_message`, which escapes
+  each title with `escape`, fits it to `LIMITS["board_title"]` and keeps the whole message under `BOARD_CHAR_LIMIT`
+  UTF-16 code units (`render.units`). Its statuses are the cards' own status lines from the resolver, and a card whose
+  evaluation failed shows the dash. A status is a link only through `jump_link`, and only for a card whose message is
+  in the board's channel, so the community is the one looked up for that channel. Board sends and edits use
+  `allowed_mentions={"parse": []}`. With no board stored, the poller evaluates every card, posts the board, then
+  publishes the cards. With a board stored, each card is published right after its own evaluation. Either way the
+  board is edited after the cards when its hash changed. The poller sends the admins the pin request once per new
+  message. A failed board read is logged, and no board is posted in that tick. The poller logs the board's ids and
+  exception types only: never a title, a status or a link.
 
 ## Database
 

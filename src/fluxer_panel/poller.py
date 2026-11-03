@@ -48,10 +48,11 @@ _DELETED_CAP = 256
 
 @dataclass(frozen=True)
 class _Evaluated:
-    """A card whose status is known for this tick, with the embed that shows it."""
+    """One card's outcome for this tick. `embed` is None when the evaluation failed: such a card is not published, and
+    the board lists it with the dash, as a card with no status."""
     card: cards.Card
     status: CardStatus | None
-    embed: dict[str, Any]
+    embed: dict[str, Any] | None
 
 
 class Poller:
@@ -68,7 +69,7 @@ class Poller:
         self._names_checked: dict[int, float] = {}
         self._deleted: OrderedDict[tuple[str, str], None] = OrderedDict()
         self._warned_no_channel = False
-        self._games_guild: str | None = None   # the games channel's community, once a lookup has answered
+        self._games_guilds: dict[str, str] = {}   # each board channel's community, once a lookup has answered
 
     def kick(self) -> None:
         self._kick.set()
@@ -134,19 +135,24 @@ class Poller:
             log_event(log, "board_reconcile_failed", level=logging.WARNING, reason=type(exc).__name__)
 
     async def tick(self) -> None:
-        """Evaluates every live card, then posts the board if it has no message, then publishes the cards, then brings
-        the board up to date. The board goes up before the cards so that a new board sits above them."""
+        """Keeps the cards and the board up to date. When no board message is stored, every card is evaluated first, then
+        the board is posted, then the cards are published, so a new board sits above them. When a board is stored, each
+        card is published as soon as its own evaluation ends, so one slow card does not hold back the others. Either way
+        the board is brought up to date after the cards."""
         live = await self._db.run(lambda c: cards.list_cards(c, "live"))
         self._forget_cards_not_in({card.id for card in live})
         sem = asyncio.Semaphore(self._config.poll_concurrency)
-        results = await asyncio.gather(*(self._evaluate_guarded(card, sem) for card in live))
-        evaluated = [result for result in results if result is not None]
         channel_id = self._config.games_channel_id
-        if channel_id is not None:
+        if channel_id is not None and await self._board_is_missing():
+            evaluated = await asyncio.gather(*(self._evaluate_guarded(card, sem) for card in live))
             await self._board_before_cards(evaluated, channel_id)
-        await asyncio.gather(*(self._publish_guarded(result, sem) for result in evaluated))
+            await asyncio.gather(*(self._publish_guarded(result, sem) for result in evaluated
+                                   if result.embed is not None))
+            results = evaluated
+        else:
+            results = await asyncio.gather(*(self._evaluate_and_publish(card, sem) for card in live))
         if channel_id is not None:
-            await self._board_after_cards({result.card.id: result.status for result in evaluated}, channel_id)
+            await self._board_after_cards({result.card.id: result.status for result in results}, channel_id)
 
     def _forget_cards_not_in(self, live_ids: set[int]) -> None:
         """Drops the cached schedule and channel name check of every card not in `live_ids`, the live set of this tick.
@@ -156,17 +162,26 @@ class Poller:
             for card_id in [card_id for card_id in entries if card_id not in live_ids]:
                 del entries[card_id]
 
-    async def _evaluate_guarded(self, card: cards.Card, sem: asyncio.Semaphore) -> _Evaluated | None:
+    async def _evaluate_and_publish(self, card: cards.Card, sem: asyncio.Semaphore) -> _Evaluated:
+        result = await self._evaluate_guarded(card, sem)
+        if result.embed is not None:
+            await self._publish_guarded(result, sem)
+        return result
+
+    async def _evaluate_guarded(self, card: cards.Card, sem: asyncio.Semaphore) -> _Evaluated:
+        """The card's evaluation. A failure is logged and gives an outcome with no embed, so the card is not published
+        but still appears on the board."""
         async with sem:
             try:
                 return await self._evaluate(card)
             except Exception as exc:  # noqa: BLE001 - one card's failure must not stop the other cards
                 log_event(log, "card_poll_failed", level=logging.WARNING, card_id=card.id,
                           reason=type(exc).__name__)
-                return None
+                return _Evaluated(card, None, None)
 
     async def _publish_guarded(self, result: _Evaluated, sem: asyncio.Semaphore) -> None:
         async with sem:
+            assert result.embed is not None
             try:
                 await self._publish(result.card.id, result.embed)
             except Exception as exc:  # noqa: BLE001 - one card's failure must not stop the other cards
@@ -287,12 +302,22 @@ class Poller:
             except Exception as exc:  # noqa: BLE001 - one admin's failed DM must not stop the other admins' DMs
                 log_event(log, failed_event, level=logging.WARNING, user_id=user_id, reason=type(exc).__name__)
 
+    async def _board_is_missing(self) -> bool:
+        """Whether no board message is stored, so this tick posts the board before the cards. A failed read is logged and
+        answers False: the cards then publish as they would with no board, and no board is posted while the stored state
+        is unknown."""
+        try:
+            state = await self._db.run(board.get)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a failed read must not stop the cards of this tick
+            log_event(log, "board_read_failed", level=logging.WARNING, reason=type(exc).__name__)
+            return False
+        return state.message_id is None
+
     async def _board_before_cards(self, evaluated: list[_Evaluated], channel_id: str) -> None:
-        """Posts the board when none is stored in the games channel, before this tick's card messages. A failure is
-        logged, and the board is posted again on the next tick."""
-        state = await self._db.run(board.get)
-        if _board_current(state, channel_id):
-            return
+        """Posts the board to the games channel before this tick's card messages. It runs only when no board is stored.
+        A failure is logged, and the board is posted again on the next tick."""
         try:
             payload = await self._board_payload([(result.card, result.status) for result in evaluated], channel_id)
             await self._board_post(channel_id, payload)
@@ -302,16 +327,18 @@ class Poller:
             log_event(log, "board_post_failed", level=logging.WARNING, channel_id=channel_id,
                       reason=type(exc).__name__)
 
-    async def _board_after_cards(self, statuses: dict[int, CardStatus | None], channel_id: str) -> None:
-        """Brings the board up to date with the cards as they are now: posts it if it is missing, and edits it when its
-        content changed. Cards that were not evaluated this tick are left off until the next tick."""
+    async def _board_after_cards(self, statuses: dict[int, CardStatus | None], games_channel_id: str) -> None:
+        """Brings the board up to date with the cards as they are now: posts it if none is stored, and edits it when its
+        content changed. A stored board stays in the channel it was posted in, so its edits go there, whatever
+        GAMES_CHANNEL_ID is now. Cards that were not evaluated this tick are left off until the next tick."""
         try:
             live = await self._db.run(lambda c: cards.list_cards(c, "live"))
             entries = [(card, statuses[card.id]) for card in live if card.id in statuses]
+            state = await self._db.run(board.get)
+            channel_id = state.channel_id if state.channel_id is not None else games_channel_id
             payload = await self._board_payload(entries, channel_id)
             rendered = render.rendered_hash(payload)
-            state = await self._db.run(board.get)
-            if not _board_current(state, channel_id):
+            if state.message_id is None:
                 await self._board_post(channel_id, payload)
             elif rendered != state.content_hash:
                 assert state.message_id is not None
@@ -328,9 +355,11 @@ class Poller:
                                     instance_url=self._config.instance_url)
 
     async def _games_guild_id(self, channel_id: str) -> str | None:
-        """The games channel's community, looked up once and kept. Until a lookup answers, the board's links are plain text."""
-        if self._games_guild is not None:
-            return self._games_guild
+        """The community of a board channel, looked up once per channel and kept. Until a lookup answers, the board's
+        links are plain text."""
+        known = self._games_guilds.get(channel_id)
+        if known is not None:
+            return known
         try:
             channel = await self._rest.get_channel(channel_id)
         except Exception as exc:  # noqa: BLE001 - without the community the board shows plain text, and the lookup retries
@@ -340,7 +369,7 @@ class Poller:
         if not is_snowflake(guild_id):
             log_event(log, "games_channel_lookup_failed", level=logging.WARNING, reason="no_community")
             return None
-        self._games_guild = guild_id
+        self._games_guilds[channel_id] = guild_id
         return guild_id
 
     async def _board_post(self, channel_id: str, payload: dict[str, Any]) -> None:
@@ -445,11 +474,6 @@ def _clear_posted(conn: Any, channel_id: str, message_id: str) -> bool:
     if cards.clear_message_if(conn, channel_id, message_id) is not None:
         return True
     return board.clear_message_if(conn, channel_id, message_id)
-
-
-def _board_current(state: board.BoardState, channel_id: str) -> bool:
-    """Whether the stored board message is in the games channel, so no new board needs posting."""
-    return state.message_id is not None and state.channel_id == channel_id
 
 
 def _reconcile_failed(card_id: int, exc: Exception) -> None:

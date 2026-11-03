@@ -41,14 +41,15 @@ LIMITS = {
     "description": 1024,
     "join": 900,
     "first_time": 900,
-    # Limits for the rendered (escaped) text. The worst-case growth is 2.5x, from `<#`: neutralise adds a
-    # zero-width joiner, then both characters are escaped, so two characters become five. A validated location
-    # (at most 200 characters, enforced by the database CHECK) and a validated detail (at most 48) therefore
-    # render whole at 500 and 120.
+    # Limits for the rendered (escaped) text, in UTF-16 code units (`units`). The worst-case growth is 2.5x, from `<#`:
+    # neutralise adds a zero-width joiner, then both characters are escaped, so two characters become five. A validated
+    # location (at most 200 characters, enforced by the database CHECK) and a validated detail (at most 48) therefore
+    # render whole at 500 and 120. The growth is ASCII, and an astral character is two units against one character,
+    # so the same bounds hold in units.
     "location": 500,
     "detail": 120,
     # A channel name (voice or text), fitted after escaping. An entry is "[#" + name + "](" + link + ")", at most
-    # 166 + the instance URL's length. Three entries and two newlines fit the 1024-character field at 174 characters.
+    # 166 + the instance URL's length. Three entries and two newlines fit the 1024-unit field at 174 characters.
     # The link is not fitted, so config caps FLUXER_INSTANCE_URL at 128 (config.INSTANCE_URL_MAX), well under 174.
     "channel_name": 100,
     # A board cell's name: the card's title, escaped and fitted. A cell's value is a status, at most about 250 characters.
@@ -56,8 +57,8 @@ LIMITS = {
 }
 
 # The summary board. Fields come in rows of three, so a full embed holds a multiple of three. Fluxer caps a message
-# at ten embeds, and the text of every embed in one message together at 6000 characters (BOARD_CHAR_LIMIT). The
-# character budget is applied to the whole message, which is the stricter reading.
+# at ten embeds, and the text of every embed in one message together at 6000 UTF-16 code units (BOARD_CHAR_LIMIT),
+# counted with `units`. The budget is applied to the whole message, which is the stricter reading.
 BOARD_FIELDS_PER_EMBED = 24
 BOARD_MAX_EMBEDS = 10
 BOARD_MAX_CARDS = BOARD_FIELDS_PER_EMBED * BOARD_MAX_EMBEDS
@@ -74,11 +75,25 @@ def escape(s: str) -> str:
     return _MD.sub(r"\\\1", neutralise(s))
 
 
+def units(s: str) -> int:
+    """The length of `s` in UTF-16 code units, the unit Fluxer counts message text in. A character outside the Basic
+    Multilingual Plane, an emoji for one, counts two. A lone surrogate counts one."""
+    return len(s.encode("utf-16-le", "surrogatepass")) // 2
+
+
 def fit(s: str, limit: int) -> str:
-    """Cut escaped text to `limit` characters without leaving a dangling escape backslash."""
-    if len(s) <= limit:
+    """Cut escaped text to `limit` UTF-16 code units, the ellipsis included, without leaving a dangling escape backslash."""
+    if units(s) <= limit:
         return s
-    cut = s[: limit - 1]
+    kept: list[str] = []
+    used = 0
+    for char in s:
+        size = units(char)
+        if used + size > limit - 1:
+            break
+        kept.append(char)
+        used += size
+    cut = "".join(kept)
     trailing = len(cut) - len(cut.rstrip("\\"))
     if trailing % 2:  # an odd run of trailing backslashes would escape the ellipsis: drop the dangling one
         cut = cut[:-1]
@@ -173,8 +188,10 @@ def _channel_value(channel: ChannelLink, unnamed: str, instance_url: str | None)
 def board_message(entries: Sequence[tuple[Card, CardStatus | None]], *, games_channel_id: str | None,
                   games_guild_id: str | None, instance_url: str | None) -> dict[str, Any]:
     """The whole summary board, as a message payload. One cell per card, in the order given: the title as the name and
-    the status line as the value. A status is a jump link when the card has a message in the games channel and the
-    games community, the games channel and the instance URL are all known. A card with no live status shows a dash."""
+    the status line as the value. `games_channel_id` is the board's channel: the one it is stored in, or the games
+    channel when none is stored. `games_guild_id` is that channel's community. A status is a jump link only when the
+    card's message is in the board's channel, the community is known and the instance URL is known, so a link never
+    leaves the community the lookup named. A card with no live status shows a dash."""
     cells = [(fit(escape(card.title), LIMITS["board_title"]),
               _board_value(card, status, games_channel_id, games_guild_id, instance_url))
              for card, status in entries]
@@ -210,15 +227,16 @@ def _fit_cells(cells: list[tuple[str, str]]) -> list[tuple[str, str]]:
     budget also reserves room for the truncation note."""
     count = _count_within(cells, BOARD_CHAR_LIMIT)
     if count < len(cells):
-        count = _count_within(cells, BOARD_CHAR_LIMIT - len(text.BOARD_TRUNCATED))
+        count = _count_within(cells, BOARD_CHAR_LIMIT - units(text.BOARD_TRUNCATED))
     return cells[:count]
 
 
 def _count_within(cells: list[tuple[str, str]], budget: int) -> int:
-    used = len(text.BOARD_TITLE)
+    """How many leading cells fit `budget` UTF-16 units together with the board's title, which is counted too."""
+    used = units(text.BOARD_TITLE)
     count = 0
     for name, value in cells:
-        cost = len(name) + len(value)
+        cost = units(name) + units(value)
         if count == BOARD_MAX_CARDS or used + cost > budget:
             break
         used += cost

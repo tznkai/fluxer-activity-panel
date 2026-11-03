@@ -214,6 +214,23 @@ def test_fit_drops_an_odd_run_of_three_trailing_backslashes() -> None:
     assert render.fit("x\\\\\\zzzz", 5) == "x\\\\…"
 
 
+# units: the length Fluxer counts message text in, UTF-16 code units. An emoji is two, and fit cuts in units.
+def test_units_count_utf16_code_units() -> None:
+    assert render.units("abc") == 3
+    assert render.units(ASTRAL) == 2
+    assert render.units("\ud800") == 1  # a lone surrogate is one unit, not an error
+
+
+def test_fit_counts_an_emoji_as_two_units() -> None:
+    assert render.fit(ASTRAL * 30, 50) == ASTRAL * 24 + "\u2026"
+    assert render.units(render.fit(ASTRAL * 30, 50)) == 49
+
+
+def test_fit_never_cuts_an_emoji_in_half() -> None:
+    # The cut keeps two units before the ellipsis: one emoji fits, the second does not, and it is dropped whole.
+    assert render.fit(ASTRAL + ASTRAL, 3) == ASTRAL + "\u2026"
+
+
 # channel_link: the only place a channel link is built, and CHANNEL_LINK_RE parses it.
 def test_channel_link_builds_the_url_and_strips_a_trailing_slash() -> None:
     assert channel_link("https://fluxer.invalid/", "1001", "2001") == "https://fluxer.invalid/channels/1001/2001"
@@ -433,8 +450,12 @@ def repeated(unit: str, length: int) -> str:
 GROWTH_UNITS = ["*", "<#"]
 
 
-# Title, description and text values are fitted to the Discord-compatible limits.
-@pytest.mark.parametrize("unit", GROWTH_UNITS)
+# An emoji: one code point and two UTF-16 units, so the limits must hold in units, not characters.
+ASTRAL = "\U0001F3AE"
+
+
+# Title, description and text values are fitted to the Discord-compatible limits, counted in UTF-16 units.
+@pytest.mark.parametrize("unit", [*GROWTH_UNITS, ASTRAL])
 def test_maximum_length_card_stays_within_embed_limits(unit: str) -> None:
     card = make_card(
         title=repeated(unit, 200),
@@ -456,14 +477,14 @@ def test_maximum_length_card_stays_within_embed_limits(unit: str) -> None:
     embed = render.render_embed(card, status, "Restarts in 30 min", instance_url=CAP_INSTANCE)
     assert render.LIMITS["description"] == 1024
     assert text.FIELD_CHANNELS in fields_of(embed)
-    assert len(embed["title"]) <= 256
-    assert len(embed["description"]) <= render.LIMITS["description"]
+    assert render.units(embed["title"]) <= 256
+    assert render.units(embed["description"]) <= render.LIMITS["description"]
     assert embed["description"].endswith("…")
-    total = len(embed["title"]) + len(embed["description"])
+    total = render.units(embed["title"]) + render.units(embed["description"])
     for f in embed["fields"]:
-        assert len(f["name"]) <= 256
-        assert len(f["value"]) <= 1024
-        total += len(f["name"]) + len(f["value"])
+        assert render.units(f["name"]) <= 256
+        assert render.units(f["value"]) <= 1024
+        total += render.units(f["name"]) + render.units(f["value"])
     assert total <= 6000
     for value in user_strings(embed):
         assert not re.search(r"(?<!\\)(\\\\)*\\$", value)

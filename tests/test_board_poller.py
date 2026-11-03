@@ -166,6 +166,10 @@ def card_posts(state: FakeFluxerState) -> list[Recorded]:
     return [r for r in posted(state) if r.payload["embeds"][0].get("title") != text.BOARD_TITLE]
 
 
+def card_titles(state: FakeFluxerState) -> list[str]:
+    return [r.payload["embeds"][0]["title"] for r in card_posts(state)]
+
+
 def patches_to(state: FakeFluxerState, message: str) -> list[Recorded]:
     return [r for r in state.requests if r.method == "PATCH" and r.path == f"{GAMES_MESSAGES}/{message}"]
 
@@ -254,7 +258,8 @@ async def test_zero_live_cards_still_post_the_board_with_the_empty_description(w
     assert len(world.fluxer.requests_to(GAMES_MESSAGES)) == 1
 
 
-async def test_nothing_is_posted_to_the_games_channel_when_it_is_not_configured(world: World, db: Database) -> None:
+async def test_nothing_is_posted_to_the_games_channel_when_it_is_not_configured(world: World, db: Database,
+                                                                              captured: pytest.LogCaptureFixture) -> None:
     await seed(db, "alpha", title="Alpha", probe=True)
 
     await world.poller(GAMES_CHANNEL_ID=None).tick()
@@ -262,6 +267,10 @@ async def test_nothing_is_posted_to_the_games_channel_when_it_is_not_configured(
     assert posted(world.fluxer) == []
     assert patches_to(world.fluxer, BOARD) == []
     assert await board_row(db) == board.BoardState(None, None, None)
+    # No board request of any kind: no lookup of the games channel, and no message in it.
+    assert [r for r in world.fluxer.requests if GAMES in r.path] == []
+    for event in ("board_post_failed", "board_sync_failed", "games_channel_lookup_failed"):
+        assert records(captured, event) == [], event
 
 
 # Steady state -----------------------------------------------------------------------------------
@@ -408,20 +417,45 @@ async def test_a_failed_board_lookup_at_startup_keeps_the_stored_message(world: 
 
 # The games channel and its community -----------------------------------------------------------------
 
-async def test_a_new_games_channel_gets_a_new_board_and_the_old_one_is_left_in_place(world: World,
-                                                                                    db: Database) -> None:
-    await seed(db, "alpha", title="Alpha", probe=True)
+async def test_a_changed_games_channel_keeps_the_board_and_the_cards_where_they_were_posted(world: World,
+                                                                                          db: Database) -> None:
+    alpha = await seed(db, "alpha", title="Alpha", probe=True)
     await world.poller().tick()
-    world.fluxer.channels[OTHER_GAMES] = {"id": OTHER_GAMES, "guild_id": GUILD}
+    world.fluxer.channels[OTHER_GAMES] = {"id": OTHER_GAMES, "name": "other", "type": 0, "guild_id": GUILD}
+    beta = await seed(db, "beta", title="Beta", probe=True, sort=1)
     world.fluxer.requests.clear()
 
     await world.poller(GAMES_CHANNEL_ID=OTHER_GAMES).tick()
 
-    assert len(posted(world.fluxer, OTHER_MESSAGES)) == 1
+    # No board is posted to the new channel, and the stored board is edited where it is. Only the new card goes there.
+    assert [r.payload["embeds"][0].get("title") for r in posted(world.fluxer, OTHER_MESSAGES)] == ["Beta"]
+    [edit] = patches_to(world.fluxer, BOARD)
+    # Alpha's message is in the stored board's channel, so it links. Beta's message is in the new channel, so it does not.
+    assert cells(edit.payload) == [("Alpha", link_to("Ready \u00b7 1 / 4", await card_message(db, alpha))),
+                                   ("Beta", "Ready \u00b7 1 / 4")]
     assert [r for r in world.fluxer.requests if r.method == "DELETE"] == []
-    assert patches_to(world.fluxer, BOARD) == []
-    row = await board_row(db)
-    assert row.channel_id == OTHER_GAMES
+    assert world.fluxer.requests_to(f"/api/v1/channels/{OTHER_GAMES}") == []
+    assert (await board_row(db)).channel_id == GAMES
+    assert await card_message(db, beta)
+
+
+async def test_a_board_deleted_by_hand_is_posted_to_the_new_games_channel(world: World, db: Database) -> None:
+    await seed(db, "alpha", title="Alpha", probe=True)
+    await world.poller().tick()
+    world.fluxer.channels[OTHER_GAMES] = {"id": OTHER_GAMES, "name": "other", "type": 0, "guild_id": GUILD}
+    poller = world.poller(GAMES_CHANNEL_ID=OTHER_GAMES)
+    await poller.on_message_delete(MessageDelete(BOARD, GAMES, None))
+    world.fluxer.requests.clear()
+
+    await poller.tick()
+
+    [first] = [r for r in posted(world.fluxer, OTHER_MESSAGES) if r.payload["embeds"][0].get("title") == text.BOARD_TITLE]
+    # The card is in the old channel and the board is in the new one, so the status is plain text. The new board's
+    # community is looked up for the new channel only.
+    assert cells(first.payload) == [("Alpha", "Ready \u00b7 1 / 4")]
+    assert len(world.fluxer.requests_to(f"/api/v1/channels/{OTHER_GAMES}")) == 1
+    assert world.fluxer.requests_to(f"/api/v1/channels/{GAMES}") == []
+    assert (await board_row(db)).channel_id == OTHER_GAMES
 
 
 async def test_a_board_whose_community_is_unknown_shows_plain_text_until_the_lookup_works(
@@ -569,6 +603,140 @@ async def test_titles_and_statuses_never_reach_the_log(world: World, db: Databas
     assert SENTINEL_HOST not in captured.text
     assert "Ready" not in captured.text
     assert '"SENTINEL"' not in captured.text
+
+
+# Publishing with a board stored, the concurrency bound and a failed evaluation -------------------------
+
+async def test_with_a_board_stored_a_stalled_card_does_not_hold_back_another_cards_post(world: World,
+                                                                                         db: Database) -> None:
+    await world.poller().tick()
+    await seed(db, "alpha", title="Alpha", probe=True)
+    await seed(db, "beta", title="Beta", probe=True, sort=1)
+    release = asyncio.Event()
+    calls = 0
+
+    async def stall_the_first_probe() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            await release.wait()
+
+    world.probe.on_call = stall_the_first_probe
+    task = asyncio.create_task(world.poller().tick())
+    try:
+        # Alpha's evaluation is the one stalled, so beta is the only card posted while the tick is still running.
+        await _wait_until(lambda: card_titles(world.fluxer) == ["Beta"])
+        assert not task.done()
+    finally:
+        release.set()
+        await task
+    assert sorted(card_titles(world.fluxer)) == ["Alpha", "Beta"]
+
+
+async def test_at_most_poll_concurrency_cards_are_evaluated_at_once(world: World, db: Database) -> None:
+    await world.poller().tick()
+    for n in range(5):
+        await seed(db, f"card-{n}", title=f"Card {n}", probe=True, sort=n)
+    release = asyncio.Event()
+    in_flight = 0
+    peak = 0
+
+    async def hold_each_evaluation() -> None:
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        try:
+            await release.wait()
+        finally:
+            in_flight -= 1
+
+    world.probe.on_call = hold_each_evaluation
+    task = asyncio.create_task(world.poller(POLL_CONCURRENCY="2").tick())
+    try:
+        await _wait_until(lambda: in_flight >= 2)
+        await _settle()
+        assert in_flight == 2
+    finally:
+        release.set()
+        await task
+    assert peak == 2
+    assert len(card_posts(world.fluxer)) == 5
+
+
+async def test_at_most_poll_concurrency_cards_are_published_at_once(world: World, db: Database) -> None:
+    await world.poller().tick()
+    for n in range(5):
+        await seed(db, f"card-{n}", title=f"Card {n}", probe=True, sort=n)
+    release = asyncio.Event()
+    world.fluxer.gates[f"POST {GAMES_MESSAGES}"] = release
+    task = asyncio.create_task(world.poller(POLL_CONCURRENCY="2").tick())
+    try:
+        await _wait_until(lambda: len(world.fluxer.gated) >= 2)
+        await _settle()
+        assert len(world.fluxer.gated) == 2
+    finally:
+        release.set()
+        await task
+    assert len(card_posts(world.fluxer)) == 5
+
+
+async def test_a_card_whose_evaluation_fails_stays_on_the_board_with_the_dash(world: World, db: Database,
+                                                                              captured: pytest.LogCaptureFixture
+                                                                              ) -> None:
+    alpha = await seed(db, "alpha", title="Alpha", probe=True)
+    beta = await seed(db, "beta", title="Beta", probe=True, sort=1)
+    poller = world.poller()
+    await poller.tick()
+    world.probe.on_call = _fail_evaluation
+    world.fluxer.requests.clear()
+
+    await poller.tick()
+
+    [edit] = patches_to(world.fluxer, BOARD)
+    assert cells(edit.payload) == [("Alpha", link_to(text.BOARD_NO_STATUS, await card_message(db, alpha))),
+                                   ("Beta", link_to(text.BOARD_NO_STATUS, await card_message(db, beta)))]
+    # A failed card is not published, so its message is not edited.
+    assert [r for r in world.fluxer.requests if r.method == "PATCH" and r.path != f"{GAMES_MESSAGES}/{BOARD}"] == []
+    assert {r.panel_fields["reason"] for r in records(captured, "card_poll_failed")} == {"RuntimeError"}
+
+
+async def test_a_card_whose_first_evaluation_fails_is_listed_as_a_plain_dash_and_not_posted(
+        world: World, db: Database, captured: pytest.LogCaptureFixture) -> None:
+    await seed(db, "alpha", title="Alpha", probe=True)
+    world.probe.on_call = _fail_evaluation
+
+    await world.poller().tick()
+
+    [first] = board_posts(world.fluxer)
+    assert cells(first.payload) == [("Alpha", text.BOARD_NO_STATUS)]
+    assert card_posts(world.fluxer) == []
+    assert len(records(captured, "card_poll_failed")) == 1
+
+
+async def test_a_failed_board_read_is_logged_and_the_cards_still_post(world: World, db: Database,
+                                                                      captured: pytest.LogCaptureFixture) -> None:
+    await seed(db, "alpha", title="Alpha", probe=True)
+    await db.run(lambda c: c.execute("DROP TABLE board"))
+
+    await world.poller().tick()
+
+    assert card_titles(world.fluxer) == ["Alpha"]
+    # The stored state is unknown, so no board is posted.
+    assert board_posts(world.fluxer) == []
+    [read] = records(captured, "board_read_failed")
+    assert read.panel_fields == {"reason": "OperationalError"}
+    [synced] = records(captured, "board_sync_failed")
+    assert synced.panel_fields == {"reason": "OperationalError"}
+
+
+async def _fail_evaluation() -> None:
+    raise RuntimeError("the probe failed")
+
+
+async def _settle() -> None:
+    """Lets the loop run every task that can run now, so a count taken after it is final."""
+    for _ in range(50):
+        await asyncio.sleep(0)
 
 
 async def _wait_until(predicate: Callable[[], bool], timeout: float = 5.0) -> None:
