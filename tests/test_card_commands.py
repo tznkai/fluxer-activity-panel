@@ -8,6 +8,7 @@ import asyncio
 import io
 import json
 import logging
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -518,11 +519,34 @@ async def test_show_sends_the_inside_embed_then_the_labelled_outside_text(world:
     await world.run("!card show mc")
 
     embed_message, outside_message = world.payloads()
+    assert embed_message["content"] == text.SHOW_NOTE
     assert embed_message["embeds"][0]["title"] == "Minecraft"
     assert embed_message["allowed_mentions"] == {"parse": []}
     assert outside_message["content"].startswith(text.SHOW_OUTSIDE_LABEL + "\n")
     assert "Minecraft" in outside_message["content"]
     assert outside_message["allowed_mentions"] == {"parse": []}
+
+
+async def test_show_preview_shows_join_text_as_plain_text_not_a_masked_link(world: World) -> None:
+    await make_mc(world)
+    await world.run("!card set mc join [x](https://fluxer.invalid/x)")
+    world.clear_requests()
+    await world.run("!card show mc")
+
+    outside = world.payloads()[1]["content"]
+    assert re.search(r"(?<!\\)\]\(", outside) is None
+    assert outside.replace("\\", "") == text.SHOW_OUTSIDE_LABEL + "\nMinecraft\n[x](https://fluxer.invalid/x)"
+
+
+async def test_show_preview_fits_the_message_limit_after_escaping(world: World) -> None:
+    await make_mc(world)
+    await world.run("!card set mc join " + "*" * 1000)
+    world.clear_requests()
+    await world.run("!card show mc")
+
+    outside = world.payloads()[1]["content"]
+    assert outside.startswith(text.SHOW_OUTSIDE_LABEL + "\n")
+    assert len(outside) <= 2000
 
 
 async def test_list_shows_cards_in_sort_order(world: World) -> None:

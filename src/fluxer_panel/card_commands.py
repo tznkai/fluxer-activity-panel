@@ -27,6 +27,7 @@ log = logging.getLogger(__name__)
 VOICE_CHANNEL_TYPE = 2
 VOICE_NAME_MAX = 100
 LIST_CHUNK = 1900
+PREVIEW_LIMIT = 2000  # Fluxer's message content limit
 SUBCOMMANDS = ("new", "set", "clear", "show", "list", "publish", "archive")
 SETTABLE = ("title", "description", "join", "first_time", "sort", "seats", "location", "voice", "address",
             "address_public", "manager", "probe", "show")
@@ -284,9 +285,13 @@ async def _show(event: MessageCreate, ctx: CardContext, rest: str) -> _Result:
         await _say(ctx, event, text.NO_SUCH_CARD)
         return _Result()
     embed = render.render_embed(card, None, None, instance_url=ctx.config.instance_url)
-    await ctx.rest.send_message(event.channel_id, embeds=[embed], allowed_mentions={"parse": []})
-    outside = text.SHOW_OUTSIDE_LABEL + "\n" + render.outside_text(card, None, None)
-    await _say(ctx, event, outside)
+    await ctx.rest.send_message(event.channel_id, content=text.SHOW_NOTE, embeds=[embed],
+                                allowed_mentions={"parse": []})
+    # The outside text is plain text everywhere else. In this DM it is escaped, so it shows as typed, and then
+    # fitted so the label, newline and body stay within the message limit.
+    label = text.SHOW_OUTSIDE_LABEL
+    body = render.fit(render.escape(render.outside_text(card, None, None)), PREVIEW_LIMIT - len(label) - 1)
+    await _say(ctx, event, label + "\n" + body)
     return _Result(card.id)
 
 
