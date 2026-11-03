@@ -257,8 +257,8 @@ DAY = 86400
 
 def _seed_purge_rows(conn: sqlite3.Connection, now: int) -> None:
     """One expired session with an RSVP and an expired request, plus a kept session, RSVP and request."""
-    card = conn.execute("INSERT INTO cards (kind, title, created_by, created_at, updated_at) "
-                        "VALUES ('online', 'Game', '1001', ?, ?)", (now, now)).lastrowid
+    card = conn.execute("INSERT INTO cards (title, created_by, created_at, updated_at) "
+                        "VALUES ('Game', '1001', ?, ?)", (now, now)).lastrowid
     expired = conn.execute(
         "INSERT INTO sessions (card_id, group_role_id, starts_at, ends_at, proposer_id, created_at) "
         "VALUES (?, '2001', ?, ?, '1001', ?)", (card, now - 9 * DAY, now - 8 * DAY, now - 9 * DAY)).lastrowid

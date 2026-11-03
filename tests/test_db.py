@@ -20,8 +20,8 @@ import fluxer_panel.db as dbmod
 from fluxer_panel.db import Database, DatabaseRefused
 
 EXPECTED_TABLES = {
-    "cards", "card_server", "card_location", "card_seats", "families",
-    "family_members", "sessions", "rsvps", "requests",
+    "cards", "card_location", "card_seats", "card_voice", "card_address", "card_manager", "card_probe",
+    "card_runtime", "families", "family_members", "sessions", "rsvps", "requests",
 }
 
 
@@ -44,7 +44,7 @@ def test_migration_is_a_package_resource() -> None:
     folder = importlib.resources.files("fluxer_panel") / "migrations"
     assert "0001_init.sql" in {entry.name for entry in folder.iterdir()}
     assert "CREATE TABLE cards" in (folder / "0001_init.sql").read_text("utf-8")
-    assert [version for version, _ in dbmod.load_migrations()] == [1]
+    assert [version for version, _ in dbmod.load_migrations()] == list(range(1, len(dbmod.load_migrations()) + 1))
 
 
 def test_migrations_leave_transactions_and_version_to_the_runner() -> None:
@@ -98,7 +98,7 @@ async def test_older_db_is_backed_up_and_migrated_with_data_kept(tmp_path: Path)
         database.close()
 
 
-async def test_second_migration_backs_up_to_pre_v2_and_keeps_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_second_migration_backs_up_to_pre_next_and_keeps_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "panel.db"
     first = Database.open(path)
     try:
@@ -106,22 +106,23 @@ async def test_second_migration_backs_up_to_pre_v2_and_keeps_rows(tmp_path: Path
     finally:
         first.close()
 
-    real_v1 = dbmod.load_migrations()[0][1]
+    real = dbmod.load_migrations()
+    n = len(real)
     # STRICT needs a datatype on every column, so the plan's literal "extra(x)" would fail before the backup check
-    monkeypatch.setattr(dbmod, "load_migrations", lambda: [(1, real_v1), (2, "CREATE TABLE extra(x TEXT) STRICT;")])
-    monkeypatch.setattr(dbmod, "LATEST_VERSION", 2)
+    monkeypatch.setattr(dbmod, "load_migrations", lambda: real + [(n + 1, "CREATE TABLE extra(x TEXT) STRICT;")])
+    monkeypatch.setattr(dbmod, "LATEST_VERSION", n + 1)
 
     database = Database.open(path)
     try:
-        assert path.with_name(path.name + ".pre-v2").exists()
+        assert path.with_name(path.name + f".pre-v{n + 1}").exists()
         assert await database.run(lambda c: c.execute("SELECT id FROM families").fetchall()) == [(7,)]
-        assert await database.run(lambda c: c.execute("PRAGMA user_version").fetchone()[0]) == 2
+        assert await database.run(lambda c: c.execute("PRAGMA user_version").fetchone()[0]) == n + 1
         assert await database.run(lambda c: "extra" in _tables(c))
     finally:
         database.close()
 
 
-async def test_failing_migration_rolls_back_and_keeps_v1_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_failing_migration_rolls_back_and_keeps_previous_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "panel.db"
     first = Database.open(path)
     try:
@@ -129,15 +130,16 @@ async def test_failing_migration_rolls_back_and_keeps_v1_data(tmp_path: Path, mo
     finally:
         first.close()
 
-    real_v1 = dbmod.load_migrations()[0][1]
-    monkeypatch.setattr(dbmod, "load_migrations", lambda: [(1, real_v1), (2, "CREATE TABLE bad(;")])
-    monkeypatch.setattr(dbmod, "LATEST_VERSION", 2)
+    real = dbmod.load_migrations()
+    n = len(real)
+    monkeypatch.setattr(dbmod, "load_migrations", lambda: real + [(n + 1, "CREATE TABLE bad(;")])
+    monkeypatch.setattr(dbmod, "LATEST_VERSION", n + 1)
 
     with pytest.raises(sqlite3.Error):
         Database.open(path)
 
     with contextlib.closing(sqlite3.connect(path)) as c:
-        assert c.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert c.execute("PRAGMA user_version").fetchone()[0] == n
         assert c.execute("SELECT id FROM families").fetchall() == [(7,)]
         assert "bad" not in _tables(c)
 
@@ -290,9 +292,10 @@ requires_permissions = pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid(
 
 
 def _add_pending_migration(monkeypatch: pytest.MonkeyPatch) -> None:
-    real_v1 = dbmod.load_migrations()[0][1]
-    monkeypatch.setattr(dbmod, "load_migrations", lambda: [(1, real_v1), (2, "CREATE TABLE extra(x TEXT) STRICT;")])
-    monkeypatch.setattr(dbmod, "LATEST_VERSION", 2)
+    real = dbmod.load_migrations()
+    n = len(real)
+    monkeypatch.setattr(dbmod, "load_migrations", lambda: real + [(n + 1, "CREATE TABLE extra(x TEXT) STRICT;")])
+    monkeypatch.setattr(dbmod, "LATEST_VERSION", n + 1)
 
 
 def _unavailable_codes(caplog: pytest.LogCaptureFixture) -> list[object]:

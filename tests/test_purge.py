@@ -47,7 +47,7 @@ def status(tmp_path: Path) -> Path:
 
 def _card(conn: sqlite3.Connection) -> int:
     cur = conn.execute(
-        "INSERT INTO cards (kind, title, created_by, created_at, updated_at) VALUES ('online', 'Game', '1001', ?, ?)",
+        "INSERT INTO cards (title, created_by, created_at, updated_at) VALUES ('Game', '1001', ?, ?)",
         (NOW, NOW))
     return cur.lastrowid
 
