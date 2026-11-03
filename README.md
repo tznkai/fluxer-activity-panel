@@ -12,6 +12,48 @@ This project holds two Python packages under `src/`:
 Configuration comes from environment variables. See `.env.example` for the names. The code
 never loads `.env`; the operator sources it in the shell.
 
+## Configuration
+
+Every setting is an environment variable. A setting marked "default" can be left unset.
+Positive-integer settings must be whole numbers above zero.
+
+Core:
+
+- `FLUXER_TOKEN` (required): the bot token. It is never logged, and `repr` does not show it.
+- `FLUXER_INSTANCE_URL` (required unless `FLUXER_API_URL` is set): the instance's base URL. The
+  API and gateway addresses are discovered from it.
+- `FLUXER_API_URL` (optional): the API base URL. When it is set, no discovery is needed.
+- `FLUXER_GATEWAY_URL` (optional): the gateway URL (`ws` or `wss`). When it is unset, the API
+  reports the gateway address.
+- `ADMIN_USER_IDS` (required): comma-separated user ids that may run admin and `!card` commands
+  in direct messages.
+- `COMMAND_PREFIX` (default `!`).
+- `DATA_DIR` (default `data`): the directory for the database and the purge status file.
+- `DB_PATH` (default `DATA_DIR/panel.db`).
+- `PURGE_STATUS_PATH` (default `DATA_DIR/purge-status.json`).
+- `PURGE_INTERVAL_SECONDS` (default `3600`).
+- `LOG_LEVEL` (default `INFO`): one of `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`.
+
+Cards and sources:
+
+- `GAMES_CHANNEL_ID` (optional): the channel where published cards are posted. Without it, no
+  card is posted, and the log says `games_channel_unset`.
+- `PTERODACTYL_URL` and `PTERODACTYL_API_KEY`: the Panel's base URL and a client API key. Set both
+  or neither. Setting only one refuses to start with exit code 2. Without both, no Panel host
+  manager is registered.
+- `POLL_INTERVAL_SECONDS` (default `60`): how often the card poller runs when nothing kicks it.
+- `SCHEDULE_REFRESH_SECONDS` (default `600`): how often a card re-reads its Panel schedules and the
+  name of its verified voice channel.
+- `POLL_CONCURRENCY` (default `8`): how many cards are polled at once.
+- `PROBE_TIMEOUT_SECONDS` (default `3`): the timeout for one probe.
+- `PROBE_GRACE_SECONDS` (default `600`): how long a running server's failing probe is tolerated
+  before its card shows Ready without counts. The admins then get one direct message.
+
+Hand-run tools only (`tools/live/`, see `CLAUDE.md`): `LIVE_GUILD_ID`, `LIVE_CHANNEL_ID`,
+`LIVE_USER_ID`, `LIVE_ROLE_ID`, `LIVE_HIGH_ROLE_ID`, `LIVE_PTERO_SERVERS`, `LIVE_PROBES`,
+`LIVE_VOICE_CHANNEL_ID` and `LIVE_OTHER_GUILD_ID`. The
+bot never reads them. `.env.example` lists them all.
+
 ## Commands
 
 - `python -m fluxer_panel run` (the default) connects to Fluxer and runs the bot.
@@ -61,6 +103,73 @@ so a monitor running as another user can read it. It holds only timestamps and c
 
 Alert when `last_success_at` is `null` or older than twice `PURGE_INTERVAL_SECONDS`. A missing
 file means the bot has never run a purge.
+
+## Cards
+
+Admins manage cards by direct message with `!card` commands. A card is one message in the games
+channel. It shows how to join, what a first-timer should know, and optional extras: a voice
+channel, a server address, an in-person location and seats. A card for a game server can also
+show a status line, such as Asleep, Waking up or Ready with a player count.
+
+### Lifecycle
+
+- **Draft:** `!card new` creates a card as a draft. A draft is never posted.
+- **Live:** `!card publish` makes the card live. The poller posts it in the games channel on its
+  next tick, and edits the message when its content changes.
+- **Archived:** `!card archive` deletes the card's message and keeps the card. Publishing it again
+  makes it live.
+
+A card message that is deleted by hand is posted again. The delete kicks the poller, so this
+takes seconds, not a full poll interval.
+
+### Syntax
+
+```
+!card new <slug> <title…>                  creates a draft
+!card set <slug> <field> <value…>          sets one field
+!card clear <slug> <field>                 clears one field
+!card show <slug>                          the inside embed and the outside text
+!card list                                 slug, state and title, by sort order
+!card publish <slug>                       draft or archived -> live
+!card archive <slug>                       deletes the message, keeps the card
+```
+
+The last argument takes the rest of the line, so no quoting is needed.
+
+### Fields
+
+- `title` (up to 200 characters), `description`, `join` (how to join) and `first_time` (up to 1000
+  characters each): text. Control characters and bidirectional overrides are refused.
+- `sort`: an integer from 0 to 9999. `seats`: an integer from 1 to 999.
+- `location`: text up to 200 characters. Outside Fluxer it shows only a fixed placeholder.
+- `voice <guild_id> <channel_id>`, or a pasted channel link. When the bot is in that community,
+  the channel must be a voice channel there, and its name is stored. When the bot is not in it,
+  the channel is stored unverified and the reply says so.
+- `address <host>:<port>`: the server address. `address_public yes` or `no` (the default `no`)
+  decides whether the outside text shows it.
+- `manager <kind> <ref>`: a configured host manager and its reference. Only `pterodactyl` exists.
+- `probe <kind> <host> <port>`: a probe kind (`minecraft_bedrock`, `minecraft_java` or `a2s`) with
+  its host and port.
+- `show map,version,game_mode`: any subset of those three, or `none`. These are the probe details
+  a card shows.
+
+Every reply names the field and the rule, never the value you sent. Replies use the word
+"community".
+
+## Adding a host manager or probe
+
+Plugins are modules in `src/fluxer_panel/sources/`.
+
+1. Write a module that implements a protocol from `sources/base.py`: `HostManager` (`kind`,
+   `validate_ref`, `power_state`, `next_power_action`) or `Probe` (`kind`, `probe`).
+2. Add one line to `MANAGER_FACTORIES` or `PROBES` in `sources/registry.py`. A manager factory
+   returns `None` when its settings are absent.
+3. Add a fake under `tests/` and tests for the plugin, as the existing probe tests do.
+4. Return `ProbeFailed` or `PowerState.UNKNOWN` instead of raising. `validate_ref` raises
+   `CardFieldError`, and `next_power_action` may raise `SourceError`; the caller handles both.
+
+A result or an error must never carry a library message, a Panel response body, a player name or
+a command payload. Errors leave a plugin as fixed reason keys.
 
 ## Development
 

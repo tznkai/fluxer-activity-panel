@@ -3,7 +3,7 @@
 
 # Fluxer Activity Panel
 
-Last verified: 2026-11-01
+Last verified: 2026-11-03
 
 Standalone project with two packages under `src/`: `fluxer_client` (a panel-agnostic Fluxer REST and
 gateway client) and `fluxer_panel` (the activity panel bot built on it). `README.md` has the
@@ -21,7 +21,13 @@ user-facing description, the purge status file format and the "Exit 3" recovery 
   `roles.py`.
 - `src/fluxer_panel/`: `__main__.py` (`run|purge` entry point), `config.py`, `db.py` (single SQLite connection),
   `migrations/` (numbered SQL, see Database), `purge.py`, `admin.py`, `bot.py`, `logs.py`, `fsutil.py`.
-- `tests/`: pytest suite. `tests/fakes.py` holds the fake REST and gateway servers. `tests/test_review_refs.py`
+  Cards: `cards.py` (store and dataclasses), `card_fields.py` (field validators), `card_commands.py` (`!card`
+  subcommands), `resolver.py` (status from manager and probe results), `render.py` (embed and outside text),
+  `text.py` (user-facing strings), `poller.py` (the single card poller).
+- `src/fluxer_panel/sources/`: `base.py` (result types and the `HostManager`/`Probe` protocols), `registry.py`
+  (the kind-to-plugin map), `pterodactyl.py` (host manager), `minecraft.py` (Bedrock and Java probes), `a2s.py`
+  (A2S probe), `_probe_util.py` (the shared guard and limits).
+- `tests/`: pytest suite. `tests/fakes.py` holds the fake REST and gateway servers. `tests/fake_ptero.py` and `tests/fake_probes.py` hold the Panel and probe fakes. `tests/test_review_refs.py`
   and `tests/test_repo_hygiene.py` are the structural checks.
 - `tools/live/`: hand-run live scripts and the shared harness `_live.py` (see Live tools).
 - `docs/`: `fluxer-notes.md` (live-run observations, recorded against a server build). The panel brief is a
@@ -48,6 +54,12 @@ user-facing description, the purge status file format and the "Exit 3" recovery 
   (`"1001"`, `"https://fluxer.invalid"`). Never write a run of 15+ digits. `tests/test_repo_hygiene.py` fails on
   any IP address or URL or bare host outside its allowlist, so a new public name needs an allowlist entry there.
 - Never read or print `.env`. `.env.example` is the only tracked env file.
+- The private denylist is `docs/private/fluxer-activity-panel/denylist.txt` in the main checkout. `denylist_path`
+  in `tests/test_repo_hygiene.py` finds it through the git common directory, so worktrees use the same file. It is
+  gitignored and absent in the published split, so the check skips there. Never print its entries or copy them into
+  a tracked file. Denylist findings name the path and line only.
+- Bidi overrides, isolates and zero-width characters are refused in tracked text
+  (`test_no_bidi_or_zero_width_characters_in_tracked_files`). A finding names the path and line, never the character.
 - Every new file needs an SPDX header or a `REUSE.toml` entry, or `reuse lint` fails.
 - Do not modify `../green-oaks-bot`. It is the source of the copied client code and is read-only here.
 - Do not re-add the source bot's imports (card rendering, Pillow). `fluxer_client` was cut loose from them on purpose.
@@ -65,7 +77,9 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   or usage error; 3 database refused (`DatabaseRefused`: quarantined, schema newer or unavailable). The DB is opened
   before `asyncio.run`, so a refused DB exits before any network connection.
 - Logging: panel code logs only through `log_event(logger, name, level=..., **fields)`. It never logs message content,
-  user or channel names, or URLs. `clean_fields` allowlists fields: id keys must be snowflakes, other keys must be
+  card text, locations, addresses, hosts, probe details, user names, channel names or URLs. The database stores a
+  verified voice channel's display name (`card_voice.channel_name`). That is a channel's name, not a person's, and
+  it is never logged. `clean_fields` allowlists fields: id keys must be snowflakes, other keys must be
   numbers, bools or identifier-like strings. Known exception: `__main__.main` calls `log.exception("fatal_error")`,
   and no code enforces the no-URL rule for traceback text there. `fluxer_client` records are plain text that only
   get token redaction and may contain URLs.
@@ -81,6 +95,22 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   check the role allowlist and hierarchy before the call, because Fluxer returns the same 403 for a hierarchy refusal
   and a missing permission.
 
+- Card config: `GAMES_CHANNEL_ID` (a snowflake, optional). `PTERODACTYL_URL` and `PTERODACTYL_API_KEY` are both or
+  neither, and setting one refuses to start with exit 2. `POLL_INTERVAL_SECONDS`, `SCHEDULE_REFRESH_SECONDS`,
+  `POLL_CONCURRENCY`, `PROBE_TIMEOUT_SECONDS` and `PROBE_GRACE_SECONDS` are positive integers with defaults 60, 600,
+  8, 3 and 600. `README.md` lists every variable.
+
+## Cards and sources rules
+
+- A plugin's `power_state` and `probe` never raise. `validate_ref` raises only `CardFieldError`, and
+  `next_power_action` may raise `SourceError`, which the caller hides.
+- No library message, Panel body, player name or command payload leaves a plugin. Errors leave as fixed reason keys.
+- The Pterodactyl module is GET-only over three read paths. `tests/test_pterodactyl_ast.py` enforces it.
+- Every card send and edit uses `allowed_mentions={"parse": []}` and goes through `render`.
+- `outside_location` takes a bool, never the location text.
+- Card replies and card text live in `text.py`, which never says "guild". `tests/test_text.py` enforces it.
+- Adding a plugin is one module plus one line in `sources/registry.py`.
+
 ## Database
 
 - `db.py` owns the single SQLite connection. All DB work goes through `await db.run(fn)`: one transaction per call,
@@ -91,8 +121,8 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   and the write probe in `_connect` stays authoritative.
 - Primary codes READONLY, CANTOPEN, BUSY and PERM map to `DatabaseRefused("unavailable")` and leave the file alone.
   Only corruption codes quarantine. Quarantine moves files aside under new names and never overwrites.
-- Schema: every table is `STRICT`. Ids are `TEXT` with CHECKs that they are digits only and at most 25 long; names are not
-  stored. The snowflake bound is 25 in code and schema; Fluxer documents at most 19, so do not tighten without a new migration.
+- Schema: every table is `STRICT`. Ids are `TEXT` with CHECKs that they are digits only and at most 25 long; names are not stored,
+  except a verified voice channel's display name (`card_voice.channel_name`). The snowflake bound is 25 in code and schema; Fluxer documents at most 19, so do not tighten without a new migration.
 - Migrations: `src/fluxer_panel/migrations/NNNN_name.sql`, numbered and contiguous from `0001`. Never edit a migration
   after release; add a new file instead. Do not put `BEGIN`, `COMMIT` or `PRAGMA user_version` in a file: the runner adds them.
 - `secure_delete = ON` is set, so purged rows do not survive in free pages. `.pre-v<N>` backups are not covered by that
@@ -115,12 +145,25 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
 ## Live tools (`tools/live/`)
 
 - Hand-run only. CI never runs them, and they need a local `.env`.
-- Only the private guild may be used. `check_safety` refuses unless the channel is in the guild and the user is a member.
+- The scripts that use `live()` may only use the private guild. `check_safety` refuses unless the channel is in the guild and the user is a member.
   It also refuses if the guild reports more than two members (no refusal when the count is not reported).
 - Never print the token or raw ids. `Redactor` replaces the token with `[REDACTED]`, labels known ids and replaces any
-  other 15+ digit run with `<id>`. `out()` is the only print path. Error output is the exception type and redacted message.
+  other 15+ digit run with `<id>`. Extra secrets (a Panel URL, a probe host) are replaced too, and `label_text` gives any
+  other value a stable label. `out()` is the only print path. Error output is the exception type and redacted message.
 - Exit codes: 0 pass; 1 any FAIL or error; 2 refusal; 130 Ctrl+C.
 - Scripts wait with `wait_for_enter()` (a daemon-thread read), never `input()`, so Ctrl+C still exits 130.
   Run them in a real terminal, not a non-interactive prompt.
 - Scripts: `reactions.py`, `edit.py`, `reaction_remove.py`, `roles.py`, `dm.py`. Removal is exercised only in a guild channel;
   DM removal is untested (see `docs/fluxer-notes.md`).
+- Card and Panel scripts, run by hand. Each prints only redacted labels:
+  - `ptero_live.py` (needs `PTERODACTYL_URL`, `PTERODACTYL_API_KEY` and `LIVE_PTERO_SERVERS`): for each server, the bot
+    user's permissions, the power state and the filtered schedules. A schedule name is printed as its length only.
+    It flags any permission other than `schedule.read` or `websocket.connect`. It does not connect to Fluxer.
+  - `probes_live.py` (needs `LIVE_PROBES`, a comma-separated list of `kind:host:port`): each target's counts, or its
+    failure reason. Hosts and ports are never printed. It does not connect to Fluxer.
+  - `markup_live.py` (needs `LIVE_VOICE_CHANNEL_ID` and `LIVE_OTHER_GUILD_ID`, a community the bot is not in): posts
+    test messages to `LIVE_CHANNEL_ID` for the timestamp, channel-link, masked-link, mention, edit-burst and escaping
+    checks, reads the voice channel type and the other community's status, then deletes its messages. The operator
+    judges the rendering on the web and mobile clients.
+- The `LIVE_*` variables are listed in `.env.example`, with `LIVE_PTERO_SERVERS` (comma-separated 8-hex server ids),
+  `LIVE_PROBES`, `LIVE_VOICE_CHANNEL_ID` and `LIVE_OTHER_GUILD_ID` commented out.
