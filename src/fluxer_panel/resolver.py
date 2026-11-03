@@ -22,8 +22,9 @@ from fluxer_panel.sources.base import (
     ProbeResult,
 )
 
-# Set once Fluxer timestamp markup is confirmed live; until then the relative and absolute forms are plain text.
-USE_TIMESTAMP_MARKUP = False
+# Confirmed live (docs/fluxer-notes.md, "Timestamp markup"): <t:...:R> and <t:...:f> render as local times on
+# web and mobile. False selects the plain-text forms.
+USE_TIMESTAMP_MARKUP = True
 
 
 class StatusKind(enum.Enum):

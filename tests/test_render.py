@@ -17,7 +17,7 @@ from typing import get_type_hints
 
 import pytest
 
-from fluxer_panel import render, text
+from fluxer_panel import render, resolver, text
 from fluxer_panel.cards import Address, Card, Location, ManagerRef, ProbeRef, Voice
 from fluxer_panel.render import CHANNEL_LINK_RE, ZWJ, channel_link
 from fluxer_panel.resolver import CardStatus, StatusKind, next_action_text, resolve
@@ -524,7 +524,8 @@ def test_card_without_probe_never_mentions_players() -> None:
 
 
 # The next-action text comes from next_action_text and renders unchanged.
-def test_next_action_text_renders_unescaped_alongside_a_card() -> None:
+def test_next_action_text_renders_unescaped_alongside_a_card(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(resolver, "USE_TIMESTAMP_MARKUP", False)  # the plain-text branch
     action = PowerAction(kind="stop", at=NOW + timedelta(hours=5))
     embed = render.render_embed(make_card(), READY_FULL, next_action_text(action, NOW), instance_url=INSTANCE)
     assert fields_of(embed)[text.FIELD_NEXT] == "Goes to sleep in 5 h"

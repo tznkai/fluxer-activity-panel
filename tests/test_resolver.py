@@ -25,6 +25,12 @@ FAILED = ProbeFailed(reason="timeout")
 NOW = datetime(2026, 11, 2, 12, 0, tzinfo=UTC)
 
 
+@pytest.fixture
+def plain_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the plain-text branch, which is kept for a future switch back."""
+    monkeypatch.setattr(resolver, "USE_TIMESTAMP_MARKUP", False)
+
+
 def run(
     *,
     has_manager: bool = True,
@@ -281,6 +287,12 @@ def test_resolve_has_no_schedule_parameter() -> None:
 
 
 # AC4.6: next-action labels.
+def test_default_next_action_uses_timestamp_markup() -> None:
+    at = NOW + timedelta(minutes=30)
+    assert next_action_text(PowerAction(kind="restart", at=at), NOW) == f"Restarts <t:{int(at.timestamp())}:R>"
+
+
+@pytest.mark.usefixtures("plain_text")
 @pytest.mark.parametrize(
     ("kind", "label"),
     [("restart", "Restarts"), ("stop", "Goes to sleep"), ("kill", "Goes to sleep"), ("start", "Wakes up")],
@@ -290,6 +302,7 @@ def test_next_action_label_per_kind(kind: str, label: str) -> None:
     assert next_action_text(action, NOW) == f"{label} in 30 min"
 
 
+@pytest.mark.usefixtures("plain_text")
 @pytest.mark.parametrize(
     ("delta", "expected"),
     [
@@ -308,11 +321,13 @@ def test_relative_time_thresholds(delta: timedelta, expected: str) -> None:
     assert next_action_text(action, NOW) == f"Goes to sleep {expected}"
 
 
+@pytest.mark.usefixtures("plain_text")
 def test_one_day_away_uses_weekday_and_time_in_action_offset() -> None:
     at = datetime(2026, 11, 3, 12, 0, tzinfo=UTC)
     assert next_action_text(PowerAction(kind="restart", at=at), NOW) == "Restarts Tue 12:00"
 
 
+@pytest.mark.usefixtures("plain_text")
 def test_three_days_away_uses_offset_of_next_run_at() -> None:
     at = datetime(2026, 11, 5, 13, 0, tzinfo=timezone(timedelta(hours=1)))
     assert next_action_text(PowerAction(kind="start", at=at), NOW) == "Wakes up Thu 13:00"

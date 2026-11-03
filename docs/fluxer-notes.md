@@ -147,3 +147,76 @@ channel ID.
 ## Panel smoke test (Phase 4)
 
 - 2026-11-01 (UTC), server 2026.1031.154542: `python -m fluxer_panel` resolved endpoints, logged `ready`, answered an admin's DM `!admin ping` with `pong` (`admin_command` `ping`; a bare or unknown subcommand got the list, `admin_command` `unknown`), and on SIGTERM from `timeout` logged `shutting_down` then closed the gateway cleanly. No message content appeared in any log line.
+
+## Live card checks (Phase 7)
+
+- Run date 2026-11-03. Server build as in the Version section: `X-Fluxer-Version=2026.1031.154542`,
+  `api_code_version=1`. Run by the operator with the live scripts in `tools/live/`.
+- Targets and servers are placeholders: `<server#N>` for Panel servers and `<target#N>` for probe targets.
+  Hosts, ports, map names and server names are not recorded.
+
+### Panel (Pterodactyl) — read-only access
+
+- Bot user permissions (`ptero_live.py`): each server the bot user could see had exactly `schedule.read` and
+  `websocket.connect`. Every permission check passed, so no extra scope was flagged.
+- Power state was read for every server.
+- Schedules were read for every server, filtered to active ones. Each showed a name length, an active flag, a
+  next-run time with its UTC offset, and the first power action (restart, or none when a schedule has no power
+  task). `next_power_action` returned the earliest upcoming power task, for example "restart at <time>". Servers
+  without power schedules gave "none".
+- `/resources` gives 409 when a server is suspended and 504 when Wings is unreachable (as stated in the design;
+  not re-observed in this run).
+- `websocket.connect` is forced by the Panel for the plugin's access. Residual risk: the console can be read.
+  Commands and power actions are not possible with this permission, and the plugin sends neither.
+
+### Probes
+
+- The A2S target: reachable. Counts and map reported (the script prints the map as its length only).
+- The `minecraft_bedrock` target: reachable. Counts, map, version and game mode reported.
+- `minecraft_java`: not tested in this run.
+- Game query ports (A2S, Valheim): a probe against the game port `<port>` timed out (`reason=timeout`). The
+  same probe against `<port>+1` passed. Valheim's query port is the game port + 1.
+
+### Timestamp markup
+
+- `<t:...:R>` and the full `<t:...:f>` form render as local times on web and mobile, in message content and in
+  embed fields. R renders as relative time.
+- Decision: `resolver.USE_TIMESTAMP_MARKUP = True`. The plain-text branch is kept and tested.
+
+### Channel links
+
+- The bare link, the masked `[voice](...)` link in an embed description, and the `<#C>` mention all open the voice
+  channel. Built for the voice channel.
+- The copied link shape is `H/channels/G/C`, which matches `channel_link`'s `{instance}/channels/{G}/{C}`.
+- Decision: no change to `channel_link` or `CHANNEL_LINK_RE`. The Voice field stays a masked link.
+
+### Masked links in embeds
+
+- `[text](link)` in an embed field value and in the description is clickable on web and mobile.
+
+### Mentions in embeds
+
+- `<@U>` in an embed field renders as a mention. With empty `allowed_mentions`, no notification fired. This is
+  the expected behaviour, not a Fluxer bug.
+- Decision: no code change. No REVIEW.md note, since no ping fired.
+
+### Escaping
+
+- No visible backslashes on web or mobile for the `render.escape` test string.
+- Decision: `render._MD` is unchanged.
+
+### Edit bursts
+
+- 20 edits in each of three runs: 20 ok, 0 rate-limited (429), 0 other errors. Each run took about 1.2 to 1.4
+  seconds.
+- The existing client retries 429. None was seen in these runs.
+
+### Voice channel type
+
+- The voice channel's `type` is `2`.
+- Decision: `card_commands.VOICE_CHANNEL_TYPE` is unchanged.
+
+### GET /guilds for a community the bot isn't in
+
+- The HTTP status is 403.
+- Decision: `get_guild` keeps the 403 and 404 handling. 404 still covers nonexistent communities.

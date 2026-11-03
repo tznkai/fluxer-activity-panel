@@ -199,7 +199,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/render.py:63` `def fit(` — cuts escaped text without leaving a dangling backslash that would escape the ellipsis.
 - `src/fluxer_panel/render.py:145` `"allowed_mentions": {"parse": []}` — every card send and edit carries empty `allowed_mentions`.
 - `src/fluxer_panel/render.py:163` `def outside_location(has_location: bool)` — takes a bool, so the location text cannot reach the outside line.
-- `tests/test_render.py:666` `SENTINEL_LOCATION not in outside` — the test that the location text never appears in the outside rendering.
+- `tests/test_render.py:667` `SENTINEL_LOCATION not in outside` — the test that the location text never appears in the outside rendering.
 - `src/fluxer_panel/render.py:84` `def channel_link(` — the only place a channel link is built. Both ids pass the snowflake check first.
 - `tests/test_text.py:27` `"guild" in node.value.lower()` — the scan that fails on any user-facing string that mentions a guild.
 
