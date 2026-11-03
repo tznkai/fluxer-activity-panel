@@ -157,7 +157,7 @@ def parse_schedules(doc: object) -> list[Schedule]:
     """Read only the fields the plugin needs. Any structural problem raises SourceError("malformed")."""
     try:
         return [_parse_schedule(item["attributes"]) for item in doc["data"]]
-    except (KeyError, TypeError, AttributeError, IndexError):
+    except (KeyError, TypeError):
         raise SourceError("malformed") from None
 
 
