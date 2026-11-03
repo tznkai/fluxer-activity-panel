@@ -45,6 +45,9 @@ ATTRIBUTION_HOST = re.compile(r"(?<![A-Za-z0-9.-])(?:" + "|".join(map(re.escape,
                               r"(?![A-Za-z0-9.-])", re.IGNORECASE)
 
 Hit = tuple[str, str]  # (full commit sha, kind such as "patch:denylist")
+# Runs one `git log` stream through a scanner. Returns None when git exits with an error.
+LogRunner = Callable[[Path, list[str], Callable[[Iterable[str], Sequence[str]], Iterator[Hit]], Sequence[str]],
+                     set[Hit] | None]
 
 
 def _kinds(text: str, literals: Sequence[str], exempt_hosts: bool = False) -> set[str]:
@@ -134,8 +137,11 @@ def _stream(repo: Path, args: list[str], scan: Callable[[Iterable[str], Sequence
     return hits if returncode == 0 else None
 
 
-def run(repo: Path, prefix: str, denylist_file: Path | None) -> int:
-    """Scans the split of `prefix` in `repo` and prints one line per hit. Returns the exit code."""
+def run(repo: Path, prefix: str, denylist_file: Path | None, stream: LogRunner = _stream) -> int:
+    """Scans the split of `prefix` in `repo` and prints one line per hit. Returns the exit code.
+
+    `stream` runs each `git log`; it defaults to the real runner.
+    """
     if denylist_file is None or not denylist_file.is_file():
         print("refused: the private denylist is absent, so the scan cannot show the history clean")
         return EXIT_REFUSED
@@ -148,12 +154,12 @@ def run(repo: Path, prefix: str, denylist_file: Path | None) -> int:
     if split is None:
         print(f"refused: git cannot split {prefix!r} from HEAD")
         return EXIT_REFUSED
-    messages = _stream(repo, ["--no-patch", "--format=%x00%H%n%B", split], scan_message_lines, literals)
+    messages = stream(repo, ["--no-patch", "--format=%x00%H%n%B", split], scan_message_lines, literals)
     # Merges are diffed against their first parent, so a literal a merge resolution adds is seen. Binary files are
     # diffed as text and textconv filters are off, so the bytes that git stores are what gets checked.
-    patches = _stream(repo, ["-p", "--no-color", "--no-ext-diff", "--no-textconv", "--text",
-                             "--diff-merges=first-parent", "--format=%x00%H", split],
-                      scan_patch_lines, literals)
+    patches = stream(repo, ["-p", "--no-color", "--no-ext-diff", "--no-textconv", "--text",
+                            "--diff-merges=first-parent", "--format=%x00%H", split],
+                     scan_patch_lines, literals)
     if messages is None or patches is None:
         print("refused: git log failed on the split history")
         return EXIT_REFUSED

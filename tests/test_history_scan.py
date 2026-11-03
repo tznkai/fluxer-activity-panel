@@ -371,11 +371,14 @@ def test_prefix_git_cannot_split_refuses_with_exit_2(tmp_path: Path, capsys) -> 
 
 
 @needs_git
-def test_git_log_failure_on_the_split_refuses_with_exit_2(tmp_path: Path, capsys, monkeypatch) -> None:
+def test_git_log_failure_on_the_split_refuses_with_exit_2(tmp_path: Path, capsys) -> None:
     repo = _repo(tmp_path / "mono", [("add file", {"proj/a.txt": "plain text\n"})])
-    monkeypatch.setattr(history_scan, "_stream", lambda *args, **kwargs: None)
 
-    code = history_scan.run(repo, "proj", _denylist(tmp_path, LITERAL + "\n"))
+    def failing_log(log_repo, args, scan, literals):
+        # The real log runner, given a revision that does not exist, so git itself exits with an error.
+        return history_scan._stream(log_repo, ["no-such-revision"], scan, literals)
+
+    code = history_scan.run(repo, "proj", _denylist(tmp_path, LITERAL + "\n"), stream=failing_log)
 
     assert code == 2
     assert "git log failed" in capsys.readouterr().out
