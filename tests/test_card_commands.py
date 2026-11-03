@@ -19,7 +19,7 @@ import pytest
 from fluxer_client.events import MessageCreate
 from fluxer_client.rest import FluxerREST
 from fluxer_panel import admin, cards, text
-from fluxer_panel.card_commands import CardContext
+from fluxer_panel.card_commands import LIST_CHUNK, CardContext, _chunks
 from fluxer_panel.cards import Voice
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
@@ -407,6 +407,59 @@ async def test_channel_name_is_cleaned_and_capped(world: World, raw: Any, stored
     assert world.last_reply() == text.VOICE_VERIFIED
 
 
+# AC7.1 to AC7.3: subcommand and field names, and the public flag of an address ---------------------------
+
+async def test_subcommand_and_field_names_are_case_insensitive(world: World) -> None:
+    await world.run("!card NEW mc Minecraft")
+    await world.run("!card set mc TITLE Bedrock")
+    assert (await world.card("mc")).title == "Bedrock"
+    await world.run("!card set mc DESCRIPTION Survival")
+    await world.run("!card clear mc DESCRIPTION")
+
+    card = await world.card("mc")
+    assert card is not None
+    assert (card.title, card.description) == ("Bedrock", None)
+    assert world.last_reply() == text.CARD_CLEARED
+
+
+async def test_address_public_yes_and_no_store_the_flag_and_kick(world: World) -> None:
+    await make_mc(world)
+    await world.run("!card set mc address mc.example.invalid:19132")
+    world.kicks.clear()
+    await world.run("!card set mc address_public yes")
+
+    card = await world.card("mc")
+    assert card is not None and card.address is not None
+    assert card.address.public is True
+    assert world.last_reply() == text.CARD_UPDATED
+    assert world.kicks == [1]
+
+    await world.run("!card set mc address_public no")
+    card = await world.card("mc")
+    assert card is not None and card.address is not None
+    assert card.address.public is False
+    assert world.kicks == [1, 1]
+
+
+async def test_new_address_keeps_an_existing_public_flag(world: World) -> None:
+    await make_mc(world)
+    await world.run("!card set mc address mc.example.invalid:19132")
+    await world.run("!card set mc address_public yes")
+    await world.run("!card set mc address mc.example.invalid:19133")
+
+    card = await world.card("mc")
+    assert card is not None and card.address is not None
+    assert (card.address.host, card.address.port, card.address.public) == ("mc.example.invalid", 19133, True)
+
+
+def test_chunks_split_exactly_at_the_list_limit() -> None:
+    assert LIST_CHUNK == 1900
+    # 949 + 1 + 950 == 1900: a joined message at the limit is split.
+    assert _chunks(["a" * 949, "b" * 950]) == ["a" * 949, "b" * 950]
+    # 948 + 1 + 950 == 1899: under the limit, so both lines share one message.
+    assert _chunks(["a" * 948, "b" * 950]) == ["a" * 948 + "\n" + "b" * 950]
+
+
 # AC7.8: clear ---------------------------------------------------------------------------------------------
 
 SLOTS = ("voice", "address", "location", "seats", "manager", "probe")
@@ -436,12 +489,14 @@ async def test_clear_removes_only_the_named_field(ptero_world: World) -> None:
 
     for field_name in SLOTS + BASE:
         before = await snapshot(world)
+        world.kicks.clear()
         await world.run(f"!card clear mc {field_name}")
         after = await snapshot(world)
         assert after[field_name] == EMPTY[field_name], field_name
         assert {k: v for k, v in after.items() if k != field_name} == {
             k: v for k, v in before.items() if k != field_name}, field_name
         assert world.last_reply() == text.CARD_CLEARED
+        assert world.kicks == [1], field_name
 
 
 async def test_clear_title_is_not_clearable(world: World) -> None:
@@ -568,6 +623,7 @@ async def test_archive_deletes_the_message_and_keeps_every_row(ptero_world: Worl
     await _live_card_with_message(ptero_world)
     await ptero_world.run("!card set mc manager pterodactyl abcd1234")
     ptero_world.clear_requests()
+    ptero_world.kicks.clear()
     await ptero_world.run("!card archive mc")
 
     assert [r.method for r in ptero_world.state.requests if r.path == POSTED_MESSAGE] == ["DELETE"]
@@ -576,16 +632,18 @@ async def test_archive_deletes_the_message_and_keeps_every_row(ptero_world: Worl
     assert (card.state, card.message_id, card.channel_id) == ("archived", None, None)
     assert card.voice is not None and card.address is not None and card.manager is not None
     assert ptero_world.last_reply() == text.CARD_ARCHIVED
-    assert ptero_world.kicks
+    assert ptero_world.kicks == [1]
 
 
 @pytest.mark.parametrize("status", [500, 403])
 async def test_archive_with_a_failed_delete_changes_nothing(world: World, status: int) -> None:
     await _live_card_with_message(world)
     world.state.overrides[f"DELETE {POSTED_MESSAGE}"] = Override(status, b'{"code": "X", "message": "no"}')
+    world.kicks.clear()
     await world.run("!card archive mc")
 
     assert world.last_reply() == text.ARCHIVE_RETRY
+    assert world.kicks == []
     card = await world.card("mc")
     assert card is not None
     assert (card.state, card.message_id) == ("live", "5101")
@@ -669,6 +727,7 @@ async def test_unknown_slug_replies_no_such_card_and_creates_nothing(world: Worl
     await world.run(command)
 
     assert world.last_reply() == text.NO_SUCH_CARD
+    assert world.kicks == []
     assert await world.db.run(lambda c: cards.list_cards(c)) == []
     assert [r for r in world.state.requests if r.method != "POST"] == []   # no lookups, no Fluxer calls
 
@@ -729,7 +788,7 @@ async def test_admin_command_logs_fixed_command_vocabulary(world: World, caplog,
     assert "field" not in record.panel_fields
 
 
-async def test_set_logs_the_field_only_when_it_is_settable(world: World, caplog) -> None:
+async def test_clear_logs_the_field_only_when_it_is_clearable(world: World, caplog) -> None:
     caplog.set_level(logging.INFO, logger="fluxer_panel.card_commands")
     await make_mc(world)
     await world.run("!card clear mc title")   # title is settable but not clearable

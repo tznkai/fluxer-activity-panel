@@ -365,7 +365,6 @@ async def test_invalid_session_reidentifies_then_answers_admin_dm(aiohttp_server
     assert rest_state.requests_to(DM_MESSAGES)[0].payload == {"content": "pong"}
 
 
-
 async def test_dm_card_command_is_routed_to_the_card_context(fake, session, monkeypatch) -> None:
     import fluxer_panel.card_commands as card_commands
 
