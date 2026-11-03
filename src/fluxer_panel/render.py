@@ -50,7 +50,7 @@ LIMITS = {
     "detail": 120,
     # A channel name (voice or text), fitted after escaping. An entry is "[#" + name + "](" + link + ")", at most
     # 166 + the instance URL's length. Three entries and two newlines fit the 1024-unit field at 174 characters.
-    # The link is not fitted, so config caps FLUXER_INSTANCE_URL at 128 (config.INSTANCE_URL_MAX), well under 174.
+    # The link is not fitted: config caps FLUXER_INSTANCE_URL at 128 UTF-16 units (INSTANCE_URL_MAX), under 174.
     "channel_name": 100,
     # A board cell's name: the card's title, escaped and fitted. A cell's value is a status, at most about 250 characters.
     "board_title": 50,

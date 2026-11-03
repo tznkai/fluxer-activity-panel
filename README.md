@@ -21,7 +21,8 @@ Core:
 
 - `FLUXER_TOKEN` (required): the bot token. It is never logged, and `repr` does not show it.
 - `FLUXER_INSTANCE_URL` (required unless `FLUXER_API_URL` is set): the instance's base URL, at most
-  128 characters. The API and gateway addresses are discovered from it.
+  128 UTF-16 code units (an emoji or other character outside the Basic Multilingual Plane counts two). The
+  API and gateway addresses are discovered from it.
 - `FLUXER_API_URL` (optional): the API base URL. When it is set, no discovery is needed.
 - `FLUXER_GATEWAY_URL` (optional): the gateway URL (`ws` or `wss`). When it is unset, the API
   reports the gateway address.

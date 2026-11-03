@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from fluxer_panel.config import Config, ConfigError
-from tests.fakes import instance_url_of_length
+from tests.fakes import instance_url_of_length, instance_url_of_units
 
 TOKEN = "SENTINEL-TOKEN-7f3a9c"
 PTERO_KEY = "SENTINEL-PTERO-KEY-91c2"
@@ -78,6 +78,22 @@ def test_instance_url_of_128_characters_is_accepted():
     assert Config.from_env(env(FLUXER_INSTANCE_URL=capped)).instance_url == capped
 
 
+def test_instance_url_of_128_utf16_units_with_astral_characters_is_accepted():
+    capped = instance_url_of_units(128)
+    # Fewer characters than units, so a count of characters would accept a longer URL than the cap allows.
+    assert len(capped) < 128
+    assert Config.from_env(env(FLUXER_INSTANCE_URL=capped)).instance_url == capped
+
+
+def test_instance_url_of_129_utf16_units_with_astral_characters_is_refused():
+    over_cap = instance_url_of_units(129)
+    with pytest.raises(ConfigError) as info:
+        Config.from_env(env(FLUXER_INSTANCE_URL=over_cap))
+    assert "FLUXER_INSTANCE_URL" in str(info.value)
+    assert "128 UTF-16 units" in str(info.value)
+    assert over_cap not in str(info.value)
+
+
 def test_api_url_has_no_length_cap():
     long_api = instance_url_of_length(300)
     assert Config.from_env(env(FLUXER_INSTANCE_URL=None, FLUXER_API_URL=long_api)).api_url == long_api
@@ -88,6 +104,11 @@ def test_instance_url_of_length_has_the_length_asked_for_and_labels_under_64_cha
         url = instance_url_of_length(length)
         assert len(url) == length
         assert all(0 < len(label) < 64 for label in url.removeprefix("https://").split(".")), length
+
+
+def test_instance_url_of_units_has_the_utf16_units_asked_for():
+    for units in (128, 129):
+        assert len(instance_url_of_units(units).encode("utf-16-le")) // 2 == units
 
 
 def test_repr_never_shows_the_token():

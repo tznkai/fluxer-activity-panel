@@ -26,10 +26,11 @@ from fluxer_panel.sources.base import PlayerCounts, PowerAction, ProbeDetails, P
 from fluxer_panel.sources.minecraft import JavaProbe
 from fluxer_panel.sources.pterodactyl import parse_schedules, select_next
 from tests.fake_probes import java_server
-from tests.fakes import instance_url_of_length
+from tests.fakes import instance_url_of_length, instance_url_of_units
 
 INSTANCE = "https://fluxer.invalid"
 CAP_INSTANCE = instance_url_of_length(INSTANCE_URL_MAX)   # the longest instance URL the config accepts
+CAP_EMOJI_INSTANCE = instance_url_of_units(INSTANCE_URL_MAX)   # the same cap at 128 units, with astral characters
 NOW = datetime(2026, 11, 2, 12, 0, tzinfo=UTC)
 SENTINEL_LOCATION = "SENTINEL-LOCATION-77"
 ALL_DETAILS = ("map", "version", "game_mode")
@@ -454,9 +455,12 @@ GROWTH_UNITS = ["*", "<#"]
 ASTRAL = "\U0001F3AE"
 
 
-# Title, description and text values are fitted to the Discord-compatible limits, counted in UTF-16 units.
-@pytest.mark.parametrize("unit", [*GROWTH_UNITS, ASTRAL])
-def test_maximum_length_card_stays_within_embed_limits(unit: str) -> None:
+# Title, description and text values are fitted to the Discord-compatible limits, counted in UTF-16 units. The instance
+# URL is at its cap, both ASCII and made of astral characters, so the Channels field holds at the longest link.
+@pytest.mark.parametrize(("unit", "instance_url"), [
+    *[(unit, CAP_INSTANCE) for unit in GROWTH_UNITS], (ASTRAL, CAP_INSTANCE), (ASTRAL, CAP_EMOJI_INSTANCE),
+])
+def test_maximum_length_card_stays_within_embed_limits(unit: str, instance_url: str) -> None:
     card = make_card(
         title=repeated(unit, 200),
         description=repeated(unit, 1000),
@@ -474,7 +478,7 @@ def test_maximum_length_card_stays_within_embed_limits(unit: str) -> None:
             map=repeated(unit, 48), version=repeated(unit, 48), game_mode=repeated(unit, 48),
         ),
     )
-    embed = render.render_embed(card, status, "Restarts in 30 min", instance_url=CAP_INSTANCE)
+    embed = render.render_embed(card, status, "Restarts in 30 min", instance_url=instance_url)
     assert render.LIMITS["description"] == 1024
     assert text.FIELD_CHANNELS in fields_of(embed)
     assert render.units(embed["title"]) <= 256

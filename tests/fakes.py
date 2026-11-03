@@ -391,3 +391,14 @@ def instance_url_of_length(length: int) -> str:
     letters = body - (labels - 1)  # the host's characters other than the dots between labels
     sizes = [letters // labels + (1 if i < letters % labels else 0) for i in range(labels)]
     return "https://" + ".".join("a" * size for size in sizes) + ".invalid"
+
+
+def instance_url_of_units(units: int) -> str:
+    """An https URL of exactly `units` UTF-16 code units, for the cap that counts units. After an ASCII prefix it is
+    filled with astral characters, two units each, and an odd count ends in one ASCII character. So it has fewer
+    characters than units."""
+    prefix = "https://fluxer.invalid/"
+    room = units - len(prefix)
+    if room < 0:
+        raise ValueError("units must leave room for the prefix")
+    return prefix + "\U0001F600" * (room // 2) + "a" * (room % 2)
