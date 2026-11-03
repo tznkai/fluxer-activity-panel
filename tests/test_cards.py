@@ -265,6 +265,21 @@ async def test_set_voice_name_if_leaves_a_voice_that_changed_since_it_was_read(d
     assert card.voice == stored
 
 
+async def test_set_voice_name_if_leaves_an_unverified_voice_without_a_name_alone(db: Database) -> None:
+    # The voice was read verified with no name, then became unverified. A rename here would violate the schema's
+    # rule that only a verified voice carries a name, so the write must be refused rather than raise.
+    card_id = await _create(db)
+    stored = Voice("1001", "1002", None, False)
+    await db.run(lambda c: cards.set_voice(c, card_id, stored))
+
+    changed = await db.run(lambda c: cards.set_voice_name_if(c, card_id, Voice("1001", "1002", None, True), "New"))
+
+    assert changed is False
+    card = await _get(db, "alpha")
+    assert card is not None
+    assert card.voice == stored
+
+
 async def test_set_voice_name_if_never_inserts_a_cleared_voice(db: Database) -> None:
     card_id = await _create(db)
 
