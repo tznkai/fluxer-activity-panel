@@ -18,6 +18,7 @@ from pathlib import Path
 
 import aiohttp
 import pytest
+from yarl import URL
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "live"))
 import _live  # noqa: E402
@@ -1037,3 +1038,23 @@ def test_an_unexpected_error_during_cleanup_is_not_swallowed():
     rest = _DeleteRest({"1001": RuntimeError("unexpected")})
     with pytest.raises(RuntimeError):
         asyncio.run(markup_live.delete_sent(rest, "1000", ["1001"], Redactor(token="")))
+
+
+async def test_run_hides_the_instance_host_in_a_note_the_operator_types(fake, monkeypatch, capsys, no_live_redactor):
+    """markup_live.run() passes the instance URL's forms to live(), so a note that echoes the host is printed redacted."""
+    _, base = fake
+    env = {**required_env(), **MARKUP_ENV, "FLUXER_API_URL": f"{base}/api", "FLUXER_INSTANCE_URL": base}
+    parsed = URL(base)
+    hostport = f"{parsed.host}:{parsed.port}"
+    monkeypatch.setattr(_live, "load_env", lambda: dict(env))
+    monkeypatch.setattr(markup_live, "load_env", lambda: dict(env))
+
+    async def operator_note() -> str:
+        return f"seen at {hostport}"
+
+    monkeypatch.setattr(markup_live, "wait_for_enter", operator_note)
+    await markup_live.run()
+
+    printed = capsys.readouterr().out
+    assert "NOTE channel links: seen at [REDACTED]" in printed.splitlines()
+    assert hostport not in printed
