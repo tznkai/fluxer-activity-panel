@@ -31,6 +31,7 @@ from _live import (  # noqa: E402
     out,
     read_env_file,
 )
+import markup_live  # noqa: E402
 import ptero_live  # noqa: E402
 import probes_live  # noqa: E402
 from fluxer_client.rest import FluxerREST  # noqa: E402
@@ -726,3 +727,57 @@ def test_probe_summary_reports_counts_and_only_present_details():
 
 def test_probe_summary_for_an_unreachable_target_gives_the_reason():
     assert probes_live.probe_summary(ProbeFailed(reason="timeout")) == "unreachable reason=timeout"
+
+
+# markup_live: pure helpers (no network)
+
+OTHER = "4" * 19
+VOICE = "5" * 19
+MARKUP_ENV = {
+    "LIVE_GUILD_ID": GUILD,
+    "LIVE_VOICE_CHANNEL_ID": VOICE,
+    "LIVE_OTHER_GUILD_ID": OTHER,
+    "FLUXER_INSTANCE_URL": "https://fluxer.invalid",
+}
+
+
+def test_markup_env_accepts_complete_settings():
+    markup_live.check_markup_env(MARKUP_ENV)
+
+
+@pytest.mark.parametrize("name", ["LIVE_VOICE_CHANNEL_ID", "LIVE_OTHER_GUILD_ID", "FLUXER_INSTANCE_URL"])
+def test_markup_env_refuses_each_missing_setting_by_name(name):
+    env = {key: value for key, value in MARKUP_ENV.items() if key != name}
+    with pytest.raises(LiveRefused) as info:
+        markup_live.check_markup_env(env)
+    assert name in str(info.value)
+
+
+def test_markup_env_refuses_a_non_snowflake_voice_channel_without_echoing_it():
+    with pytest.raises(LiveRefused) as info:
+        markup_live.check_markup_env({**MARKUP_ENV, "LIVE_VOICE_CHANNEL_ID": "12 3"})
+    assert "LIVE_VOICE_CHANNEL_ID" in str(info.value)
+    assert "12 3" not in str(info.value)
+
+
+def test_markup_env_refuses_the_test_guild_as_the_other_community():
+    with pytest.raises(LiveRefused) as info:
+        markup_live.check_markup_env({**MARKUP_ENV, "LIVE_OTHER_GUILD_ID": GUILD})
+    assert "LIVE_OTHER_GUILD_ID" in str(info.value)
+
+
+@pytest.mark.parametrize(("line", "expected"), [
+    ("y", ("pass", "")),
+    (" Y ", ("pass", "")),
+    ("n", ("fail", "")),
+    ("N", ("fail", "")),
+    ("only the mobile one", ("note", "only the mobile one")),
+    ("", ("note", "")),
+])
+def test_parse_verdict_maps_y_n_and_notes(line, expected):
+    assert markup_live.parse_verdict(line) == expected
+
+
+def test_burst_line_counts_successes_rate_limits_and_other_errors():
+    line = markup_live.burst_line([None, None, 429, 429, 500], 1.234)
+    assert line == "edits=5 ok=2 rate_limited_429=2 other_errors=1 seconds=1.23"
