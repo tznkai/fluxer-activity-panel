@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
@@ -745,6 +746,61 @@ async def test_a_failed_board_read_is_logged_and_the_cards_still_post(world: Wor
     assert read.panel_fields == {"reason": "OperationalError"}
     [synced] = records(captured, "board_sync_failed")
     assert synced.panel_fields == {"reason": "OperationalError"}
+
+
+async def test_a_failed_first_board_read_posts_no_board_in_that_tick_and_the_next_tick_posts_it(
+        world: World, db: Database, captured: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch) -> None:
+    await seed(db, "alpha", title="Alpha", probe=True)
+    fail_the_first_board_read(db, monkeypatch)
+    poller = world.poller()
+
+    await poller.tick()
+
+    # The second read of the same tick succeeds and finds no board, but the tick's first read failed, so nothing is
+    # posted now. The card still publishes.
+    assert card_titles(world.fluxer) == ["Alpha"]
+    assert board_posts(world.fluxer) == []
+    assert (await board_row(db)).message_id is None
+    assert [r.panel_fields for r in records(captured, "board_read_failed")] == [{"reason": "OperationalError"}]
+    assert len(records(captured, "board_post_deferred")) == 1
+
+    await poller.tick()
+
+    assert len(board_posts(world.fluxer)) == 1
+    assert (await board_row(db)).message_id is not None
+
+
+async def test_a_failed_first_board_read_still_edits_a_stored_board(world: World, db: Database,
+                                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    card_id = await seed(db, "alpha", title="Alpha", probe=True)
+    poller = world.poller()
+    await poller.tick()
+    world.fluxer.requests.clear()
+    await db.run(lambda c: cards.update_fields(c, card_id, 0, title="Omega"))
+    fail_the_first_board_read(db, monkeypatch)
+
+    await poller.tick()
+
+    # A stored board is only edited, never posted again, so its edit goes ahead despite the failed first read.
+    assert board_posts(world.fluxer) == []
+    [edit] = patches_to(world.fluxer, BOARD)
+    assert cells(edit.payload)[0][0] == "Omega"
+
+
+def fail_the_first_board_read(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Makes the first board read of the next calls fail, as a failing read would, and lets every later call reach
+    the database. The poller's own code runs unchanged."""
+    real_run = db.run
+    failed = False
+
+    async def run(fn: Callable[[sqlite3.Connection], Any]) -> Any:
+        nonlocal failed
+        if fn is board.get and not failed:
+            failed = True
+            raise sqlite3.OperationalError("the first board read fails")
+        return await real_run(fn)
+
+    monkeypatch.setattr(db, "run", run)
 
 
 async def _fail_evaluation() -> None:

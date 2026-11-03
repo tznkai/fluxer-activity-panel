@@ -138,12 +138,17 @@ class Poller:
         """Keeps the cards and the board up to date. When no board message is stored, every card is evaluated first, then
         the board is posted, then the cards are published, so a new board sits above them. When a board is stored, each
         card is published as soon as its own evaluation ends, so one slow card does not hold back the others. Either way
-        the board is brought up to date after the cards."""
+        the board is brought up to date after the cards. When this tick's read of the stored board fails, the cards
+        publish as they would with a board stored, and no new board is posted in this tick."""
         live = await self._db.run(lambda c: cards.list_cards(c, "live"))
         self._forget_cards_not_in({card.id for card in live})
         sem = asyncio.Semaphore(self._config.poll_concurrency)
         channel_id = self._config.games_channel_id
-        if channel_id is not None and await self._board_is_missing():
+        if channel_id is None:
+            await asyncio.gather(*(self._evaluate_and_publish(card, sem) for card in live))
+            return
+        stored = await self._read_board()
+        if stored is not None and stored.message_id is None:
             evaluated = await asyncio.gather(*(self._evaluate_guarded(card, sem) for card in live))
             await self._board_before_cards(evaluated, channel_id)
             await asyncio.gather(*(self._publish_guarded(result, sem) for result in evaluated
@@ -151,8 +156,8 @@ class Poller:
             results = evaluated
         else:
             results = await asyncio.gather(*(self._evaluate_and_publish(card, sem) for card in live))
-        if channel_id is not None:
-            await self._board_after_cards({result.card.id: result.status for result in results}, channel_id)
+        await self._board_after_cards({result.card.id: result.status for result in results}, channel_id,
+                                      may_post=stored is not None)
 
     def _forget_cards_not_in(self, live_ids: set[int]) -> None:
         """Drops the cached schedule and channel name check of every card not in `live_ids`, the live set of this tick.
@@ -302,18 +307,16 @@ class Poller:
             except Exception as exc:  # noqa: BLE001 - one admin's failed DM must not stop the other admins' DMs
                 log_event(log, failed_event, level=logging.WARNING, user_id=user_id, reason=type(exc).__name__)
 
-    async def _board_is_missing(self) -> bool:
-        """Whether no board message is stored, so this tick posts the board before the cards. A failed read is logged and
-        answers False: the cards then publish as they would with no board, and no board is posted while the stored state
-        is unknown."""
+    async def _read_board(self) -> board.BoardState | None:
+        """The stored board state, read at the start of a tick. A failed read is logged and gives None: the cards then
+        publish as they would with a board stored, and no new board is posted in this tick."""
         try:
-            state = await self._db.run(board.get)
+            return await self._db.run(board.get)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - a failed read must not stop the cards of this tick
             log_event(log, "board_read_failed", level=logging.WARNING, reason=type(exc).__name__)
-            return False
-        return state.message_id is None
+            return None
 
     async def _board_before_cards(self, evaluated: list[_Evaluated], channel_id: str) -> None:
         """Posts the board to the games channel before this tick's card messages. It runs only when no board is stored.
@@ -327,14 +330,21 @@ class Poller:
             log_event(log, "board_post_failed", level=logging.WARNING, channel_id=channel_id,
                       reason=type(exc).__name__)
 
-    async def _board_after_cards(self, statuses: dict[int, CardStatus | None], games_channel_id: str) -> None:
+    async def _board_after_cards(self, statuses: dict[int, CardStatus | None], games_channel_id: str, *,
+                                 may_post: bool) -> None:
         """Brings the board up to date with the cards as they are now: posts it if none is stored, and edits it when its
         content changed. A stored board stays in the channel it was posted in, so its edits go there, whatever
-        GAMES_CHANNEL_ID is now. Cards that were not evaluated this tick are left off until the next tick."""
+        GAMES_CHANNEL_ID is now. Cards that were not evaluated this tick are left off until the next tick. `may_post` is
+        False when this tick's read of the stored board failed: then no new board is posted, though an edit of a stored
+        board still goes ahead."""
         try:
             live = await self._db.run(lambda c: cards.list_cards(c, "live"))
-            entries = [(card, statuses[card.id]) for card in live if card.id in statuses]
             state = await self._db.run(board.get)
+            if state.message_id is None and not may_post:
+                # This tick's first read failed, so this tick posts no board. The next tick reads again and posts one.
+                log_event(log, "board_post_deferred", level=logging.WARNING)
+                return
+            entries = [(card, statuses[card.id]) for card in live if card.id in statuses]
             channel_id = state.channel_id if state.channel_id is not None else games_channel_id
             payload = await self._board_payload(entries, channel_id)
             rendered = render.rendered_hash(payload)

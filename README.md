@@ -138,6 +138,8 @@ message. The board is laid out for the desktop and web clients. Phones show the 
 - **Posting:** when no board is stored, the board is posted before the cards on a fresh start, so it sits
   above them. The first post may show plain status text for cards that are not posted yet. The next edit
   adds the links.
+  If the stored board cannot be read at the start of a poll, the cards are still posted, and no new board is
+  posted in that poll. The next poll posts it.
 - **The board's channel:** the board is posted in the games channel and then stays there. A stored board
   is edited where it was posted, whatever `GAMES_CHANNEL_ID` is now. Its links go to the channel's own
   community, and a card is linked only when its message is in the same channel as the board. To move the

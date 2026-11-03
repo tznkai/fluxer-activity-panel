@@ -133,8 +133,9 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   `allowed_mentions={"parse": []}`. With no board stored, the poller evaluates every card, posts the board, then
   publishes the cards. With a board stored, each card is published right after its own evaluation. Either way the
   board is edited after the cards when its hash changed. The poller sends the admins the pin request once per new
-  message. A failed board read is logged, and no board is posted in that tick. The poller logs the board's ids and
-  exception types only: never a title, a status or a link.
+  message. A failed read of the stored board at the start of a tick is logged. The cards then publish as they would
+  with a board stored, and no new board is posted in that tick (a stored board is still edited); the next tick
+  posts it. The poller logs the board's ids and exception types only: never a title, a status or a link.
 
 ## Database
 
