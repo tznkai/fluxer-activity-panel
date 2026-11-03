@@ -153,6 +153,21 @@ def test_both_attribution_trailers_are_not_hits() -> None:
     assert _message_hits([NUL + SHA, "subject", "", CO_AUTHORED, CLAUDE_SESSION]) == set()
 
 
+@pytest.mark.parametrize("line", [
+    "Co-Authored-By: Claude <noreply@" + ANTHROPIC_HOST.upper() + ">",
+    "Claude-Session: https://" + CLAUDE_AI_HOST.upper() + "/code/session_Ab3dE5fG7hJ9kLmN",
+])
+def test_an_upper_case_attribution_host_on_a_trailer_is_not_a_hit(line: str) -> None:
+    assert _message_hits([NUL + SHA, "subject", "", line]) == set()
+
+
+def test_a_denylist_literal_that_contains_an_attribution_host_is_still_a_hit_on_a_trailer() -> None:
+    # The literal holds the attribution host, so checking the stripped text would miss it.
+    literal = "tag:" + ANTHROPIC_HOST + ";"
+    line = "Co-Authored-By: Claude " + literal
+    assert _message_hits([NUL + SHA, line], [literal]) == {(SHA, "message:denylist")}
+
+
 @pytest.mark.parametrize(("line", "kind"), [
     (CO_AUTHORED + " " + LITERAL, "denylist"),
     (CO_AUTHORED + " " + SAMPLE_IP, "ipv4"),
