@@ -11,9 +11,12 @@ from dataclasses import dataclass
 import aiohttp
 
 from fluxer_panel.config import Config
+from fluxer_panel.sources import pterodactyl
 from fluxer_panel.sources.base import HostManager, Probe
 
-MANAGER_FACTORIES: dict[str, Callable[[aiohttp.ClientSession, Config], HostManager | None]] = {}
+MANAGER_FACTORIES: dict[str, Callable[[aiohttp.ClientSession, Config], HostManager | None]] = {
+    "pterodactyl": pterodactyl.create,  # returns None when not configured
+}
 PROBES: dict[str, Probe] = {}
 
 
