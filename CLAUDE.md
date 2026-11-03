@@ -120,6 +120,8 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
 - Every card send and edit uses `allowed_mentions={"parse": []}` and goes through `render`.
 - `outside_location` takes a bool, never the location text.
 - Card replies and card text live in `text.py`, which never says "guild". `tests/test_text.py` enforces it.
+- `!card list` sends its lines in messages under `card_commands.LIST_CHUNK` UTF-16 units each (`render.units`), so a
+  message stays under Fluxer's 2000-unit limit. `!card show`'s outside preview is fitted to the same limit in units.
 - Adding a plugin is one module plus one line in `sources/registry.py`.
 - Summary board (`render.board_message`, `board.py`, `poller.py`): one message, always on when `GAMES_CHANNEL_ID` is
   set. It is posted to that channel when none is stored, and then it stays in the channel it was posted in: a changed

@@ -30,7 +30,7 @@ VOICE_CHANNEL_TYPE = 2
 TEXT_CHANNEL_TYPE = 0
 _CHANNEL_KINDS = {VOICE_CHANNEL_TYPE: text.CHANNEL_KIND_VOICE, TEXT_CHANNEL_TYPE: text.CHANNEL_KIND_TEXT}
 CHANNEL_NAME_MAX = 100
-LIST_CHUNK = 1900
+LIST_CHUNK = 1900  # UTF-16 units: a list message stays under Fluxer's 2000-unit message limit
 PREVIEW_LIMIT = 2000  # Fluxer's message content limit
 SUBCOMMANDS = ("new", "set", "clear", "show", "list", "publish", "archive", "help")
 SETTABLE = ("title", "description", "join", "first_time", "sort", "seats", "location", "voice",
@@ -308,7 +308,7 @@ async def _show(event: MessageCreate, ctx: CardContext, rest: str) -> _Result:
     # The outside text is plain text everywhere else. In this DM it is escaped, so it shows as typed, and then
     # fitted so the label, newline and body stay within the message limit.
     label = text.SHOW_OUTSIDE_LABEL
-    body = render.fit(render.escape(render.outside_text(card, None, None)), PREVIEW_LIMIT - len(label) - 1)
+    body = render.fit(render.escape(render.outside_text(card, None, None)), PREVIEW_LIMIT - render.units(label) - 1)
     await _say(ctx, event, label + "\n" + body)
     return _Result(card.id)
 
@@ -328,12 +328,12 @@ async def _list(event: MessageCreate, ctx: CardContext, rest: str) -> _Result:
 
 
 def _chunks(lines: list[str]) -> list[str]:
-    """Joins lines into messages of under LIST_CHUNK characters each, keeping order."""
+    """Joins lines into messages of under LIST_CHUNK UTF-16 units each, keeping order."""
     chunks: list[str] = []
     current = ""
     for line in lines:
         candidate = line if not current else current + "\n" + line
-        if current and len(candidate) >= LIST_CHUNK:
+        if current and render.units(candidate) >= LIST_CHUNK:
             chunks.append(current)
             current = line
         else:

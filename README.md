@@ -164,7 +164,8 @@ message. The board is laid out for the desktop and web clients. Phones show the 
 !card set <slug> <field> <value…>          sets one field
 !card clear <slug> <field>                 clears one field
 !card show <slug>                          the inside embed and the outside text
-!card list                                 slug, state and title, by sort order
+!card list                                 slug, state and title, by sort order; a long list is sent in several
+                                           messages, each under 1900 UTF-16 code units
 !card publish <slug>                       draft or archived -> live
 !card archive <slug>                       deletes the message, keeps the card
 !card help                                 the subcommands and the field names

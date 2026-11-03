@@ -19,7 +19,7 @@ import pytest
 
 from fluxer_client.events import MessageCreate
 from fluxer_client.rest import FluxerREST
-from fluxer_panel import admin, cards, text
+from fluxer_panel import admin, cards, render, text
 from fluxer_panel.card_commands import LIST_CHUNK, CardContext, _chunks, help_fields_reply
 from fluxer_panel.cards import ChannelLink
 from fluxer_panel.config import Config
@@ -599,6 +599,15 @@ def test_chunks_split_exactly_at_the_list_limit() -> None:
     assert _chunks(["a" * 948, "b" * 950]) == ["a" * 948 + "\n" + "b" * 950]
 
 
+def test_chunks_count_astral_characters_as_two_units() -> None:
+    # 600 and 350 astral characters are 951 characters joined, under the limit, but 1200 + 1 + 700 = 1901 units.
+    first = "\U0001F600" * 600
+    second = "\U0001F600" * 350
+    assert _chunks([first, second]) == [first, second]
+    # 500 and 350 astral characters are 1000 + 1 + 700 = 1701 units: under the limit, so one message.
+    assert _chunks(["\U0001F600" * 500, second]) == ["\U0001F600" * 500 + "\n" + second]
+
+
 # AC7.8: clear ---------------------------------------------------------------------------------------------
 
 SLOTS = ("voice", "address", "location", "seats", "manager", "probe")
@@ -721,9 +730,24 @@ async def test_list_splits_long_listings_into_messages_under_1900_characters(wor
 
     contents = [payload["content"] for payload in world.payloads()]
     assert len(contents) > 1
-    assert all(len(content) < 1900 for content in contents)
+    assert all(render.units(content) < LIST_CHUNK for content in contents)
     listed = [line.split(" · ")[0] for content in contents for line in content.splitlines()]
     assert listed == [f"c{n:02d}" for n in range(20)]
+
+
+async def test_list_of_astral_titles_keeps_every_message_within_the_message_limit(world: World) -> None:
+    # Each title is 200 astral characters, 400 UTF-16 units: a message of four or more such lines is over 2000 units.
+    title = "\U0001F600" * 200
+    for n in range(20):
+        await world.run(f"!card new a{n:02d} {title}")
+    world.clear_requests()
+    await world.run("!card list")
+
+    contents = [payload["content"] for payload in world.payloads()]
+    assert len(contents) > 1
+    assert all(render.units(content) <= 2000 for content in contents)
+    listed = [line.split(" · ")[0] for content in contents for line in content.splitlines()]
+    assert listed == [f"a{n:02d}" for n in range(20)]
 
 
 # AC7.10: publish and archive ----------------------------------------------------------------------------
