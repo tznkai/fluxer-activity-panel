@@ -26,6 +26,7 @@ ALLOWED_COLUMNS: dict[str, set[str]] = {
     "card_probe": {"card_id", "kind", "host", "port"},
     "card_runtime": {"card_id", "rendered_hash", "probe_failing_since", "probe_alert_sent"},
     "board": {"id", "channel_id", "message_id", "content_hash"},
+    "card_subscription": {"card_id", "guild_id", "channel_id", "message_id", "content_hash", "paused"},
     "families": {"id", "created_at"},
     "family_members": {"family_id", "user_id", "relation"},
     "sessions": {"id", "card_id", "group_role_id", "starts_at", "ends_at", "location_text", "seats",
@@ -35,6 +36,7 @@ ALLOWED_COLUMNS: dict[str, set[str]] = {
 }
 
 STRICT_TABLES = {"card_location", "card_voice", "card_text_channel", "card_address", "card_manager", "card_probe",
+                 "card_subscription",
                  "card_runtime", "board"}
 
 FORBIDDEN_TOKENS = {"nick", "nickname", "age", "birth", "birthday", "dob", "gender",
@@ -158,6 +160,22 @@ REJECTED: list[tuple[str, str, tuple[object, ...]]] = [
                                         "VALUES (1,'2001',10,20,'x1','1001',1)", ()),
     ("session message id has a letter", "INSERT INTO sessions (card_id,group_role_id,starts_at,ends_at,message_id,proposer_id,created_at) "
                                         "VALUES (1,'2001',10,20,'x1','1001',1)", ()),
+    ("subscription guild id has a letter", "INSERT INTO card_subscription (card_id,guild_id,channel_id,paused) "
+                                           "VALUES (1,'12a','2001',0)", ()),
+    ("subscription guild id is 26 digits", "INSERT INTO card_subscription (card_id,guild_id,channel_id,paused) "
+                                           "VALUES (1,?,'2001',0)", ("1" * 26,)),
+    ("subscription channel id has a letter", "INSERT INTO card_subscription (card_id,guild_id,channel_id,paused) "
+                                             "VALUES (1,'1001','20x1',0)", ()),
+    ("subscription channel id is 26 digits", "INSERT INTO card_subscription (card_id,guild_id,channel_id,paused) "
+                                             "VALUES (1,'1001',?,0)", ("2" * 26,)),
+    ("subscription message id has a letter", "INSERT INTO card_subscription (card_id,guild_id,channel_id,message_id,paused) "
+                                             "VALUES (1,'1001','2001','x1',0)", ()),
+    ("subscription hash without a message", "INSERT INTO card_subscription (card_id,guild_id,channel_id,content_hash,paused) "
+                                            "VALUES (1,'1001','2001',?,0)", ("a" * 64,)),
+    ("subscription hash is not hex", "INSERT INTO card_subscription (card_id,guild_id,channel_id,message_id,content_hash,paused) "
+                                     "VALUES (1,'1001','2001','5001',?,0)", ("G" * 64,)),
+    ("subscription paused is two", "INSERT INTO card_subscription (card_id,guild_id,channel_id,paused) "
+                                   "VALUES (1,'1001','2001',2)", ()),
 ]
 
 
