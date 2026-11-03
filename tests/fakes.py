@@ -63,6 +63,14 @@ class FakeFluxerState:
     rate_limit: dict[str, int] = field(default_factory=dict)
     # recipient user id -> DM channel id, filled by POST /users/@me/channels.
     dm_channels: dict[str, str] = field(default_factory=dict)
+    # Snowflake-shaped ids for created messages (the card store CHECKs ids as digits).
+    next_message_id: int = 5001
+    # (channel_id, message_id) -> last payload, for created messages.
+    messages: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
+    # (channel_id, message_id) of messages the fake has deleted.
+    deleted: set[tuple[str, str]] = field(default_factory=set)
+    # "METHOD /path" -> seconds to sleep before the handler runs (for timeout tests).
+    delays: dict[str, float] = field(default_factory=dict)
     requests: list[Recorded] = field(default_factory=list)
     # Gateway fake: when False the fake never ACKs heartbeats (op 1 gets no op 11).
     ack: bool = True
@@ -151,7 +159,11 @@ def make_rest_app(state: FakeFluxerState) -> web.Application:
         if state.rate_limit_next > 0:
             state.rate_limit_next -= 1
             return _send(state, request, 429, RATE_LIMIT_BODY, payload=payload, files=files)
-        return _send(state, request, 200, {"id": "m1"}, payload=payload, files=files)
+        cid = request.match_info["cid"]
+        mid = str(state.next_message_id)
+        state.next_message_id += 1
+        state.messages[(cid, mid)] = payload
+        return _send(state, request, 200, {"id": mid, "channel_id": cid}, payload=payload, files=files)
 
     async def channel(request: web.Request) -> web.Response:
         cid = request.match_info["cid"]
@@ -181,10 +193,32 @@ def make_rest_app(state: FakeFluxerState) -> web.Application:
         # PUT .../@me adds our reaction; DELETE .../{user} removes a reaction (204 either way)
         return _send(state, request, 204, None)
 
+    def _key(request: web.Request) -> tuple[str, str]:
+        return request.match_info["cid"], request.match_info["mid"]
+
     async def edit_message(request: web.Request) -> web.Response:
         payload = await request.json()
-        mid = request.match_info["mid"]
+        key = _key(request)
+        mid = key[1]
+        if key in state.deleted:
+            return _send(state, request, 404, {"code": "UNKNOWN_MESSAGE", "message": "Unknown Message"},
+                         payload=payload)
+        state.messages[key] = {**state.messages.get(key, {}), **payload}
         return _send(state, request, 200, {"id": mid, **payload}, payload=payload)
+
+    async def get_message(request: web.Request) -> web.Response:
+        key = _key(request)
+        if key not in state.messages or key in state.deleted:
+            return _send(state, request, 404, {"code": "UNKNOWN_MESSAGE", "message": "Unknown Message"})
+        cid, mid = key
+        return _send(state, request, 200, {"id": mid, "channel_id": cid, **state.messages[key]})
+
+    async def delete_message(request: web.Request) -> web.Response:
+        key = _key(request)
+        if key not in state.messages or key in state.deleted:
+            return _send(state, request, 404, {"code": "UNKNOWN_MESSAGE", "message": "Unknown Message"})
+        state.deleted.add(key)
+        return _send(state, request, 204, None)
 
     async def role(request: web.Request) -> web.Response:
         return _send(state, request, 204, None)
@@ -195,7 +229,14 @@ def make_rest_app(state: FakeFluxerState) -> web.Application:
         channel = state.dm_channels.setdefault(recipient, str(9000 + len(state.dm_channels)))
         return _send(state, request, 200, {"id": channel, "type": 1}, payload=payload)
 
-    app = web.Application()
+    @web.middleware
+    async def _delay(request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]]):
+        delay = state.delays.get(f"{request.method} {request.path}", 0.0)
+        if delay:
+            await asyncio.sleep(delay)
+        return await handler(request)
+
+    app = web.Application(middlewares=[_delay])
     app.router.add_get("/.well-known/fluxer", well_known)
     app.router.add_get("/api/v1/gateway/bot", gateway_bot)
     app.router.add_post("/api/v1/channels/{cid}/messages", create_message)
@@ -206,7 +247,10 @@ def make_rest_app(state: FakeFluxerState) -> web.Application:
     reaction_path = "/api/v1/channels/{cid}/messages/{mid}/reactions/{emoji}/{user}"
     app.router.add_put(reaction_path, reaction)
     app.router.add_delete(reaction_path, reaction)
-    app.router.add_patch("/api/v1/channels/{cid}/messages/{mid}", edit_message)
+    message_path = "/api/v1/channels/{cid}/messages/{mid}"
+    app.router.add_get(message_path, get_message)
+    app.router.add_delete(message_path, delete_message)
+    app.router.add_patch(message_path, edit_message)
     role_path = "/api/v1/guilds/{gid}/members/{uid}/roles/{rid}"
     app.router.add_put(role_path, role)
     app.router.add_delete(role_path, role)
@@ -236,6 +280,14 @@ async def send(ws: web.WebSocketResponse, op: int, d: Any = None, t: str | None 
     if s is not None:
         payload["s"] = s
     await ws.send_json(payload)
+
+
+def message_delete(message_id: str, channel_id: str, guild_id: str | None = None) -> dict:
+    """MESSAGE_DELETE payload for gateway scripts: `send(ws, 0, message_delete(...), t="MESSAGE_DELETE", s=n)`."""
+    d = {"id": message_id, "channel_id": channel_id}
+    if guild_id is not None:
+        d["guild_id"] = guild_id
+    return d
 
 
 async def _receive(ws: web.WebSocketResponse, timeout: float) -> dict[str, Any] | None:
