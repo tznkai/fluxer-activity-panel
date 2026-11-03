@@ -25,10 +25,13 @@ REQUIRED = ("PTERODACTYL_URL", "PTERODACTYL_API_KEY", "LIVE_PTERO_SERVERS")
 
 
 def ptero_secrets(env: Mapping[str, str]) -> tuple[str, ...]:
-    """Values the redactor must hide: the Panel URL, its host (an aiohttp error names host:port, not the URL), and the
-    bot token. Empty values are left out."""
-    host = URL(env["PTERODACTYL_URL"]).host
-    candidates = (env["PTERODACTYL_URL"], host, env.get("FLUXER_TOKEN"))
+    """Values the redactor must hide: the Panel URL, its host, the host with its port (plain and bracketed), and the
+    bot token. An aiohttp error names host:port, not the URL. The port is the effective one, so a default port
+    is hidden too. Empty values are left out."""
+    url = URL(env["PTERODACTYL_URL"])
+    host, port = url.host, url.port
+    host_forms = (host, f"{host}:{port}", f"[{host}]:{port}") if host and port else (host,)
+    candidates = (env["PTERODACTYL_URL"], *host_forms, env.get("FLUXER_TOKEN"))
     return tuple(value for value in candidates if value)
 
 

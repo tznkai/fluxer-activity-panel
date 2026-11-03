@@ -578,6 +578,11 @@ def test_extra_secrets_are_redacted_in_text():
     assert redactor.text("at panel.invalid with other-secret") == "at [REDACTED] with [REDACTED]"
 
 
+def test_a_longer_extra_secret_is_replaced_before_its_prefix():
+    redactor = Redactor("", extra_secrets=("panel.invalid", "panel.invalid:8443"))
+    assert redactor.text("reach panel.invalid:8443") == "reach [REDACTED]"
+
+
 def test_empty_extra_secrets_leave_text_unchanged():
     redactor = Redactor(TOKEN, extra_secrets=("", ""))
     assert redactor.text("status 200 ok") == "status 200 ok"
@@ -813,44 +818,62 @@ def test_error_redactor_is_empty_when_no_script_registered_one(unregistered_erro
     assert _live.error_redactor().token == ""
 
 
-def test_ptero_secrets_cover_the_panel_url_its_host_and_the_bot_token():
+PANEL_PORT = 8443
+PROBE_PORT = 27015
+PROBE_IPV6 = ":".join(["fd00", "", "1"])
+
+
+def test_ptero_secrets_cover_the_panel_url_its_host_host_port_and_the_bot_token():
     env = {"PTERODACTYL_URL": PANEL_URL, "PTERODACTYL_API_KEY": PANEL_KEY, "FLUXER_TOKEN": "bot-token-value"}
-    assert ptero_live.ptero_secrets(env) == (PANEL_URL, PANEL_HOST, "bot-token-value")
+    assert ptero_live.ptero_secrets(env) == (PANEL_URL, PANEL_HOST, f"{PANEL_HOST}:{PANEL_PORT}",
+                                             f"[{PANEL_HOST}]:{PANEL_PORT}", "bot-token-value")
+
+
+def test_ptero_secrets_include_the_default_port_when_the_url_has_none():
+    secrets = ptero_live.ptero_secrets({"PTERODACTYL_URL": "https://" + PANEL_HOST + "/"})
+    assert f"{PANEL_HOST}:443" in secrets
 
 
 def test_ptero_secrets_skip_a_host_that_is_not_there_and_a_missing_bot_token():
     assert ptero_live.ptero_secrets({"PTERODACTYL_URL": "/relative/path"}) == ("/relative/path",)
 
 
-def test_a_panel_error_naming_the_host_is_redacted_through_ptero_redactor(unregistered_error_redactor, capsys):
+def test_a_panel_error_naming_host_and_port_is_redacted_through_ptero_redactor(unregistered_error_redactor, capsys):
     env = {"PTERODACTYL_URL": PANEL_URL, "PTERODACTYL_API_KEY": PANEL_KEY}
     ptero_live.ptero_redactor(env)
 
     async def failing_run():
-        raise RuntimeError(f"{PANEL_HOST}:443 rejected {PANEL_KEY}")
+        raise RuntimeError(f"{PANEL_HOST}:{PANEL_PORT} rejected {PANEL_KEY}")
 
     with pytest.raises(SystemExit):
         _live.main(failing_run)
 
     out = capsys.readouterr().out
     assert PANEL_HOST not in out
+    assert str(PANEL_PORT) not in out
     assert PANEL_KEY not in out
-    assert "ERROR RuntimeError: [REDACTED]:443 rejected [REDACTED]" in out
+    assert out.strip() == "ERROR RuntimeError: [REDACTED] rejected [REDACTED]"
 
 
-def test_a_probe_error_naming_the_target_is_redacted_through_probe_redactor(unregistered_error_redactor, capsys):
-    env = {"FLUXER_TOKEN": "bot-token-value"}
-    probes_live.probe_redactor(env, [probes_live.Target(kind="a2s", host=PROBE_HOST, port=27015)])
+@pytest.mark.parametrize(("host", "error_text"), [
+    (PROBE_HOST, f"probe of {PROBE_HOST}:{PROBE_PORT} failed"),
+    (PROBE_IPV6, f"probe of [{PROBE_IPV6}]:{PROBE_PORT} failed"),
+])
+def test_a_probe_error_naming_the_target_is_redacted_through_probe_redactor(
+        unregistered_error_redactor, capsys, host, error_text):
+    probes_live.probe_redactor({"FLUXER_TOKEN": "bot-token-value"},
+                               [probes_live.Target(kind="a2s", host=host, port=PROBE_PORT)])
 
     async def failing_run():
-        raise RuntimeError(f"probe of {PROBE_HOST}:27015 failed")
+        raise RuntimeError(error_text)
 
     with pytest.raises(SystemExit):
         _live.main(failing_run)
 
     out = capsys.readouterr().out
-    assert PROBE_HOST not in out
-    assert "ERROR RuntimeError: probe of [REDACTED]:27015 failed" in out
+    assert host not in out
+    assert str(PROBE_PORT) not in out
+    assert out.strip() == "ERROR RuntimeError: probe of [REDACTED] failed"
 
 
 class _DeleteRest:

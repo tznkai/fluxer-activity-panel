@@ -118,7 +118,7 @@ class Redactor:
         return self._free[key]
 
     def text(self, s: str) -> str:
-        for secret in (self.token, *self.extra_secrets):
+        for secret in sorted((self.token, *self.extra_secrets), key=len, reverse=True):
             if secret:   # str.replace("") would insert the marker between every character
                 s = s.replace(secret, "[REDACTED]")
         for snowflake in sorted(self.labels, key=len, reverse=True):

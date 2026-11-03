@@ -63,9 +63,15 @@ def probe_summary(result: ProbeResult | ProbeFailed) -> str:
     return " ".join([f"reachable counts={result.counts.online}/{result.counts.max}", *details])
 
 
+def target_secrets(targets: Sequence[Target]) -> tuple[str, ...]:
+    """Each target's host, host:port and bracketed [host]:port. An error can name any of these forms."""
+    return tuple(form for target in targets
+                 for form in (target.host, f"{target.host}:{target.port}", f"[{target.host}]:{target.port}"))
+
+
 def probe_redactor(env: Mapping[str, str], targets: Sequence[Target]) -> Redactor:
-    """The script's redactor, with each target host hidden and registered for main()'s error line."""
-    redactor = Redactor(token=env.get("FLUXER_TOKEN", ""), extra_secrets=tuple(target.host for target in targets))
+    """The script's redactor, with each target's host and port hidden and registered for main()'s error line."""
+    redactor = Redactor(token=env.get("FLUXER_TOKEN", ""), extra_secrets=target_secrets(targets))
     use_redactor(redactor)
     return redactor
 
