@@ -421,9 +421,25 @@ def test_main_scans_the_named_prefix_with_the_given_denylist(tmp_path: Path, cap
     assert "patch:denylist" in capsys.readouterr().out
 
 
-def test_main_refuses_when_the_monorepo_root_cannot_be_found(tmp_path: Path, capsys, monkeypatch) -> None:
+@needs_git
+def test_monorepo_root_of_a_subdirectory_is_the_top_level(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "mono", [("add file", {"proj/a.txt": "plain text\n"})])
+
+    assert history_scan._monorepo_root(repo / "proj").resolve() == repo.resolve()
+
+
+@needs_git
+def test_monorepo_root_of_a_directory_outside_any_repo_is_none(tmp_path: Path, monkeypatch) -> None:
+    # The ceiling stops git from finding a repository above tmp_path, whatever the host's temp location holds.
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    plain = tmp_path / "plain"
+    plain.mkdir()
+
+    assert history_scan._monorepo_root(plain) is None
+
+
+def test_main_refuses_when_the_monorepo_root_cannot_be_found(capsys, monkeypatch) -> None:
     monkeypatch.setattr(history_scan, "_monorepo_root", lambda start: None)
-    monkeypatch.setattr(history_scan, "denylist_path", lambda root: _denylist(tmp_path, LITERAL + "\n"))
 
     assert history_scan.main([]) == 2
     assert "cannot find the monorepo root" in capsys.readouterr().out
