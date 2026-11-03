@@ -246,7 +246,7 @@ def make_rest_app(state: FakeFluxerState) -> web.Application:
         return _send(state, request, 200, {"id": channel, "type": 1}, payload=payload)
 
     @web.middleware
-    async def _delay(request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]]):
+    async def _delay_or_drop(request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]]):
         key = f"{request.method} {request.path}"
         if key in state.drops:
             state.requests.append(_record(request, 0, None, None))
@@ -257,7 +257,7 @@ def make_rest_app(state: FakeFluxerState) -> web.Application:
             await asyncio.sleep(delay)
         return await handler(request)
 
-    app = web.Application(middlewares=[_delay])
+    app = web.Application(middlewares=[_delay_or_drop])
     app.router.add_get("/.well-known/fluxer", well_known)
     app.router.add_get("/api/v1/gateway/bot", gateway_bot)
     app.router.add_post("/api/v1/channels/{cid}/messages", create_message)
