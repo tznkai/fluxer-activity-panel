@@ -376,7 +376,10 @@ def make_gateway_app(script: GatewayScript) -> web.Application:
 
 
 def instance_url_of_length(length: int) -> str:
-    """An https URL of exactly `length` characters, built from .invalid parts with every label under 64 characters."""
+    """An https URL of exactly `length` characters (17 or more), built from .invalid parts. Every label is between
+    1 and 63 characters, so the host is a valid DNS name at every such length."""
     body = length - len("https://") - len(".invalid")
-    first = body // 2
-    return "https://" + "a" * first + "." + "a" * (body - first - 1) + ".invalid"
+    labels = -(-(body + 1) // 63)  # enough labels that none exceeds 63 characters once the dots are placed
+    letters = body - (labels - 1)  # the host's characters other than the dots between labels
+    sizes = [letters // labels + (1 if i < letters % labels else 0) for i in range(labels)]
+    return "https://" + ".".join("a" * size for size in sizes) + ".invalid"

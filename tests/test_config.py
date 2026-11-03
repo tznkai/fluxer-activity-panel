@@ -83,6 +83,13 @@ def test_api_url_has_no_length_cap():
     assert Config.from_env(env(FLUXER_INSTANCE_URL=None, FLUXER_API_URL=long_api)).api_url == long_api
 
 
+def test_instance_url_of_length_has_the_length_asked_for_and_labels_under_64_characters():
+    for length in (128, 129, 300):
+        url = instance_url_of_length(length)
+        assert len(url) == length
+        assert all(0 < len(label) < 64 for label in url.removeprefix("https://").split(".")), length
+
+
 def test_repr_never_shows_the_token():
     assert TOKEN not in repr(Config.from_env(env()))
 
