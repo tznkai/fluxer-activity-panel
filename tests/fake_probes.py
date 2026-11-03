@@ -102,6 +102,19 @@ def _info_body(info: dict[str, object], truncate_after_map: bool) -> bytes:
     return bytes(body)
 
 
+def _goldsrc_body(info: dict[str, object]) -> bytes:
+    """The 0x6D (GoldSrc) layout python-a2s reads: no version field, and no mod section because is_mod is 0."""
+    body = bytearray()
+    for text in ("fake-address", "Fake Server", str(info["map"]), "fake", "Fake Game"):
+        body += _cstring(text)
+    body += bytes([int(info["players"]), int(info["max"]), 48])  # players, max, protocol
+    body += b"dl"  # server type, platform
+    body += bytes([0, 0])  # password, is_mod
+    body += bytes([0])  # vac
+    body += bytes([0])  # bots
+    return bytes(body)
+
+
 def a2s_reply(
     info: dict[str, object],
     *,
@@ -109,12 +122,13 @@ def a2s_reply(
     always_challenge: bool = False,
     truncate_after_map: bool = False,
     unknown_header: bool = False,
+    goldsrc: bool = False,
 ) -> Reply:
     """A Source A2S_INFO responder.
 
     With `challenge` set, a request that does not already carry the challenge gets a 0x41 reply with it
     (`always_challenge` makes every request get one). Otherwise a 0x49 reply carries `info`, which needs the
-    keys `players`, `max`, `map` and `version`.
+    keys `players`, `max`, `map` and `version`. `goldsrc` answers with the legacy 0x6D reply, which has no version.
     """
 
     def reply(datagram: bytes, index: int) -> bytes | None:
@@ -122,6 +136,8 @@ def a2s_reply(
             return _A2S_HEADER + b"\x99"
         if challenge is not None and (always_challenge or datagram != _A2S_REQUEST + challenge):
             return _A2S_HEADER + b"\x41" + challenge
+        if goldsrc:
+            return _A2S_HEADER + b"\x6d" + _goldsrc_body(info)
         return _A2S_HEADER + b"\x49" + _info_body(info, truncate_after_map)
 
     return reply

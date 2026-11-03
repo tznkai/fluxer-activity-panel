@@ -63,6 +63,13 @@ async def test_challenge_server_is_answered_with_the_challenge() -> None:
     assert recorder.requests[1].endswith(CHALLENGE)
 
 
+# AC3.1: A legacy GoldSrc reply has no version field, so the version is left empty and the counts still come through.
+async def test_goldsrc_reply_has_counts_and_no_version() -> None:
+    async with udp_server(a2s_reply(INFO, goldsrc=True)) as (port, _):
+        result = await A2SProbe().probe(HOST, port, timeout=2.0)
+    assert result == ProbeResult(PlayerCounts(2, 16), ProbeDetails(map="oilrig", version=None))
+
+
 # AC3.3: The map name is cleaned of colour codes and control characters; the A2S game mode stays empty.
 async def test_map_name_is_sanitised_and_game_mode_stays_empty() -> None:
     info = {**INFO, "map": "§coil\x07rig"}

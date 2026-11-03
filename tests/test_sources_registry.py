@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: 2026 K. Chen
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+"""Source base types and the static plugin registry: detail sanitising and the kind-to-plugin map."""
+
 from fluxer_panel.sources.base import DETAIL_MAX, sanitize_detail
 
 

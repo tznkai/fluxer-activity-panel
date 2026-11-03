@@ -137,6 +137,8 @@ async def test_silent_java_endpoint_times_out_without_resend() -> None:
     assert result == ProbeFailed("timeout")
     assert recorder.connections == 1
     assert len(recorder.requests) == 2
+    assert recorder.requests[0].startswith(b"\x00")  # the handshake packet has id 0x00
+    assert recorder.requests[1] == b"\x00"  # the status request is the bare id 0x00
 
 
 # AC3.5: A closed Java port is refused.

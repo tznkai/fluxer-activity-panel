@@ -1,8 +1,12 @@
 # SPDX-FileCopyrightText: 2026 K. Chen
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Shared probe helpers: every failure branch of the guard, and the count and detail limits."""
+"""Shared probe helpers: every failure branch of the guard, the hard cap, and the count and detail limits."""
 
 from __future__ import annotations
+
+import asyncio
+import struct
+import time
 
 import pytest
 
@@ -23,6 +27,12 @@ async def _raise(exc: BaseException):
         (TimeoutError(LIBRARY_MESSAGE), "timeout"),
         (ConnectionRefusedError(LIBRARY_MESSAGE), "refused"),
         (ValueError(LIBRARY_MESSAGE), "malformed"),
+        (TypeError(LIBRARY_MESSAGE), "malformed"),
+        (KeyError(LIBRARY_MESSAGE), "malformed"),
+        (IndexError(LIBRARY_MESSAGE), "malformed"),
+        (AttributeError(LIBRARY_MESSAGE), "malformed"),
+        (struct.error(LIBRARY_MESSAGE), "malformed"),
+        (UnicodeError(LIBRARY_MESSAGE), "malformed"),
         (OSError(LIBRARY_MESSAGE), "error"),
         (RuntimeError(LIBRARY_MESSAGE), "error"),
     ],
@@ -31,6 +41,14 @@ async def test_guard_maps_each_exception_to_one_reason(exc: BaseException, reaso
     result = await _guard(_raise(exc), 0.1)
     assert result == ProbeFailed(reason)
     assert LIBRARY_MESSAGE not in repr(result)
+
+
+# AC3.5: a call that runs past the hard cap (timeout plus one second) is stopped and reported as a timeout.
+async def test_guard_stops_a_call_that_runs_past_the_hard_cap() -> None:
+    started = time.monotonic()
+    result = await _guard(asyncio.sleep(30), 0.05)
+    assert result == ProbeFailed("timeout")
+    assert time.monotonic() - started < 2.0
 
 
 # AC3.5: a caller-supplied malformed type counts as malformed, and any other OSError does not.
