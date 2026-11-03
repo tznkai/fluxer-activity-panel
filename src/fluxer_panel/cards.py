@@ -261,6 +261,16 @@ def set_voice(conn: sqlite3.Connection, card_id: int, voice: Voice) -> None:
         (card_id, voice.guild_id, voice.channel_id, voice.channel_name, int(voice.verified)))
 
 
+def set_voice_name_if(conn: sqlite3.Connection, card_id: int, expected: Voice, channel_name: str) -> bool:
+    """Writes a refreshed channel name, and only while the stored voice is still the `expected` one, verified and
+    under the same name. Never inserts a row and never changes the channel. Returns whether a row changed."""
+    cur = conn.execute(
+        "UPDATE card_voice SET channel_name = ? WHERE card_id = ? AND guild_id = ? AND channel_id = ? "
+        "AND verified = 1 AND channel_name IS ?",
+        (channel_name, card_id, expected.guild_id, expected.channel_id, expected.channel_name))
+    return cur.rowcount == 1
+
+
 def set_address(conn: sqlite3.Connection, card_id: int, address: Address) -> None:
     conn.execute(
         "INSERT INTO card_address (card_id, host, port, public) VALUES (?, ?, ?, ?) "

@@ -852,6 +852,33 @@ async def test_a_changed_voice_name_is_refreshed_and_shown(world: World, poller:
     assert "#New" in fields_of(sent.payload["embeds"][0])[text.FIELD_VOICE]
 
 
+async def test_a_voice_cleared_during_a_name_refresh_stays_cleared(world: World, poller: Poller, db: Database):
+    card_id = await seed(db, "alpha", voice=cards.Voice(GUILD, VOICE, "Old", True))
+    world.fluxer.channels[VOICE] = voice_channel(name="New")
+    world.fluxer.delays[f"GET /api/v1/channels/{VOICE}"] = 0.3
+    tick = asyncio.create_task(poller.tick())
+    await asyncio.sleep(0.1)     # the channel lookup is delayed 0.3 s, so the admin's clear lands during it
+    await db.run(lambda c: cards.clear_slot(c, card_id, "voice"))
+    await tick
+
+    assert (await load(db, card_id)).voice is None
+    assert_card_writes_safe(world.fluxer)
+
+
+async def test_a_voice_set_during_a_name_refresh_stays_set(world: World, poller: Poller, db: Database):
+    card_id = await seed(db, "alpha", voice=cards.Voice(GUILD, VOICE, "Old", True))
+    world.fluxer.channels[VOICE] = voice_channel(name="New")
+    world.fluxer.delays[f"GET /api/v1/channels/{VOICE}"] = 0.3
+    tick = asyncio.create_task(poller.tick())
+    await asyncio.sleep(0.1)
+    admin_choice = cards.Voice(GUILD, "2002", "Admin", True)
+    await db.run(lambda c: cards.set_voice(c, card_id, admin_choice))
+    await tick
+
+    assert (await load(db, card_id)).voice == admin_choice
+    assert_card_writes_safe(world.fluxer)
+
+
 @pytest.mark.parametrize("change", [{"name": "   "}, {"kind": 0}, {"guild": "9999"}],
                          ids=["blank-name", "not-voice", "other-community"])
 async def test_a_voice_refresh_keeps_the_stored_name_when_fluxer_does_not_confirm_it(

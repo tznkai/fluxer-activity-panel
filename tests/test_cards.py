@@ -233,6 +233,49 @@ async def test_clear_message_if_stale_changes_nothing(db: Database) -> None:
     assert card.runtime.rendered_hash == HASH
 
 
+# Voice name refresh --------------------------------------------------------------------------------
+
+async def test_set_voice_name_if_renames_the_voice_that_was_read(db: Database) -> None:
+    card_id = await _create(db)
+    await db.run(lambda c: cards.set_voice(c, card_id, Voice("1001", "1002", "Old", True)))
+
+    changed = await db.run(lambda c: cards.set_voice_name_if(c, card_id, Voice("1001", "1002", "Old", True), "New"))
+
+    assert changed is True
+    card = await _get(db, "alpha")
+    assert card is not None
+    assert card.voice == Voice("1001", "1002", "New", True)
+
+
+@pytest.mark.parametrize("stored", [
+    Voice("1001", "1002", "Renamed", True),     # the name changed since it was read
+    Voice("1001", "1003", "Old", True),         # another channel
+    Voice("1009", "1002", "Old", True),         # another community
+    Voice("1001", "1002", None, False),         # no longer verified (the schema keeps no name for these)
+], ids=["renamed", "other-channel", "other-guild", "unverified"])
+async def test_set_voice_name_if_leaves_a_voice_that_changed_since_it_was_read(db: Database, stored: Voice) -> None:
+    card_id = await _create(db)
+    await db.run(lambda c: cards.set_voice(c, card_id, stored))
+
+    changed = await db.run(lambda c: cards.set_voice_name_if(c, card_id, Voice("1001", "1002", "Old", True), "New"))
+
+    assert changed is False
+    card = await _get(db, "alpha")
+    assert card is not None
+    assert card.voice == stored
+
+
+async def test_set_voice_name_if_never_inserts_a_cleared_voice(db: Database) -> None:
+    card_id = await _create(db)
+
+    changed = await db.run(lambda c: cards.set_voice_name_if(c, card_id, Voice("1001", "1002", "Old", True), "New"))
+
+    assert changed is False
+    card = await _get(db, "alpha")
+    assert card is not None
+    assert card.voice is None
+
+
 async def test_set_probe_tracking_round_trips(db: Database) -> None:
     card_id = await _create(db)
 
