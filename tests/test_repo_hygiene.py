@@ -462,3 +462,101 @@ def test_ci_runs_the_three_checks():
     lines = {line.strip().removeprefix("- ") for line in CI_WORKFLOW.read_text("utf-8").splitlines()}
     missing = [step for step in CI_REQUIRED_STEPS if step not in lines]
     assert missing == [], f"ci.yml is missing these steps: {missing}"
+
+
+DENYLIST_RELATIVE = Path("docs") / "private" / "fluxer-activity-panel" / "denylist.txt"
+DENYLIST_MIN_LENGTH = 4  # shorter literals would match nearly every line
+
+
+def denylist_path(root: Path) -> Path | None:
+    """Where the private denylist lives: the main checkout's `docs/private/`, even from a worktree.
+
+    Only the path is computed; the file is not opened here. None when git cannot answer.
+    In the published split repo there is no `docs/private/`, so the file is absent there.
+    """
+    try:
+        common = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True, text=True, check=True, timeout=60,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return Path(common).parent / DENYLIST_RELATIVE
+
+
+def load_denylist(path: Path) -> list[str]:
+    """One literal per line. Blank lines and `#` comments are skipped. Short entries are refused."""
+    literals = []
+    for raw in path.read_text("utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if len(line) < DENYLIST_MIN_LENGTH:
+            raise ValueError("denylist entry shorter than 4 characters")
+        literals.append(line)
+    return literals
+
+
+def denylist_offenders(root: Path, literals: list[str]) -> list[str]:
+    """Tracked, non-secret files under `root` with a denylisted literal, as `path:line`.
+
+    Secrets are skipped before any read. A finding names the location only, never the literal.
+    """
+    offenders = []
+    for path in tracked_files(root):
+        if is_secret(path) or not path.is_file():
+            continue
+        text = path.read_text("utf-8", errors="replace")
+        for number, line in enumerate(text.splitlines(), start=1):
+            if any(literal in line for literal in literals):
+                offenders.append(f"{path.relative_to(root)}:{number}")
+    return offenders
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not on PATH")
+def test_denylist_offenders_flags_a_tracked_literal(tmp_path):
+    literal = "SENT" + "INEL-DENY-4b2e"  # built from parts so this file never holds the literal
+    repo = _tracked_repo(tmp_path, {"notes.txt": f"clean line\nhas {literal} inside\n"})
+    (repo / "untracked.txt").write_text(f"{literal}\n", "utf-8")
+
+    offenders = denylist_offenders(repo, [literal])
+
+    assert offenders == ["notes.txt:2"], "only the tracked file, at its line, is reported"
+    assert literal not in " ".join(offenders), "the literal must never appear in the output"
+
+
+def test_load_denylist_skips_comments_and_refuses_short_entries(tmp_path):
+    good = tmp_path / "good.txt"
+    good.write_text("# a comment\n\n  alpha-entry  \n# another\nbeta-entry\n", "utf-8")
+    assert load_denylist(good) == ["alpha-entry", "beta-entry"]
+
+    short = tmp_path / "short.txt"
+    short.write_text("abc\n", "utf-8")
+    with pytest.raises(ValueError, match="denylist entry shorter than 4 characters") as info:
+        load_denylist(short)
+    assert "abc" not in str(info.value), "the refused entry must not be echoed"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not on PATH")
+def test_denylist_path_points_at_the_main_checkout_from_a_worktree(tmp_path):
+    main = tmp_path / "main"
+    main.mkdir()
+    subprocess.run(["git", "init", "-q", str(main)], check=True, timeout=60)
+    identity = ["-c", "user.name=test", "-c", "user.email=test@example.invalid"]
+    subprocess.run(["git", "-C", str(main), *identity, "commit", "-q", "--allow-empty", "-m", "init"],
+                   check=True, timeout=60)
+    worktree = tmp_path / "wt"
+    subprocess.run(["git", "-C", str(main), "worktree", "add", "-q", str(worktree)], check=True, timeout=60)
+
+    expected = main.resolve() / "docs" / "private" / "fluxer-activity-panel" / "denylist.txt"
+    assert denylist_path(main) == expected
+    assert denylist_path(worktree) == expected
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not on PATH")
+def test_no_denylisted_literal_in_tracked_files():
+    path = denylist_path(PROJECT)
+    if path is None or not path.is_file():
+        pytest.skip("private denylist absent")
+    offenders = denylist_offenders(PROJECT, load_denylist(path))
+    assert offenders == [], f"tracked files contain denylisted literals (path:line only): {offenders}"
