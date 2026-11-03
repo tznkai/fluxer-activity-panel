@@ -75,6 +75,9 @@ class FakeFluxerState:
     # `gated` records each request that reached its gate, in arrival order.
     gates: dict[str, asyncio.Event] = field(default_factory=dict)
     gated: list[str] = field(default_factory=list)
+    # "METHOD /path" -> how many of the next requests on that route pass their gate without waiting, so a test can let
+    # the first request through (a board post, say) and hold the requests after it.
+    gate_passes: dict[str, int] = field(default_factory=dict)
     # "METHOD /path" -> the connection is closed before any response, so the client raises an aiohttp
     # ClientError. A dropped request is recorded with status 0 and changes no state (no handler runs).
     drops: set[str] = field(default_factory=set)
@@ -261,8 +264,11 @@ def make_rest_app(state: FakeFluxerState) -> web.Application:
             await asyncio.sleep(delay)
         gate = state.gates.get(key)
         if gate is not None:
-            state.gated.append(key)
-            await gate.wait()
+            if state.gate_passes.get(key, 0) > 0:
+                state.gate_passes[key] -= 1
+            else:
+                state.gated.append(key)
+                await gate.wait()
         return await handler(request)
 
     app = web.Application(middlewares=[_delay_or_drop])

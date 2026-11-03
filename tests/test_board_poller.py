@@ -652,8 +652,13 @@ async def test_with_a_board_stored_a_stalled_card_does_not_hold_back_another_car
     assert sorted(card_titles(world.fluxer)) == ["Alpha", "Beta"]
 
 
-async def test_at_most_poll_concurrency_cards_are_evaluated_at_once(world: World, db: Database) -> None:
-    await world.poller().tick()
+# Both phases of a tick, with a board stored and with none. With no board stored the tick is the barrier path: every card is
+# evaluated, the board is posted, then the cards are published. The barrier path's own bound is what these cases hold.
+@pytest.mark.parametrize("board_stored", [True, False], ids=["board-stored", "no-board"])
+async def test_at_most_poll_concurrency_cards_are_evaluated_at_once(world: World, db: Database,
+                                                                    board_stored: bool) -> None:
+    if board_stored:
+        await world.poller().tick()
     for n in range(5):
         await seed(db, f"card-{n}", title=f"Card {n}", probe=True, sort=n)
     release = asyncio.Event()
@@ -679,15 +684,25 @@ async def test_at_most_poll_concurrency_cards_are_evaluated_at_once(world: World
         release.set()
         await task
     assert peak == 2
+    assert len(board_posts(world.fluxer)) == 1
     assert len(card_posts(world.fluxer)) == 5
+    if not board_stored:
+        assert posted(world.fluxer)[0].payload["embeds"][0].get("title") == text.BOARD_TITLE
 
 
-async def test_at_most_poll_concurrency_cards_are_published_at_once(world: World, db: Database) -> None:
-    await world.poller().tick()
+@pytest.mark.parametrize("board_stored", [True, False], ids=["board-stored", "no-board"])
+async def test_at_most_poll_concurrency_cards_are_published_at_once(world: World, db: Database,
+                                                                    board_stored: bool) -> None:
+    if board_stored:
+        await world.poller().tick()
     for n in range(5):
         await seed(db, f"card-{n}", title=f"Card {n}", probe=True, sort=n)
     release = asyncio.Event()
-    world.fluxer.gates[f"POST {GAMES_MESSAGES}"] = release
+    key = f"POST {GAMES_MESSAGES}"
+    world.fluxer.gates[key] = release
+    if not board_stored:
+        # The board's post is the first POST of the tick and goes through; each card's post after it is held.
+        world.fluxer.gate_passes[key] = 1
     task = asyncio.create_task(world.poller(POLL_CONCURRENCY="2").tick())
     try:
         await _wait_until(lambda: len(world.fluxer.gated) >= 2)
@@ -696,7 +711,10 @@ async def test_at_most_poll_concurrency_cards_are_published_at_once(world: World
     finally:
         release.set()
         await task
+    assert len(board_posts(world.fluxer)) == 1
     assert len(card_posts(world.fluxer)) == 5
+    if not board_stored:
+        assert posted(world.fluxer)[0].payload["embeds"][0].get("title") == text.BOARD_TITLE
 
 
 async def test_a_card_whose_evaluation_fails_stays_on_the_board_with_the_dash(world: World, db: Database,
