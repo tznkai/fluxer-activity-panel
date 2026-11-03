@@ -1517,3 +1517,20 @@ async def test_pausing_a_copy_that_is_already_paused_sends_no_second_alert(world
     await poller._pause_subscription(card_id, SUB)
     await poller._pause_subscription(card_id, SUB)
     assert len(admin_dms(world.fluxer)) == 2     # one per admin, from the first pause only
+
+
+async def test_a_copy_whose_request_drops_is_logged_and_does_not_stop_the_other_copies(
+        world: World, poller: Poller, db: Database, caplog: pytest.LogCaptureFixture):
+    caplog.set_level(logging.WARNING, logger="fluxer_panel.poller")
+    card_id = await seed(db, "alpha")
+    await subscribe(db, card_id, SUB)
+    await subscribe(db, card_id, SUB2)
+    world.fluxer.drops.add(f"POST {SUB_MESSAGES}")     # the connection closes before any response
+
+    await poller.tick()
+
+    assert len(posts(world.fluxer)) == 1
+    assert (await subscription(db, card_id, SUB)).message_id is None
+    assert (await subscription(db, card_id, SUB2)).message_id is not None
+    [failed] = records(caplog, "subscription_failed")
+    assert failed.panel_fields["card_id"] == card_id and failed.panel_fields["channel_id"] == SUB
