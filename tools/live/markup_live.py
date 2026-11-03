@@ -18,12 +18,23 @@ import aiohttp
 from _live import Live, LiveRefused, Redactor, Results, endpoint_secrets, live, load_env, main, out, wait_for_enter
 from fluxer_client.ids import is_snowflake
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
-from fluxer_panel import render
+from fluxer_panel import cards, render
+from fluxer_panel.resolver import CardStatus, StatusKind
+from fluxer_panel.sources.base import PlayerCounts
 
 NO_MENTIONS: dict[str, list[str]] = {"parse": []}
 EDIT_BURST = 20
 EXAMPLE_LINK = "https://example.com"   # a documentation domain on the hygiene allowlist
 ESCAPE_SAMPLE = "Join: mc-server (v1.2) #1 <3 a_b *x* ~y~ |z|"
+SAMPLE_MESSAGE_ID = "2" * 25    # a placeholder: the sample's links are judged on how they look, not where they go
+SAMPLE_STATUSES: tuple[CardStatus | None, ...] = (
+    CardStatus(StatusKind.READY, counts=PlayerCounts(3, 10)),
+    CardStatus(StatusKind.READY),
+    CardStatus(StatusKind.ASLEEP),
+    CardStatus(StatusKind.WAKING),
+    CardStatus(StatusKind.GOING_TO_SLEEP),
+    None,
+)
 
 
 def check_markup_env(env: Mapping[str, str]) -> None:
@@ -129,6 +140,39 @@ async def check_masked_links(ctx: Ctx) -> None:
               "'text' is a clickable link in the field and in the description, on web and on mobile.")
 
 
+def jump_check_embeds(instance: str, guild: str, channel: str, target: str) -> list[dict[str, Any]]:
+    """The jump check's embed: one masked link to the target message, built by render.jump_link."""
+    return [{"description": "Masked jump link " + render.jump_link("jump", instance, guild, channel, target)}]
+
+
+def placeholder_card(number: int, channel: str) -> cards.Card:
+    return cards.Card(id=number, slug=f"sample-{number}", title=f"Card {number}", description=None, how_to_join=None,
+                      first_time=None, sort_order=number, show_details=(), state="live", channel_id=channel,
+                      message_id=SAMPLE_MESSAGE_ID, created_by=channel)
+
+
+def board_sample_payload(instance: str, guild: str, channel: str) -> dict[str, Any]:
+    """The board for six placeholder cards with fake statuses, built by the same render function the poller uses."""
+    entries = [(placeholder_card(number, channel), status) for number, status in enumerate(SAMPLE_STATUSES, start=1)]
+    return render.board_message(entries, games_channel_id=channel, games_guild_id=guild, instance_url=instance)
+
+
+async def check_jump_links(ctx: Ctx) -> None:
+    target = await post(ctx, content="jump target")
+    await post(ctx, embeds=jump_check_embeds(ctx.instance, ctx.guild, ctx.channel, target))
+    await ask(ctx, "jump links",
+              "the word 'jump' is a link. Clicking it on the web client opens the message 'jump target' in this "
+              "channel. Type y if it does, n if it does not.")
+
+
+async def check_board_sample(ctx: Ctx) -> None:
+    await post(ctx, embeds=board_sample_payload(ctx.instance, ctx.guild, ctx.channel)["embeds"])
+    await ask(ctx, "board sample",
+              "six placeholder cards, Card 1 to Card 6, each with a status line under its title: 'Ready · 3 / 10', "
+              "'Ready', 'Asleep', 'Waking up', 'Going to sleep' and a dash. The statuses are links. Is it legible on "
+              "the desktop and web clients? (Phones use the full cards, not the board.) Type y or n, or a note.")
+
+
 async def check_mention(ctx: Ctx) -> None:
     await post(ctx, embeds=[{"fields": [{"name": "Mention", "value": f"<@{ctx.user}>"}]}])
     await ask(ctx, "mention in an embed",
@@ -210,6 +254,8 @@ async def run() -> Results:
             await check_timestamps(ctx)
             await check_channel_links(ctx)
             await check_masked_links(ctx)
+            await check_jump_links(ctx)
+            await check_board_sample(ctx)
             await check_mention(ctx)
             await check_edit_burst(ctx)
             await check_escaping(ctx)

@@ -36,8 +36,8 @@ Core:
 
 Cards and sources:
 
-- `GAMES_CHANNEL_ID` (optional): the channel where published cards are posted. Without it, no
-  card is posted, and the log says `games_channel_unset`.
+- `GAMES_CHANNEL_ID` (optional): the channel where published cards and the summary board are posted.
+  Without it, no card or board is posted, and the log says `games_channel_unset`.
 - `PTERODACTYL_URL` and `PTERODACTYL_API_KEY`: the Panel's base URL and a client API key. Set both
   or neither. Setting only one refuses to start with exit code 2. Without both, no Panel host
   manager is registered.
@@ -121,6 +121,27 @@ server can also show a status line, such as Asleep, Waking up or Ready with a pl
 
 A card message that is deleted by hand is posted again. The delete kicks the poller, so the
 repost does not wait for the next poll interval.
+
+### Summary board
+
+When `GAMES_CHANNEL_ID` is set, the bot keeps one more message in the games channel: the summary
+board. It is always on, with no setting of its own. It lists every live card, in the same order as
+`!card list`, as one inline cell: the card's title as the name and its status line as the value. A
+card with no manager and no probe shows a dash. When the card is posted in the games channel, its
+status is a link to the card's message. The board is laid out for the desktop and web clients. Phones
+show the full cards as before.
+
+- **Posting:** the board is posted before the cards on a fresh start, so it sits above them. The first
+  post may show plain status text for cards that are not posted yet. The next edit adds the links.
+- **Edits:** the board is edited when its content changes, for example when a status or a title changes.
+- **Pinning is manual.** When the bot posts a new board message, it sends each admin one direct message:
+  "I posted the summary board in the games channel. Pin it so it stays at the top." Pin it in the games
+  channel. The bot does not pin it, and it sends that message once per new board message.
+- **Size:** the board shows at most 240 cards. The bot keeps the whole board message under 6000 characters of
+  text, which is Fluxer's limit on embed text. A board with long titles, long links or many cards shows only
+  the cards that fit, and a note at the bottom says that some games are not shown.
+- **Deleted by hand:** a board message that is deleted is posted again, the same way a card is.
+- **No live cards:** the board still posts, with "No games are live."
 
 ### Syntax
 

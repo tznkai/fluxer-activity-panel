@@ -37,6 +37,7 @@ import markup_live  # noqa: E402
 import ptero_live  # noqa: E402
 import probes_live  # noqa: E402
 from fluxer_client.rest import FluxerHTTPError, FluxerREST  # noqa: E402
+from fluxer_panel import render  # noqa: E402
 from fluxer_panel.sources.base import PlayerCounts, PowerAction, ProbeDetails, ProbeFailed, ProbeResult  # noqa: E402
 from fluxer_panel.sources.pterodactyl import Schedule, Task  # noqa: E402
 from tests.fakes import FakeFluxerState, Override, make_rest_app  # noqa: E402
@@ -1124,3 +1125,33 @@ async def test_run_hides_the_instance_host_in_a_note_the_operator_types(fake, mo
     printed = capsys.readouterr().out
     assert "NOTE channel links: seen at [REDACTED]" in printed.splitlines()
     assert hostport not in printed
+
+
+TARGET = "6" * 19
+
+
+def test_jump_check_embed_masks_one_link_to_the_target_message():
+    [embed] = markup_live.jump_check_embeds("https://fluxer.invalid", GUILD, VOICE, TARGET)
+
+    match = render.JUMP_LINK_RE.search(embed["description"])
+    assert match is not None
+    assert match.groups() == ("jump", GUILD, VOICE, TARGET)
+
+
+def test_board_sample_is_six_placeholder_cards_with_fake_statuses():
+    payload = markup_live.board_sample_payload("https://fluxer.invalid", GUILD, VOICE)
+
+    [embed] = payload["embeds"]
+    assert [field["name"] for field in embed["fields"]] == [f"Card {n}" for n in range(1, 7)]
+    values = [field["value"] for field in embed["fields"]]
+    assert render.JUMP_LINK_RE.fullmatch(values[0]).groups()[0] == "Ready · 3 / 10"
+    assert render.JUMP_LINK_RE.fullmatch(values[-1]).groups()[0] == "\u2014"
+    assert payload["allowed_mentions"] == {"parse": []}
+
+
+def test_board_sample_links_point_at_the_given_games_channel():
+    payload = markup_live.board_sample_payload("https://fluxer.invalid", GUILD, VOICE)
+
+    for field in payload["embeds"][0]["fields"]:
+        match = render.JUMP_LINK_RE.fullmatch(field["value"])
+        assert match.groups()[1:3] == (GUILD, VOICE)

@@ -22,8 +22,9 @@ user-facing description, the purge status file format and the "Exit 3" recovery 
 - `src/fluxer_panel/`: `__main__.py` (`run|purge` entry point), `config.py`, `db.py` (single SQLite connection),
   `migrations/` (numbered SQL, see Database), `purge.py`, `admin.py`, `bot.py`, `logs.py`, `fsutil.py`.
   Cards: `cards.py` (store and dataclasses), `card_fields.py` (field validators), `card_commands.py` (`!card`
-  subcommands), `resolver.py` (status from manager and probe results), `render.py` (embed and outside text),
-  `text.py` (user-facing strings), `poller.py` (the single card poller).
+  subcommands), `resolver.py` (status from manager and probe results), `render.py` (embed, outside text and the
+  summary board's payload), `text.py` (user-facing strings), `poller.py` (the single card poller, which also keeps
+  the board). The summary board's single-row store is `board.py`.
 - `src/fluxer_panel/sources/`: `base.py` (result types and the `HostManager`/`Probe` protocols), `registry.py`
   (the kind-to-plugin map), `pterodactyl.py` (host manager), `minecraft.py` (Bedrock and Java probes), `a2s.py`
   (A2S probe), `_probe_util.py` (the shared guard and limits).
@@ -120,6 +121,13 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
 - `outside_location` takes a bool, never the location text.
 - Card replies and card text live in `text.py`, which never says "guild". `tests/test_text.py` enforces it.
 - Adding a plugin is one module plus one line in `sources/registry.py`.
+- Summary board (`render.board_message`, `board.py`, `poller.py`): one message in `GAMES_CHANNEL_ID`, always on when
+  that is set. Its payload comes only from `render.board_message`, which escapes each title with `escape`, fits it to
+  `LIMITS["board_title"]` and keeps the whole message under `BOARD_CHAR_LIMIT`. Its statuses are the cards' own status
+  lines from the resolver. A status is a link only through `jump_link`, and only for a card whose message is in the
+  games channel. Board sends and edits use `allowed_mentions={"parse": []}`. The poller posts the board before the
+  cards when none is stored, edits it after the cards when its hash changed, and sends the admins the pin request once
+  per new message. The poller logs the board's ids and exception types only: never a title, a status or a link.
 
 ## Database
 
@@ -131,6 +139,9 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   and the write probe in `_connect` stays authoritative.
 - Primary codes READONLY, CANTOPEN, BUSY and PERM map to `DatabaseRefused("unavailable")` and leave the file alone.
   Only corruption codes quarantine. Quarantine moves files aside under new names and never overwrites.
+- `board` (migration 0004) holds one row, `id = 1`, seeded by the migration. Its `channel_id` and `message_id` are set
+  together or not at all, and `content_hash` is set only with a message. The board's writes are compare-and-set, as
+  the cards' are: `clear_message_if`, and `set_hash_if` for the hash.
 - Schema: every table is `STRICT`. Ids are `TEXT` with CHECKs that they are digits only and at most 25 long; names are
   not stored, except a verified voice or text channel's display name (`card_voice.channel_name`,
   `card_text_channel.channel_name`). The snowflake bound is 25 in code and schema; Fluxer documents at most 19, so do
@@ -175,8 +186,9 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
     failure reason. Hosts and ports are never printed, and a map name is printed as its length only (`map_len=N`),
     since map names are operator-chosen. Version and game mode are printed as given. It does not connect to Fluxer.
   - `markup_live.py` (needs `LIVE_VOICE_CHANNEL_ID` and `LIVE_OTHER_GUILD_ID`, a community the bot is not in): posts
-    test messages to `LIVE_CHANNEL_ID` for the timestamp, channel-link, masked-link, mention, edit-burst and escaping
-    checks, reads the voice channel type, the posting text channel's type and the other community's status, then
+    test messages to `LIVE_CHANNEL_ID` for the timestamp, channel-link, masked-link, jump-link, board-sample, mention,
+    edit-burst and escaping checks (the jump check posts a target and a masked link to it; the board sample posts six
+    placeholder cards with fake statuses, and the operator judges it on desktop and web), reads the voice channel type, the posting text channel's type and the other community's status, then
     deletes its messages. The channel-link check builds its bare link, masked link and `<#...>` mention for `LIVE_VOICE_CHANNEL_ID`, the channel the card's
     Voice field links to, because a link to the posting channel does nothing when clicked. The instance URL's forms
     (the URL as given and as normalised, each host in its decoded and punycode spellings, with host:port and
