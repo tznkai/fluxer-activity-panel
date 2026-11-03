@@ -109,8 +109,16 @@ class Poller:
 
     async def tick(self) -> None:
         live = await self._db.run(lambda c: cards.list_cards(c, "live"))
+        self._forget_cards_not_in({card.id for card in live})
         sem = asyncio.Semaphore(self._config.poll_concurrency)
         await asyncio.gather(*(self._guarded(card, sem) for card in live))
+
+    def _forget_cards_not_in(self, live_ids: set[int]) -> None:
+        """Drops the cached schedule and voice check of a card that is no longer live, so a republished card fetches
+        them again rather than reusing a cache from before it was archived."""
+        for entries in (self._schedules, self._voice_checked):
+            for card_id in [card_id for card_id in entries if card_id not in live_ids]:
+                del entries[card_id]
 
     async def _guarded(self, card: cards.Card, sem: asyncio.Semaphore) -> None:
         async with sem:

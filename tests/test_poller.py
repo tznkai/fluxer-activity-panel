@@ -637,6 +637,26 @@ async def test_a_probe_only_card_probes_on_every_tick(world: World, poller: Poll
     assert len(world.probe.calls) == 3
 
 
+async def test_an_archived_card_forgets_its_schedule_and_voice_check_so_a_republish_fetches_them_again(
+        world: World, poller: Poller, db: Database):
+    card_id = await seed(db, "alpha", voice=cards.Voice(GUILD, VOICE, "Old", True),
+                         manager=cards.ManagerRef("pterodactyl", SERVER))
+    world.panel.servers[SERVER].current_state = "running"
+    world.fluxer.channels[VOICE] = voice_channel(name="Old")
+
+    world.clock.now = 0
+    await poller.tick()                        # the schedule and the voice name are fetched at 0
+    await db.run(lambda c: cards.set_state(c, card_id, "archived", 0))
+    world.clock.now = 10
+    await poller.tick()                        # the archived card is not loaded, so its cache entries are dropped
+    await db.run(lambda c: cards.set_state(c, card_id, "live", 0))
+    world.clock.now = 20                       # inside both refresh intervals: only the pruning can cause a fetch
+    await poller.tick()
+
+    assert len(schedule_requests(world.panel)) == 2
+    assert len(requests_for(world.fluxer, "GET", f"/api/v1/channels/{VOICE}")) == 2
+
+
 # AC4.7 (poller side): a schedule failure hides only the Next line ----------------------------------
 
 async def test_a_failed_schedule_request_hides_next_and_leaves_status_unchanged(
