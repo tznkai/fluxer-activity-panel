@@ -119,8 +119,8 @@ show a status line, such as Asleep, Waking up or Ready with a player count.
 - **Archived:** `!card archive` deletes the card's message and keeps the card. Publishing it again
   makes it live.
 
-A card message that is deleted by hand is posted again. The delete kicks the poller, so this
-takes seconds, not a full poll interval.
+A card message that is deleted by hand is posted again. The delete kicks the poller, so the
+repost does not wait for the next poll interval.
 
 ### Syntax
 
