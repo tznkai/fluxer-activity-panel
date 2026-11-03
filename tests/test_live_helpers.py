@@ -34,7 +34,7 @@ from _live import (  # noqa: E402
 import markup_live  # noqa: E402
 import ptero_live  # noqa: E402
 import probes_live  # noqa: E402
-from fluxer_client.rest import FluxerREST  # noqa: E402
+from fluxer_client.rest import FluxerHTTPError, FluxerREST  # noqa: E402
 from fluxer_panel.sources.base import PlayerCounts, PowerAction, ProbeDetails, ProbeFailed, ProbeResult  # noqa: E402
 from fluxer_panel.sources.pterodactyl import Schedule, Task  # noqa: E402
 from tests.fakes import FakeFluxerState, Override, make_rest_app  # noqa: E402
@@ -851,3 +851,42 @@ def test_a_probe_error_naming_the_target_is_redacted_through_probe_redactor(unre
     out = capsys.readouterr().out
     assert PROBE_HOST not in out
     assert "ERROR RuntimeError: probe of [REDACTED]:27015 failed" in out
+
+
+class _DeleteRest:
+    """A test double for the one FluxerREST method the test-message cleanup calls. It raises for the ids it is given."""
+
+    def __init__(self, failures: dict[str, Exception]) -> None:
+        self.failures = failures
+        self.attempted: list[str] = []
+        self.deleted: list[str] = []
+
+    async def delete_message(self, channel_id: str, message_id: str) -> None:
+        self.attempted.append(message_id)
+        if message_id in self.failures:
+            raise self.failures[message_id]
+        self.deleted.append(message_id)
+
+
+@pytest.mark.parametrize("error", [
+    FluxerHTTPError(500, None, "server error"),
+    aiohttp.ClientError("connection reset"),
+    TimeoutError(),
+])
+def test_one_failed_delete_does_not_stop_the_rest_of_the_cleanup(error, capsys):
+    redactor = Redactor(token="")
+    for message_id in ("1001", "1002", "1003"):
+        redactor.label(message_id, "message")
+    rest = _DeleteRest({"1002": error})
+
+    asyncio.run(markup_live.delete_sent(rest, "1000", ["1001", "1002", "1003"], redactor))
+
+    assert rest.attempted == ["1001", "1002", "1003"]
+    assert rest.deleted == ["1001", "1003"]
+    assert capsys.readouterr().out.strip() == "delete failed: <message:2>"
+
+
+def test_an_unexpected_error_during_cleanup_is_not_swallowed():
+    rest = _DeleteRest({"1001": RuntimeError("unexpected")})
+    with pytest.raises(RuntimeError):
+        asyncio.run(markup_live.delete_sent(rest, "1000", ["1001"], Redactor(token="")))

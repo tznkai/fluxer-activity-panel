@@ -8,13 +8,14 @@ and FLUXER_INSTANCE_URL for the channel links. Every test message is deleted at 
 """
 from __future__ import annotations
 
-import contextlib
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from _live import Live, LiveRefused, Results, live, load_env, main, out, wait_for_enter
+import aiohttp
+
+from _live import Live, LiveRefused, Redactor, Results, live, load_env, main, out, wait_for_enter
 from fluxer_client.ids import is_snowflake
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
 from fluxer_panel import render
@@ -168,6 +169,15 @@ async def report_voice_and_guild(ctx: Ctx) -> None:
         out(redactor, "GET /guilds for a community the bot is not in: HTTP 200 (the bot can read it)")
 
 
+async def delete_sent(rest: FluxerREST, channel: str, message_ids: Sequence[str], redactor: Redactor) -> None:
+    """Deletes each test message. A failed delete is reported by its label alone, and the rest are still tried."""
+    for message_id in message_ids:
+        try:
+            await rest.delete_message(channel, message_id)
+        except (FluxerHTTPError, aiohttp.ClientError, TimeoutError):
+            out(redactor, f"delete failed: {redactor.labels.get(message_id, '<message>')}")
+
+
 async def run() -> Results:
     env = load_env()
     check_markup_env(env)
@@ -184,9 +194,7 @@ async def run() -> Results:
             await check_escaping(ctx)
             await report_voice_and_guild(ctx)
         finally:
-            for message_id in ctx.sent:
-                with contextlib.suppress(FluxerHTTPError):
-                    await lv.rest.delete_message(ctx.channel, message_id)
+            await delete_sent(lv.rest, ctx.channel, ctx.sent, lv.redactor)
         return ctx.res
 
 
