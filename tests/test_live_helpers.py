@@ -788,20 +788,15 @@ def test_burst_line_counts_successes_rate_limits_and_other_errors():
     assert line == "edits=5 ok=2 rate_limited_429=2 other_errors=1 seconds=1.23"
 
 
-# Scripts that do not call live() register their redactor, so main() redacts an escaped error. The fixture restores
-# the registered redactor after each test, so a registration never leaks into another test.
+# Scripts that do not call live() register their redactor, so main() redacts an escaped error. no_live_redactor
+# restores the registered redactor after each test, so a registration never leaks into another test.
 PANEL_HOST = ".".join(["panel", "invalid"])
 PANEL_URL = "https://" + PANEL_HOST + ":8443/"
 PANEL_KEY = "ptero" + "-KEY-SECRET"
 PROBE_HOST = ".".join(["probe", "invalid"])
 
 
-@pytest.fixture
-def unregistered_error_redactor(monkeypatch):
-    monkeypatch.setattr(_live, "_redactor", None)
-
-
-def test_error_line_is_redacted_by_the_registered_redactor(unregistered_error_redactor, capsys):
+def test_error_line_is_redacted_by_the_registered_redactor(no_live_redactor, capsys):
     _live.use_redactor(Redactor(token=PANEL_KEY, extra_secrets=(PANEL_URL, PANEL_HOST)))
 
     async def failing_run():
@@ -814,7 +809,7 @@ def test_error_line_is_redacted_by_the_registered_redactor(unregistered_error_re
     assert capsys.readouterr().out.strip() == "ERROR RuntimeError: cannot reach [REDACTED]:443 with key [REDACTED]"
 
 
-def test_error_redactor_is_empty_when_no_script_registered_one(unregistered_error_redactor):
+def test_error_redactor_is_empty_when_no_script_registered_one(no_live_redactor):
     assert _live.error_redactor().token == ""
 
 
@@ -838,7 +833,7 @@ def test_ptero_secrets_skip_a_host_that_is_not_there_and_a_missing_bot_token():
     assert ptero_live.ptero_secrets({"PTERODACTYL_URL": "/relative/path"}) == ("/relative/path",)
 
 
-def test_a_panel_error_naming_host_and_port_is_redacted_through_ptero_redactor(unregistered_error_redactor, capsys):
+def test_a_panel_error_naming_host_and_port_is_redacted_through_ptero_redactor(no_live_redactor, capsys):
     env = {"PTERODACTYL_URL": PANEL_URL, "PTERODACTYL_API_KEY": PANEL_KEY}
     ptero_live.ptero_redactor(env)
 
@@ -860,7 +855,7 @@ def test_a_panel_error_naming_host_and_port_is_redacted_through_ptero_redactor(u
     (PROBE_IPV6, f"probe of [{PROBE_IPV6}]:{PROBE_PORT} failed"),
 ])
 def test_a_probe_error_naming_the_target_is_redacted_through_probe_redactor(
-        unregistered_error_redactor, capsys, host, error_text):
+        no_live_redactor, capsys, host, error_text):
     probes_live.probe_redactor({"FLUXER_TOKEN": "bot-token-value"},
                                [probes_live.Target(kind="a2s", host=host, port=PROBE_PORT)])
 
