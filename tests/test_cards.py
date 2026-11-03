@@ -149,6 +149,13 @@ async def test_update_fields_refuses_a_column_outside_the_allowlist(db: Database
         await db.run(lambda c: cards.update_fields(c, card_id, NOW, slug="other"))
 
 
+async def test_update_fields_with_no_columns_raises_a_clear_error(db: Database) -> None:
+    card_id = await _create(db)
+
+    with pytest.raises(ValueError, match="no fields to update"):
+        await db.run(lambda c: cards.update_fields(c, card_id, NOW))
+
+
 async def test_clear_slot_removes_only_that_slot(db: Database) -> None:
     card_id = await _create(db)
     await db.run(lambda c: cards.set_voice(c, card_id, Voice("1001", "1002", None, False)))
@@ -279,6 +286,23 @@ async def test_duplicate_slug_raises_without_echoing_the_value(db: Database) -> 
 
     with pytest.raises(CardFieldError) as info:
         await _create(db, slug=SENTINEL_SLUG)
+
+    assert info.value.field == "slug"
+    assert info.value.rule == "taken"
+    assert SENTINEL_SLUG not in str(info.value)
+
+
+async def test_slug_taken_after_the_precheck_maps_to_taken(db: Database) -> None:
+    # A rival row with the same slug lands after the SELECT pre-check and before the INSERT. The BEFORE INSERT
+    # trigger does that on the real table, so the pre-check passes and the INSERT itself fails on the unique index.
+    race_title = "lose-the-race"
+    await db.run(lambda c: c.execute(
+        "CREATE TRIGGER race_first BEFORE INSERT ON cards WHEN NEW.title = 'lose-the-race' BEGIN "
+        f"INSERT INTO cards (slug, title, created_by, approved_by, created_at, updated_at, state) "
+        f"VALUES ('{SENTINEL_SLUG}', 'rival', '1001', '1001', 1, 1, 'draft'); END"))
+
+    with pytest.raises(CardFieldError) as info:
+        await _create(db, slug=SENTINEL_SLUG, title=race_title)
 
     assert info.value.field == "slug"
     assert info.value.rule == "taken"

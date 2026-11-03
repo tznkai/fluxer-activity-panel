@@ -225,6 +225,9 @@ def _load_runtime(conn: sqlite3.Connection, card_id: int) -> Runtime:
 # Base fields and state ---------------------------------------------------------------------------------
 
 def update_fields(conn: sqlite3.Connection, card_id: int, now: int, **cols: Any) -> None:
+    if not cols:
+        # A programming error: with no column the UPDATE would be malformed SQL. Checked first so no SQL is built.
+        raise ValueError("no fields to update")
     unknown = set(cols) - UPDATABLE
     if unknown:
         raise KeyError(sorted(unknown)[0])   # a programming error: the key names a column, never a value
