@@ -451,6 +451,23 @@ def test_maximum_length_card_stays_within_embed_limits() -> None:
         assert not re.search(r"(?<!\\)(\\\\)*\\$", value)
 
 
+# A location and each detail at the validated maximum are rendered whole, so no ellipsis is added.
+def test_maximum_location_and_details_are_rendered_whole() -> None:
+    star = "*"
+    card = make_card(location=Location(star * 200), show_details=ALL_DETAILS)
+    status = CardStatus(
+        StatusKind.READY,
+        details=ProbeDetails(map=star * 48, version=star * 48, game_mode=star * 48),
+    )
+    embed = render.render_embed(card, status, None, instance_url=INSTANCE)
+    fields = fields_of(embed)
+    assert fields[text.FIELD_LOCATION] == render.escape(star * 200)
+    for name in (text.FIELD_MAP, text.FIELD_VERSION, text.FIELD_GAME_MODE):
+        assert fields[name] == render.escape(star * 48), name
+    for name in (text.FIELD_LOCATION, text.FIELD_MAP, text.FIELD_VERSION, text.FIELD_GAME_MODE):
+        assert "…" not in fields[name], name
+
+
 def test_long_escaped_title_is_cut_to_the_limit_with_an_ellipsis() -> None:
     # 300 stars escape to 600 characters. The 256 cut lands on an escape pair, so the result is 255 with the ellipsis.
     embed = render.render_embed(make_card(title="*" * 300), None, None, instance_url=INSTANCE)
