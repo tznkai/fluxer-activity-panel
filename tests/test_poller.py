@@ -1508,3 +1508,12 @@ async def test_the_board_never_lists_a_copy(world: World, poller: Poller, db: Da
     for edit in board_edits:
         assert f"channels/{GUILD}/{SUB}" not in str(edit.payload)
     assert card_id
+
+
+async def test_pausing_a_copy_that_is_already_paused_sends_no_second_alert(world: World, poller: Poller, db: Database):
+    card_id = await seed(db, "alpha")
+    await subscribe(db, card_id, SUB)
+    # A tick never pauses a copy that is already paused, so the second pause is made directly.
+    await poller._pause_subscription(card_id, SUB)
+    await poller._pause_subscription(card_id, SUB)
+    assert len(admin_dms(world.fluxer)) == 2     # one per admin, from the first pause only
