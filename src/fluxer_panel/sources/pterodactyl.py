@@ -4,7 +4,7 @@
 
 The client reads three endpoints of the server's client API with GET, and nothing else. A suspended
 server answers 409 on the read endpoints, so the details endpoint is the fallback that reports suspension.
-Panel text (schedule names, command payloads) is never kept in a parsed object, a log or an error message.
+Panel text (schedule names, command payloads) is never logged or put in an error message, and a schedule name is kept out of reprs.
 """
 
 from __future__ import annotations

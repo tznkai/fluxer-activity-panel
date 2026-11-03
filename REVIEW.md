@@ -150,6 +150,109 @@ No code in `src/fluxer_panel` calls `add_member_role` or `remove_member_role` in
 - `tests/test_repo_hygiene.py:178` `BARE_NAME = re.compile(` — a bare dotted name is checked only when it ends in a listed TLD, so file names and Python attribute access are ignored.
 - `tests/test_repo_hygiene.py:234` `def network_offenders(` — the scan. Secrets are skipped before any read, and a finding names the file, line and kind, never the value.
 
+## Pterodactyl read-only access
+
+- `src/fluxer_panel/sources/pterodactyl.py:32` `_ENDPOINTS = ("", "/resources", "/schedules")` — the only three paths the plugin reads: server details, `/resources` and `/schedules`.
+- `src/fluxer_panel/sources/pterodactyl.py:31` `_SERVER_ID = re.compile(r"[0-9a-f]{8}")` — a server id must be eight lowercase hex digits before it reaches a URL.
+- `src/fluxer_panel/sources/pterodactyl.py:96` `async with self._session.get(` — the one request call in the module, and it is a GET.
+- `src/fluxer_panel/sources/pterodactyl.py:97` `allow_redirects=False` — a redirect is not followed, so the key is never sent to another host.
+- `src/fluxer_panel/sources/pterodactyl.py:76` `"Authorization": f"Bearer {api_key}"` — the key goes only in this header, never in a URL or a log line.
+- `src/fluxer_panel/sources/pterodactyl.py:125` `details = await self._get(ref, "")` — a 409 on `/resources` falls back to the details endpoint, the only read that reports suspension.
+- `src/fluxer_panel/sources/pterodactyl.py:106` `status = resp.status` — only the status code is kept from an error reply. The error body is never read, so Panel text cannot reach an error message.
+- `tests/test_pterodactyl_ast.py:43` `def test_no_write_or_socket_method_is_called` — the AST test that the module calls no write, socket or websocket method.
+- `tests/test_pterodactyl_ast.py:73` `def test_endpoints_is_the_three_read_paths` — the allowlist test: `_ENDPOINTS` is exactly the three read paths, and every `_get` call uses one of them.
+
+Residual risk: the Panel forces the `websocket.connect` permission onto the client key, and that permission allows reading the server console. The plugin never opens a websocket, and the AST test above keeps that true. The key itself still carries that scope, so it is accepted in the design and recorded here. Rotating the key is the remedy if it is ever exposed.
+
+## Schedule payloads
+
+- `src/fluxer_panel/sources/pterodactyl.py:183` `power_payload = (` — a task payload is kept only when the action is `power` and the payload is one of the four power kinds. Every other payload is dropped at parse time, so command text and backup names never leave the parser.
+- `src/fluxer_panel/sources/pterodactyl.py:56` `name: str = field(repr=False)` — the schedule name is Panel text. It is kept out of `repr`, and nothing logs it.
+
+## Probe details
+
+- `src/fluxer_panel/sources/base.py:93` `def sanitize_detail(` — strips Minecraft colour codes and control characters, collapses whitespace and caps the result, so a detail is printable and short before a card shows it.
+- `src/fluxer_panel/sources/base.py:89` `DETAIL_MAX = 48` — the length cap that `sanitize_detail` applies.
+- `src/fluxer_panel/sources/_probe_util.py:30` `len(value) > RAW_MAX` — a string longer than `RAW_MAX` before sanitising is an oversized reply. It becomes `malformed`, and it is not truncated.
+- `src/fluxer_panel/sources/minecraft.py:23` `async_status(tries=1)` — the Bedrock probe makes one request, so a silent server costs one request.
+- `src/fluxer_panel/sources/minecraft.py:43` `async_status(tries=1)` — the same single request for the Java probe.
+- `src/fluxer_panel/sources/minecraft.py:40` `mcstatus has already built the player sample` — mcstatus builds the Java player sample before this code runs. It is discarded right after parse and never read.
+- `src/fluxer_panel/sources/a2s.py:30` `game_mode=None,` — python-a2s does not parse the game mode, so the A2S probe never reports one.
+- `src/fluxer_panel/logs.py:23` `PINNED_LOGGERS = ("a2s", "mcstatus")` — the probe libraries' loggers are pinned to WARNING, because a2s logs raw packets at DEBUG.
+
+## Plugin boundary
+
+- `src/fluxer_panel/sources/registry.py:18` `MANAGER_FACTORIES: dict` — the host-manager kinds. Adding a kind is one line here.
+- `src/fluxer_panel/sources/registry.py:21` `PROBES: dict[str, Probe]` — the probe kinds, each mapped to one fixed instance.
+- `src/fluxer_panel/sources/registry.py:38` `if manager is not None:` — a factory that returns None (the manager is not configured) registers nothing, so the plugin is unreachable.
+- `src/fluxer_panel/sources/base.py:65` `class HostManager(Protocol):` — the host-manager contract. `validate_ref` raises only `CardFieldError`, and `power_state` never raises.
+- `src/fluxer_panel/sources/base.py:81` `class Probe(Protocol):` — the probe contract. A probe returns a result or `ProbeFailed` and never raises.
+- `src/fluxer_panel/sources/_probe_util.py:35` `async def _guard(` — every probe runs under this guard, which maps each failure to a fixed reason.
+- `src/fluxer_panel/sources/_probe_util.py:48` `never let a library message escape` — the catch-all. A library's error text is never returned.
+
+## Card rendering
+
+- `src/fluxer_panel/render.py:53` `def neutralise(` — breaks the mention forms (`@everyone`, `<@id>`, `<#id>`) with a zero-width joiner, so card text cannot ping anyone or form a mention.
+- `src/fluxer_panel/render.py:26` `_MD = re.compile(` — the markdown control characters that `escape` backslashes.
+- `src/fluxer_panel/render.py:58` `def escape(` — the escape for all card text: neutralise first, then escape markdown. Every user text passes through it before it enters an embed.
+- `src/fluxer_panel/render.py:74` `def code(` — a code span. Backticks are removed, because they cannot be escaped inside one.
+- `src/fluxer_panel/render.py:63` `def fit(` — cuts escaped text without leaving a dangling backslash that would escape the ellipsis.
+- `src/fluxer_panel/render.py:145` `"allowed_mentions": {"parse": []}` — every card send and edit carries empty `allowed_mentions`.
+- `src/fluxer_panel/render.py:163` `def outside_location(has_location: bool)` — takes a bool, so the location text cannot reach the outside line.
+- `tests/test_render.py:666` `SENTINEL_LOCATION not in outside` — the test that the location text never appears in the outside rendering.
+- `src/fluxer_panel/render.py:84` `def channel_link(` — the only place a channel link is built. Both ids pass the snowflake check first.
+- `tests/test_text.py:27` `"guild" in node.value.lower()` — the scan that fails on any user-facing string that mentions a guild.
+
+## Card commands
+
+- `src/fluxer_panel/admin.py:60` `if head == "card":` — the `!card` branch runs only after `authorize` has passed, so card commands share the DM-only, admin-only check.
+- `src/fluxer_panel/cards.py:37` `super().__init__(f"{field}: {rule}")` — `CardFieldError` carries a field name and a rule key. The submitted value is never in the message.
+- `src/fluxer_panel/card_commands.py:219` `exc.status in (403, 404)` — a 403 or a 404 from `get_guild` means the bot is not in that community. Both get the same "unverified" reply.
+- `src/fluxer_panel/card_commands.py:232` `channel.get("type") != VOICE_CHANNEL_TYPE` — the channel must be a voice channel.
+- `src/fluxer_panel/card_commands.py:234` `str(channel.get("guild_id")) != guild_id` — the channel must belong to the community the admin named.
+- `src/fluxer_panel/card_commands.py:399` `cards.set_state(conn, card_id, "archived", now)` — archive keeps the card row and its slots. It clears the message and sets the state, so the card can be read again.
+
+## Card poller
+
+- `src/fluxer_panel/poller.py:130` `log_event(log, "card_poll_failed"` — one card's failure is logged with the card id and the exception type only. The other cards still run.
+- `src/fluxer_panel/poller.py:259` `await self._rest.edit_message(channel_id, message_id, embeds=` — the edit sends embeds and `allowed_mentions` and never `content`, so an edit cannot erase the message text.
+- `src/fluxer_panel/poller.py:156` `cards.set_probe_tracking(c, card.id` — the alert state is saved before the DM goes out. A crash or a failed DM cannot send the alert a second time.
+- `src/fluxer_panel/poller.py:158` `await self._alert(card)` — the admin DM that follows that save.
+- `src/fluxer_panel/poller.py:187` `cards.set_voice_name_if(c, card.id` — a refreshed voice name is written only if the voice still matches the one that was read, so an admin's change during the lookup wins.
+- `src/fluxer_panel/poller.py:270` `cards.set_hash_if(c, card_id` — the rendered hash is stored only if the message is still the same one, so a delete during an edit is not written back.
+- `src/fluxer_panel/poller.py:45` `_DELETED_CAP = 256` — the remembered deletes are bounded. The oldest entries are evicted, which covers the window between a send and its commit.
+- `src/fluxer_panel/poller.py:281` `self._deleted[(channel_id, message_id)] = None` — a repeated delete keeps its place, so eviction is by insertion order.
+- `src/fluxer_panel/__main__.py:98` `poller_task.cancel()` — the poller is cancelled and awaited before the purge task, so no card write is in flight when the session closes.
+
+## Private denylist
+
+- `tests/test_repo_hygiene.py:484` `return Path(common).parent / DENYLIST_RELATIVE` — the denylist lives in the main checkout's `docs/private/`, found through the git common directory, so a worktree reads the same file. The path is computed and the file is not opened here.
+- `tests/test_repo_hygiene.py:512` `offenders.append(f"{path.relative_to(root)}:{number}")` — a finding is the path and the line only. The denylisted literal is never printed. Secret files are skipped before any read.
+- `tests/test_repo_hygiene.py:560` `pytest.skip("private denylist absent")` — where the denylist is absent, as in the published split repository, the test skips.
+
+## What the phase 2 prompt got wrong
+
+This section compares the phase 2 brief and plan with what the design and the implementation decided. The design's "Deviations from the phase 2 prompt" section is the source for the first items. The others come from the implementation and its checks, and each one was checked against the code.
+
+- **Source slots:** the prompt had one status source with an optional query. The design uses two independent slots, a host manager and a probe. `none` is no longer a query type. It means the probe slot is empty, and a probe-only card is allowed and shows "Not responding" on failure.
+- **Query types:** the test servers are Bedrock, so a Java-only `minecraft` query was wrong for them. The query types are `minecraft_bedrock`, `minecraft_java` and `a2s`.
+- **Probe details:** opt-in map, version and game mode details replace counts only.
+- **Java names:** mcstatus builds the Java player sample into objects before panel code sees it, so the rule for Java is that the sample is discarded right after parse. For Bedrock and A2S the rule is that names are dropped at parse time.
+- **Probe-failure fallback:** a running server whose probe fails past the grace period shows Ready without counts, and the admins get one DM.
+- **Draft and publish:** cards start as drafts and appear in the games channel only when an admin publishes them.
+- **Config names:** `PTERODACTYL_URL` and `PTERODACTYL_API_KEY` replace `PANEL_API_KEY`.
+- **Key scope:** the key's real scope includes the Panel-forced `websocket.connect` permission, which allows reading the console. That was accepted, guarded by the path allowlist and its test, and is recorded as a residual risk.
+- **Registry location:** the source registry is in its own module, `registry.py`, not in the base module. Placing it in the base module would make the base module import the plugins that import it back.
+- **Suspended servers:** the Panel answers 409 on `/resources` for a suspended server, so the client falls back to the details endpoint to read the suspension flag. Any other 409 reads as unknown.
+- **Name token:** the schema guard listed `name` as a forbidden column token. On 2026-11-02 the user decided that `name` alone is not personal data, because channel and map names use it. The token was removed, and every other token stays.
+- **Community check:** a 403 and a 404 from `get_guild` both mean the bot is not in that community, and both get the same reply.
+- **Alert flag:** `resolve` takes the persisted `alert_sent` flag, so the admin DM is sent at most once, even across a restart.
+- **Oversized replies:** a probe reply longer than the raw limit is `malformed`. It is not truncated.
+- **Location limit:** the location embed limit is 500 characters. A location is validated to 200 characters, and escaping can grow that text 2.5 times, so a 400-character limit would cut validated text.
+- **Hosts:** an IPv6 zone id is refused in a host, and so is a host whose last label is all digits, because that label could be read as an IPv4 address.
+- **Message deletes:** a MESSAGE_DELETE can race a post or an edit. The poller keeps a bounded set of remembered deletes, and it stores the rendered hash only if the message is still the same one.
+- **Voice name refresh:** the refresh writes with a compare-and-set, so a concurrent admin change to the voice wins.
+
 ## What the phase 1 prompt got wrong
 
 This section compares the phase 1 brief and plan with what the investigation and the live run showed. The sources are the panel brief (a private design document kept outside this repository; its "Before any code" checks and build order step 1) and the phase 1 plan. The live results are in `docs/fluxer-notes.md`, recorded against server build 2026.1031.154542 and client build 2026.1017.133957. Where the brief is silent, the entry says so, and the assumption is attributed to the phase 1 plan's reading of Fluxer's documentation. That reading was not re-checked in this run.

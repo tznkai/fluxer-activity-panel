@@ -47,8 +47,20 @@ TOPICS = [
     "Live-tool redaction",
     ".env handling",
     "Published-tree hygiene",
+    "Pterodactyl read-only access",
+    "Schedule payloads",
+    "Probe details",
+    "Plugin boundary",
+    "Card rendering",
+    "Card commands",
+    "Card poller",
+    "Private denylist",
     "What the phase 1 prompt got wrong",
+    "What the phase 2 prompt got wrong",
 ]
+
+# Prose sections state findings in words and cite no code. Every other topic must hold a reference.
+PROSE_TOPICS = {"What the phase 1 prompt got wrong", "What the phase 2 prompt got wrong"}
 
 
 def _sections(text: str) -> dict[str, str]:
@@ -144,5 +156,5 @@ def test_every_required_topic_is_present_and_has_a_reference() -> None:
     missing = [topic for topic in TOPICS if topic not in sections]
     assert not missing, f"missing REVIEW.md headings: {missing}"
 
-    empty = [topic for topic in TOPICS[:-1] if not REFERENCE.search(sections[topic])]
+    empty = [topic for topic in TOPICS if topic not in PROSE_TOPICS and not REFERENCE.search(sections[topic])]
     assert not empty, f"REVIEW.md sections with no reference: {empty}"
