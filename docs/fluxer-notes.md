@@ -191,7 +191,7 @@ channel ID.
 - Web: the bare link, the masked `[voice](...)` link in an embed description, and the `<#C>` mention each opened the
   voice channel.
 - Mobile: the bare link, the masked link and the `<#C>` mention each opened the voice channel.
-- Built for the voice channel.
+- All three were built for the voice channel (`LIVE_VOICE_CHANNEL_ID`), not the posting channel.
 - The copied link shape is `H/channels/G/C`, which matches `channel_link`'s `{instance}/channels/{G}/{C}`.
 - Decision: no change to `channel_link` or `CHANNEL_LINK_RE`. The Voice field stays a masked link.
 
@@ -201,7 +201,7 @@ channel ID.
 
 ### Mentions in embeds
 
-- Web and mobile: `<@U>` in an embed field rendered as a mention on both.
+- Web and mobile: `<@U>` in an embed field rendered as a mention.
 - With empty `allowed_mentions`, no notification arrived on either client. This is the expected behaviour, not a
   Fluxer bug.
 - Decision: no code change. No REVIEW.md note, since no ping fired.
