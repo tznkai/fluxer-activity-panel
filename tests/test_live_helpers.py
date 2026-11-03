@@ -739,6 +739,7 @@ def test_probe_summary_for_an_unreachable_target_gives_the_reason():
 
 OTHER = "4" * 19
 VOICE = "5" * 19
+PROBE_IPV6 = ":".join(["fd00", "", "1"])
 MARKUP_ENV = {
     "LIVE_GUILD_ID": GUILD,
     "LIVE_VOICE_CHANNEL_ID": VOICE,
@@ -789,12 +790,12 @@ def test_burst_line_counts_successes_rate_limits_and_other_errors():
     assert line == "edits=5 ok=2 rate_limited_429=2 other_errors=1 seconds=1.23"
 
 
-def markup_ctx(session, base: str) -> markup_live.Ctx:
+def markup_ctx(session, base: str, env: dict[str, str] = MARKUP_ENV) -> markup_live.Ctx:
     """A markup context over the real REST client and the fake server. Only the posting channel is the text channel."""
-    redactor = Redactor(token=TOKEN)
-    lv = Live(env=dict(MARKUP_ENV), session=session, rest=rest_for(session, base), redactor=redactor,
+    redactor = Redactor(token=TOKEN, extra_secrets=markup_live.markup_secrets(env))
+    lv = Live(env=dict(env), session=session, rest=rest_for(session, base), redactor=redactor,
               version={}, events=asyncio.Queue())
-    return markup_live.Ctx(lv=lv, res=Results(redactor), instance=MARKUP_ENV["FLUXER_INSTANCE_URL"], guild=GUILD,
+    return markup_live.Ctx(lv=lv, res=Results(redactor), instance=env["FLUXER_INSTANCE_URL"], guild=GUILD,
                            channel=CHANNEL, user=USER, voice=VOICE, other=OTHER)
 
 
@@ -824,6 +825,60 @@ async def test_channel_links_and_mention_point_at_the_voice_channel_not_the_post
     assert "voice channel" in capsys.readouterr().out
 
 
+def test_markup_secrets_hide_the_instance_url_its_host_and_the_default_port():
+    assert markup_live.markup_secrets(MARKUP_ENV) == (
+        "https://fluxer.invalid", "fluxer.invalid", "fluxer.invalid:443", "[fluxer.invalid]:443")
+
+
+def test_markup_secrets_for_an_explicit_port_and_an_ipv6_host():
+    url = "https://[" + PROBE_IPV6 + "]:8443/"
+    assert markup_live.markup_secrets({"FLUXER_INSTANCE_URL": url}) == (
+        url, PROBE_IPV6, f"{PROBE_IPV6}:8443", f"[{PROBE_IPV6}]:8443")
+
+
+def test_markup_secrets_hide_only_the_host_when_the_url_has_no_known_port():
+    url = "foo://fluxer.invalid/"
+    assert markup_live.markup_secrets({"FLUXER_INSTANCE_URL": url}) == (url, "fluxer.invalid")
+
+
+async def test_live_hides_the_extra_secrets_in_every_line_it_prints(fake, monkeypatch, capsys, no_live_redactor):
+    _, base = fake
+    monkeypatch.setattr(_live, "load_env", lambda: {**required_env(), "FLUXER_API_URL": f"{base}/api"})
+
+    async with _live.live(gateway=False, extra_secrets=markup_live.markup_secrets(MARKUP_ENV)) as lv:
+        out(lv.redactor, "reached fluxer.invalid:443 and https://fluxer.invalid")
+
+    printed = capsys.readouterr().out
+    assert "fluxer.invalid" not in printed
+    assert printed.splitlines()[-1] == "reached [REDACTED] and [REDACTED]"
+
+
+@pytest.mark.parametrize(("instance", "note", "shown"), [
+    ("https://fluxer.invalid", "host fluxer.invalid", "host [REDACTED]"),
+    ("https://fluxer.invalid", "url https://fluxer.invalid", "url [REDACTED]"),
+    ("https://fluxer.invalid", "port fluxer.invalid:443", "port [REDACTED]"),
+    ("https://fluxer.invalid:8443", "at fluxer.invalid:8443", "at [REDACTED]"),
+    ("https://[" + PROBE_IPV6 + "]:8443", f"at [{PROBE_IPV6}]:8443", "at [REDACTED]"),
+])
+async def test_a_note_echoing_the_instance_host_is_redacted(fake, session, monkeypatch, capsys, instance, note,
+                                                            shown):
+    _, base = fake
+    env = {**MARKUP_ENV, "FLUXER_INSTANCE_URL": instance}
+
+    async def operator_note() -> str:
+        return note
+
+    monkeypatch.setattr(markup_live, "wait_for_enter", operator_note)
+    ctx = markup_ctx(session, base, env)
+
+    await markup_live.ask(ctx, "channel links", "look for it")
+
+    printed = capsys.readouterr().out
+    assert f"NOTE channel links: {shown}" in printed.splitlines()
+    assert "fluxer.invalid" not in printed
+    assert PROBE_IPV6 not in printed
+
+
 # Scripts that do not call live() register their redactor, so main() redacts an escaped error. no_live_redactor
 # restores the registered redactor after each test, so a registration never leaks into another test.
 PANEL_HOST = ".".join(["panel", "invalid"])
@@ -851,7 +906,6 @@ def test_error_redactor_is_empty_when_no_script_registered_one(no_live_redactor)
 
 PANEL_PORT = 8443
 PROBE_PORT = 27015
-PROBE_IPV6 = ":".join(["fd00", "", "1"])
 
 
 def test_ptero_secrets_cover_the_panel_url_its_host_host_port_and_the_bot_token():

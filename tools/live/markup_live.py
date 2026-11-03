@@ -15,7 +15,7 @@ from typing import Any
 
 import aiohttp
 
-from _live import Live, LiveRefused, Redactor, Results, live, load_env, main, out, wait_for_enter
+from _live import Live, LiveRefused, Redactor, Results, endpoint_secrets, live, load_env, main, out, wait_for_enter
 from fluxer_client.ids import is_snowflake
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
 from fluxer_panel import render
@@ -35,6 +35,12 @@ def check_markup_env(env: Mapping[str, str]) -> None:
         raise LiveRefused("LIVE_OTHER_GUILD_ID must be a different community from LIVE_GUILD_ID")
     if not env.get("FLUXER_INSTANCE_URL"):
         raise LiveRefused("FLUXER_INSTANCE_URL is needed for the channel link check")
+
+
+def markup_secrets(env: Mapping[str, str]) -> tuple[str, ...]:
+    """The instance URL's forms (see endpoint_secrets). The operator's typed NOTE can echo the host, and an error
+    from the instance can name it, so every printed line hides it."""
+    return endpoint_secrets(env["FLUXER_INSTANCE_URL"])
 
 
 def parse_verdict(line: str) -> tuple[str, str]:
@@ -184,7 +190,7 @@ async def delete_sent(rest: FluxerREST, channel: str, message_ids: Sequence[str]
 async def run() -> Results:
     env = load_env()
     check_markup_env(env)
-    async with live(gateway=False) as lv:
+    async with live(gateway=False, extra_secrets=markup_secrets(env)) as lv:
         ctx = Ctx(lv=lv, res=Results(lv.redactor), instance=env["FLUXER_INSTANCE_URL"],
                   guild=env["LIVE_GUILD_ID"], channel=env["LIVE_CHANNEL_ID"], user=env["LIVE_USER_ID"],
                   voice=env["LIVE_VOICE_CHANNEL_ID"], other=env["LIVE_OTHER_GUILD_ID"])

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 import aiohttp
+from yarl import URL
 
 from fluxer_client.gateway import Gateway
 from fluxer_client.ids import is_snowflake
@@ -272,13 +273,13 @@ def redacted_logging(redactor: Redactor) -> Iterator[None]:
 
 
 @contextlib.asynccontextmanager
-async def live(*, gateway: bool) -> AsyncIterator[Live]:
+async def live(*, gateway: bool, extra_secrets: tuple[str, ...] = ()) -> AsyncIterator[Live]:
     """install redactor.log_handler() as the only root handler (level WARNING) -> load_env -> session -> api base (FLUXER_API_URL or discover_api) -> FluxerREST -> check_safety ->
     capture_version -> label the env ids -> print the version block -> optionally start a Gateway whose
     on_dispatch puts (t, d) on the queue and wait for READY (label the bot user as <bot>). On exit: gateway.stop()."""
     global _redactor
     env = load_env()
-    redactor = Redactor(token=env["FLUXER_TOKEN"])
+    redactor = Redactor(token=env["FLUXER_TOKEN"], extra_secrets=extra_secrets)
     _redactor = redactor
     root = logging.getLogger()
     saved_handlers, saved_level = root.handlers[:], root.level
@@ -398,3 +399,12 @@ def main(coro_fn: Callable[[], Any]) -> None:
         out(error_redactor(), f"ERROR {type(exc).__name__}: {exc}")
         sys.exit(1)
     sys.exit(1 if results is not None and results.failed else 0)
+
+
+def endpoint_secrets(url: str) -> tuple[str, ...]:
+    """The forms an error or an operator's note can use for a base URL: the URL itself, its host, and, when the port
+    is known (given, or the scheme's default), host:port and the bracketed [host]:port. Empty forms are left out."""
+    parsed = URL(url)
+    host, port = parsed.host, parsed.port
+    host_forms = (host, f"{host}:{port}", f"[{host}]:{port}") if host and port else (host,)
+    return tuple(value for value in (url, *host_forms) if value)

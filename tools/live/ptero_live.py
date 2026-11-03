@@ -13,9 +13,19 @@ from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 
 import aiohttp
-from yarl import URL
 
-from _live import LiveRefused, Redactor, Results, main, out, read_env, redacted_logging, require_vars, use_redactor
+from _live import (
+    LiveRefused,
+    Redactor,
+    Results,
+    endpoint_secrets,
+    main,
+    out,
+    read_env,
+    redacted_logging,
+    require_vars,
+    use_redactor,
+)
 from fluxer_panel.sources.base import PowerAction, SourceError
 from fluxer_panel.sources.pterodactyl import PterodactylManager, Schedule, parse_schedules, select_next
 
@@ -28,11 +38,8 @@ def ptero_secrets(env: Mapping[str, str]) -> tuple[str, ...]:
     """Values the redactor must hide: the Panel URL, its host, the host with its port (plain and bracketed), and the
     bot token. An aiohttp error names host:port, not the URL. The port is the effective one, so a default port
     is hidden too. Empty values are left out."""
-    url = URL(env["PTERODACTYL_URL"])
-    host, port = url.host, url.port
-    host_forms = (host, f"{host}:{port}", f"[{host}]:{port}") if host and port else (host,)
-    candidates = (env["PTERODACTYL_URL"], *host_forms, env.get("FLUXER_TOKEN"))
-    return tuple(value for value in candidates if value)
+    token = env.get("FLUXER_TOKEN")
+    return (*endpoint_secrets(env["PTERODACTYL_URL"]), *((token,) if token else ()))
 
 
 def ptero_redactor(env: Mapping[str, str]) -> Redactor:
