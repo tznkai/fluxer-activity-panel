@@ -129,21 +129,79 @@ async def test_conflict_with_details_not_suspended_is_unknown(session, panel, sl
     assert await manager_for(session, base, sleeps).power_state(SID) is PowerState.UNKNOWN
 
 
-# AC2.3: failures give Unknown and never raise.
-async def test_unreachable_host_is_unknown(session, sleeps, aiohttp_server) -> None:
-    closed = await aiohttp_server(make_panel_app(FakePanelState()))
-    base = str(closed.make_url("")).rstrip("/")
-    await closed.close()
+# AC2.2: only a literal true from the details endpoint means Suspended; the integer 1 does not.
+async def test_non_boolean_details_is_suspended_is_unknown(session, panel, sleeps) -> None:
+    state, base = panel
+    state.scripted[f"GET {PATH}/resources"] = [Scripted(status=409, body=ERROR_BODY)]
+    state.scripted[f"GET {PATH}"] = [Scripted(body=b'{"attributes":{"is_suspended":1}}')]
     assert await manager_for(session, base, sleeps).power_state(SID) is PowerState.UNKNOWN
 
 
-async def test_timeout_is_unknown_with_no_retry(session, panel, sleeps) -> None:
+# AC2.3: failures give Unknown and never raise, and no Panel body reaches the logs.
+async def test_unreachable_host_is_unknown(session, sleeps, aiohttp_server, json_logs) -> None:
+    closed = await aiohttp_server(make_panel_app(FakePanelState()))
+    base = str(closed.make_url("")).rstrip("/")
+    await closed.close()
+    stream = json_logs([KEY])
+    assert await manager_for(session, base, sleeps).power_state(SID) is PowerState.UNKNOWN
+    assert "SENTINEL-PANEL-BODY" not in stream.getvalue()
+    assert KEY not in stream.getvalue()
+
+
+async def test_timeout_is_unknown_with_no_retry(session, panel, sleeps, json_logs) -> None:
     state, base = panel
-    state.scripted[f"GET {PATH}/resources"] = [Scripted(delay=1.0)]
+    state.scripted[f"GET {PATH}/resources"] = [Scripted(delay=1.0, body=ERROR_BODY)]
     manager = manager_for(session, base, sleeps, request_timeout=aiohttp.ClientTimeout(total=0.2))
+    stream = json_logs([KEY])
     assert await manager.power_state(SID) is PowerState.UNKNOWN
     assert len(state.requests) == 1
     assert sleeps == []
+    assert "SENTINEL-PANEL-BODY" not in stream.getvalue()
+    assert KEY not in stream.getvalue()
+
+
+# AC2.3: a redirect is not followed, so the key is never sent to a Location (same origin or another one).
+@pytest.mark.parametrize("origin", ["same_origin", "other_origin"])
+async def test_redirect_is_not_followed(session, panel, sleeps, aiohttp_server, origin) -> None:
+    state, base = panel
+    target_state, target_base = state, base
+    if origin == "other_origin":
+        target_state = FakePanelState()
+        target = await aiohttp_server(make_panel_app(target_state))
+        target_base = str(target.make_url("")).rstrip("/")
+    location = f"{target_base}{PATH}/websocket"
+    state.scripted[f"GET {PATH}/resources"] = [Scripted(status=302, headers={"Location": location})]
+    assert await manager_for(session, base, sleeps).power_state(SID) is PowerState.UNKNOWN
+    assert len(state.requests) == 1
+    if origin == "other_origin":
+        assert target_state.requests == []
+
+
+# AC2.3: a reply with the expected status and a body missing its keys gives Unknown, not an exception.
+@pytest.mark.parametrize(
+    ("resources", "details"),
+    [
+        ([Scripted(body=b"{}")], []),
+        ([Scripted(status=409, body=ERROR_BODY)], [Scripted(body=b'{"attributes":{}}')]),
+    ],
+    ids=["resources_without_attributes", "details_without_is_suspended"],
+)
+async def test_missing_keys_in_panel_reply_give_unknown(session, panel, sleeps, resources, details) -> None:
+    state, base = panel
+    state.scripted[f"GET {PATH}/resources"] = resources
+    if details:
+        state.scripted[f"GET {PATH}"] = details
+    assert await manager_for(session, base, sleeps).power_state(SID) is PowerState.UNKNOWN
+
+
+# AC2.9: an endpoint outside the allowlist is refused by _get itself, before any request is sent.
+async def test_endpoint_outside_the_allowlist_is_refused_before_any_request(session, panel, sleeps) -> None:
+    state, base = panel
+    state.servers[SID] = FakeServer()
+    with pytest.raises(SourceError) as info:
+        await manager_for(session, base, sleeps)._get(SID, "/power")
+    assert info.value.reason == "bad_endpoint"
+    assert state.requests == []
 
 
 @pytest.mark.parametrize(
@@ -250,6 +308,23 @@ async def test_soonest_active_power_schedule_wins(session, panel, sleeps) -> Non
         ],
     )
     assert action == PowerAction("restart", datetime(2026, 11, 2, 13, tzinfo=UTC))
+
+
+@pytest.mark.parametrize("flag", ["false", 1], ids=["string_false", "integer_one"])
+async def test_only_a_literal_true_is_active(session, panel, sleeps, flag) -> None:
+    action = await _next(
+        session,
+        panel,
+        sleeps,
+        [
+            {
+                **schedule("sloppy", next_run_at="2026-11-02T13:00:00+00:00", tasks=(task(1, "power", "stop"),)),
+                "is_active": flag,
+            },
+            schedule("on", next_run_at="2026-11-02T15:00:00+00:00", tasks=(task(1, "power", "restart"),)),
+        ],
+    )
+    assert action == PowerAction("restart", datetime(2026, 11, 2, 15, tzinfo=UTC))
 
 
 async def test_inactive_sooner_schedule_is_ignored(session, panel, sleeps) -> None:
@@ -444,9 +519,10 @@ async def test_malformed_task_after_command_leaks_no_payload(session, panel, sle
         {"data": [{"attributes": {"name": "x", "is_active": True, "next_run_at": None}}]},  # no relationships
         {"data": [{"attributes": {**schedule("x"), "name": 5}}]},  # name is not text
         {"data": [{"attributes": schedule("x", tasks=({"sequence_id": "1", "action": "power", "payload": "start"},))}]},
+        {"data": [{"attributes": schedule("x", tasks=({"sequence_id": True, "action": "power", "payload": "start"},))}]},
         [],  # top level is not an object
     ],
-    ids=["no_relationships", "name_not_text", "sequence_not_int", "top_level_list"],
+    ids=["no_relationships", "name_not_text", "sequence_not_int", "sequence_bool", "top_level_list"],
 )
 def test_structural_problems_raise_malformed(doc) -> None:
     with pytest.raises(SourceError) as info:
