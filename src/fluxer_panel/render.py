@@ -40,11 +40,10 @@ LIMITS = {
     "description": 1024,
     "join": 900,
     "first_time": 900,
+    # Defensive bounds: validated location (at most 200 characters) and detail (at most 48) cannot reach these.
     "location": 400,
-    "address": 300,
-    "voice": 300,
-    "voice_name": 100,
     "detail": 120,
+    "voice_name": 100,
 }
 
 
