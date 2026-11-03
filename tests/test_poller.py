@@ -357,6 +357,26 @@ async def test_an_edit_that_returns_404_posts_a_new_message_and_stores_its_id(
     assert_card_writes_safe(world.fluxer)
 
 
+@pytest.mark.parametrize("status", [500, 403], ids=["server-error", "forbidden"])
+async def test_an_edit_that_fails_for_another_reason_keeps_the_message_and_posts_nothing(
+        world: World, poller: Poller, db: Database, caplog: pytest.LogCaptureFixture, status: int):
+    caplog.set_level(logging.WARNING, logger="fluxer_panel.poller")
+    card_id = await seed(db, "alpha", title="Alpha")
+    await poller.tick()
+    await set_title(db, card_id, "Beta")
+    world.fluxer.overrides[f"PATCH {POSTED}"] = Override(status, b'{"code": "X", "message": "no"}')
+
+    await poller.tick()
+
+    assert [r.status for r in patches(world.fluxer)] == [status]
+    assert len(posts(world.fluxer)) == 1           # no second message is posted over the first
+    card = await load(db, card_id)
+    assert card.message_id == "5001"
+    [failed] = records(caplog, "card_poll_failed")
+    assert failed.panel_fields == {"card_id": card_id, "reason": "FluxerHTTPError"}
+    assert_card_writes_safe(world.fluxer)
+
+
 # AC6.5: reconciling stored messages at startup --------------------------------------------------
 
 async def test_startup_recreates_a_stored_message_that_no_longer_exists(
@@ -404,6 +424,25 @@ async def test_reconcile_leaves_the_message_alone_when_the_lookup_fails_for_anot
     assert patches(world.fluxer) == []
 
 
+async def test_a_transport_error_on_one_lookup_does_not_stop_the_reconcile_of_later_cards(
+        world: World, poller: Poller, db: Database, caplog: pytest.LogCaptureFixture):
+    caplog.set_level(logging.WARNING, logger="fluxer_panel.poller")
+    first = await seed(db, "alpha")
+    second = await seed(db, "beta")
+    await db.run(lambda c: cards.set_message(c, first, GAMES, "5101", "0" * 64))
+    await db.run(lambda c: cards.set_message(c, second, GAMES, "5102", "0" * 64))   # unknown to the fake: a 404
+    world.fluxer.drops.add(f"GET {GAMES_MESSAGES}/5101")                           # the connection closes
+
+    await poller.reconcile()
+
+    [failed] = records(caplog, "card_reconcile_failed")
+    assert failed.panel_fields == {"card_id": first, "reason": "ServerDisconnectedError"}
+    assert (await load(db, first)).message_id == "5101"       # a failed lookup leaves the message alone
+    assert (await load(db, second)).message_id is None        # the later card was still checked and forgotten
+    gets = [(r.path, r.status) for r in world.fluxer.requests if r.method == "GET"]
+    assert gets[-1] == (f"{GAMES_MESSAGES}/5102", 404)     # the later card's lookup ran after the failed one
+
+
 # AC6.6: MESSAGE_DELETE recreates the card without the poll --------------------------------------------
 
 async def test_a_message_delete_recreates_the_card_without_waiting_for_the_poll(
@@ -427,7 +466,6 @@ async def test_a_message_delete_for_another_message_causes_no_post(world: World,
     await poller.tick()
 
     await poller.on_message_delete(MessageDelete("9999", GAMES, None))
-    await asyncio.sleep(0.1)
     await poller.tick()
 
     assert len(posts(world.fluxer)) == 1
