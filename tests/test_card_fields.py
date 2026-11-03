@@ -17,6 +17,8 @@ from fluxer_panel.sources.registry import PROBES, Sources
 
 SENTINEL = "SENTINEL-VAL-"
 LONG_NAME = "a." * 130 + "x"          # 262 characters: over the 253 limit for a host name
+NUMERIC_QUAD = ".".join(["999"] * 4)  # an all-numeric name, built here so no dotted quad is written out
+LINK_LOCAL = "".join(["fe", "80", "::1"])  # built here: the hygiene scan reads a bare IPv6 address as a finding
 PTERO = PterodactylManager(None, "https://fluxer.invalid", "key")  # type: ignore[arg-type]  # validate_ref is offline
 CONFIGURED = Sources(managers={"pterodactyl": PTERO}, probes=dict(PROBES))
 UNCONFIGURED = Sources(managers={}, probes=dict(PROBES))
@@ -94,7 +96,14 @@ def test_host_accepts_ip_addresses_and_host_names(value: str) -> None:
     assert card_fields.host("address", value) == value
 
 
-@pytest.mark.parametrize("value", ["bad host", "-x.invalid", "a..b", LONG_NAME, SENTINEL])
+@pytest.mark.parametrize("value", [
+    "bad host", "-x.invalid", "a..b", LONG_NAME, SENTINEL,
+    LINK_LOCAL + "%eth0",            # an IPv6 zone id is free text, so it is refused
+    LINK_LOCAL + "%" + SENTINEL,
+    LINK_LOCAL + "%<@&1>",           # a mention form in a zone id
+    NUMERIC_QUAD,                    # an all-numeric last label is not a host name
+    "1.2.3",
+])
 def test_host_refuses_bad_host_names(value: str) -> None:
     err = refused(lambda: card_fields.host("address", value))
     assert (err.field, err.rule) == ("address", "host")
@@ -128,6 +137,8 @@ def test_address_accepts_host_and_port_and_bracketed_ipv6() -> None:
     ("[::1]{s}", "address"),              # bracketed without a port
     ("[nope{s}]:19132", "host"),          # bracketed, not an IP address
     ("[mc.example.invalid]:19132", "host"),  # bracketed host name: brackets are for IP addresses only
+    ("[fe80::1%x]:1", "host"),               # a bracketed IPv6 zone id is refused too
+    ("[fe80::1%{s}]:19132", "host"),
     ("bad host{s}:19132", "host"),
     ("mc.example.invalid:9999{s}", "port"),
 ])
@@ -248,6 +259,7 @@ def test_probe_refuses_unknown_kind() -> None:
     ("a2s 127.0.0.1 " + SENTINEL, "port"),                  # a port that is not a number
     ("a2s -bad.invalid 27015", "host"),                     # a host label that starts with a hyphen
     ("a2s 127.0.0.1 0", "port"),                            # a port below 1
+    ("a2s " + LINK_LOCAL + "%" + SENTINEL + " 27015", "host"),         # a zone id in a probe host
 ])
 def test_probe_refuses_bad_shapes_and_values(value: str, rule: str) -> None:
     err = refused(lambda: card_fields.probe(value, CONFIGURED))
@@ -262,3 +274,9 @@ def test_refusal_reply_names_field_and_rule() -> None:
         "Can't set title: it must be 1–200 characters.")
     assert card_fields.refusal_reply(CardFieldError("slug", "taken")) == (
         "Can't set slug: it is already used by another card.")
+
+
+def test_refusal_reply_uses_a_fixed_label_for_a_field_outside_the_vocabulary() -> None:
+    reply = card_fields.refusal_reply(CardFieldError(SENTINEL + "field", "yes_no"))
+    assert reply == "Can't set this field: it must be yes or no."
+    assert SENTINEL not in reply

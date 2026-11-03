@@ -37,6 +37,7 @@ OUTSIDE_LOCATION = "In person — location in Fluxer"
 
 # Admin card commands: validation replies. The field and rule are fixed names, never the value typed.
 FIELD_ERROR = "Can't set {field}: it {rule}."
+FIELD_FALLBACK = "this field"
 RULES = {
     "length": "must be 1–{limit} characters",
     "control": "must not contain control characters",

@@ -17,6 +17,9 @@ from fluxer_panel.render import CHANNEL_LINK_RE
 from fluxer_panel.sources.registry import Sources, known_manager_kinds
 
 TEXT_LIMITS = {"title": 200, "description": 1000, "join": 1000, "first_time": 1000, "location": 200}
+# Every field name a validator may name in a refusal. A refusal for any other name uses a fixed label instead.
+FIELD_NAMES = frozenset({"title", "description", "join", "first_time", "sort", "seats", "location", "voice",
+                         "address", "address_public", "manager", "probe", "show", "slug"})
 _SLUG = re.compile(r"[a-z0-9-]{1,32}")
 _SNOWFLAKE = re.compile(r"[1-9][0-9]{0,24}")          # same shape as config._ADMIN_ID
 _LABEL = re.compile(r"(?!-)[A-Za-z0-9-]{1,63}(?<!-)")
@@ -48,15 +51,23 @@ def snowflake(field: str, value: str) -> str:
     return value
 
 
-def host(field: str, value: str) -> str:
+def _plain_ip(value: str) -> bool:
+    """An IP address with no zone id. A zone id is free text that a reply could carry, so `%` is never accepted."""
+    if "%" in value:
+        return False
     try:
         ipaddress.ip_address(value)
     except ValueError:
-        pass
-    else:
+        return False
+    return True
+
+
+def host(field: str, value: str) -> str:
+    if _plain_ip(value):
         return value
     labels = value.split(".")
-    if len(value) > 253 or not all(_LABEL.fullmatch(label) for label in labels):
+    # A name whose last label is all digits can be read as a dotted IPv4 address, so it is refused.
+    if len(value) > 253 or not all(_LABEL.fullmatch(label) for label in labels) or labels[-1].isdigit():
         raise CardFieldError(field, "host")
     return value
 
@@ -73,10 +84,8 @@ def address(value: str) -> tuple[str, int]:
         match = _BRACKETED.fullmatch(stripped)
         if match is None:
             raise CardFieldError("address", "address")
-        try:
-            ipaddress.ip_address(match.group(1))
-        except ValueError:
-            raise CardFieldError("address", "host") from None
+        if not _plain_ip(match.group(1)):
+            raise CardFieldError("address", "host")
         host_part, port_part = match.group(1), match.group(2)
     else:
         if stripped.count(":") != 1:
@@ -145,6 +154,8 @@ def probe(value: str, sources: Sources) -> tuple[str, str, int]:
 
 
 def refusal_reply(err: CardFieldError) -> str:
-    """The reply for a refused field: the field name and the rule text, never the value."""
-    rule = text.RULES[err.rule].format(limit=TEXT_LIMITS.get(err.field, 0))
-    return text.FIELD_ERROR.format(field=err.field, rule=rule)
+    """The reply for a refused field: the field name and the rule text, never the value. A field name outside
+    FIELD_NAMES is replaced by a fixed label, so no text from the input can reach the reply through it."""
+    field = err.field if err.field in FIELD_NAMES else text.FIELD_FALLBACK
+    rule = text.RULES[err.rule].format(limit=TEXT_LIMITS.get(field, 0))
+    return text.FIELD_ERROR.format(field=field, rule=rule)
