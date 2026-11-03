@@ -227,3 +227,14 @@ channel ID.
 
 - The HTTP status is 403.
 - Decision: `get_guild` keeps the 403 and 404 handling. 404 still covers nonexistent communities.
+
+## First cards
+
+Three cards were run against the test community, all three checked on web and mobile:
+
+- A card with a `minecraft_bedrock` probe, an address and the version and game mode details.
+- A card with a `pterodactyl` manager and a verified voice channel.
+- A card with an in-person location and a voice channel in a community the bot is not in.
+
+Result: rendered as expected on web and mobile. The reply for the unverified voice channel and the outside
+placeholder for the location matched the design. A card message deleted by hand was posted again within seconds.
