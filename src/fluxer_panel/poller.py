@@ -39,8 +39,9 @@ class _ScheduleCache:
     action: PowerAction | None  # None also when the fetch failed: the Next line is then hidden
 
 
-# How many recent MESSAGE_DELETE ids are remembered for a store that is still in flight. Deletions of a message
-# that is not yet stored are rare, so a few hundred covers any realistic window.
+# Every MESSAGE_DELETE the bot sees is recorded, from any channel, and only the most recent _DELETED_CAP are kept.
+# A record only matters for a store still in flight, which needs a delete from the window between its send and its
+# commit. That window is short, so the most recent few hundred deletes cover it.
 _DELETED_CAP = 256
 
 
@@ -275,9 +276,8 @@ class Poller:
             self.kick()
 
     def _remember_deleted(self, channel_id: str, message_id: str) -> None:
-        key = (channel_id, message_id)
-        self._deleted[key] = None
-        self._deleted.move_to_end(key)
+        # Insertion order decides eviction. A repeated delete does not move its entry, since a message is deleted once.
+        self._deleted[(channel_id, message_id)] = None
         while len(self._deleted) > _DELETED_CAP:
             self._deleted.popitem(last=False)
 

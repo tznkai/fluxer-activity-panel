@@ -31,7 +31,7 @@ from fluxer_panel.card_commands import CardContext, CardLocks
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.logs import setup_logging
-from fluxer_panel.poller import Poller
+from fluxer_panel.poller import _DELETED_CAP, Poller
 from fluxer_panel.sources.base import PlayerCounts, ProbeDetails, ProbeFailed, ProbeResult
 from fluxer_panel.sources.pterodactyl import PterodactylManager
 from fluxer_panel.sources.registry import Sources
@@ -543,6 +543,28 @@ async def test_a_message_delete_for_a_message_still_being_posted_causes_a_repost
         run_task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await run_task
+    assert_card_writes_safe(world.fluxer)
+
+
+@pytest.mark.parametrize("later_deletes, reposts", [(_DELETED_CAP - 1, True), (_DELETED_CAP, False)],
+                         ids=["still-remembered", "evicted"])
+async def test_a_delete_is_remembered_for_the_most_recent_deletes_only(
+        world: World, poller: Poller, db: Database, later_deletes: int, reposts: bool):
+    card_id = await seed(db, "alpha")
+    world.fluxer.delays[f"POST {GAMES_MESSAGES}"] = 0.5
+    run_task = asyncio.create_task(poller.run())
+    try:
+        await asyncio.sleep(0.1)     # the first post (id 5001) is still in flight for the next 0.5 s
+        await poller.on_message_delete(MessageDelete("5001", GAMES, None))
+        for index in range(later_deletes):
+            await poller.on_message_delete(MessageDelete(str(9000 + index), GAMES, None))
+        await wait_for_card(db, card_id, lambda c: c.message_id is not None)
+        await asyncio.sleep(0.3)     # a repost, if any, follows the store at once
+    finally:
+        run_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await run_task
+    assert len(posts(world.fluxer)) == (2 if reposts else 1)
     assert_card_writes_safe(world.fluxer)
 
 
