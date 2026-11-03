@@ -719,7 +719,7 @@ async def test_a_probe_only_card_probes_on_every_tick(world: World, poller: Poll
 
 async def test_an_archived_card_forgets_its_schedule_and_voice_check_so_a_republish_fetches_them_again(
         world: World, poller: Poller, db: Database):
-    card_id = await seed(db, "alpha", voice=cards.Voice(GUILD, VOICE, "Old", True),
+    card_id = await seed(db, "alpha", voice=cards.ChannelLink(GUILD, VOICE, "Old", True),
                          manager=cards.ManagerRef("pterodactyl", SERVER))
     world.panel.servers[SERVER].current_state = "running"
     world.fluxer.channels[VOICE] = voice_channel(name="Old")
@@ -984,8 +984,8 @@ async def test_the_poller_logs_no_card_text_or_probe_detail(
     world.probe.reply = ProbeResult(PlayerCounts(1, 4), ProbeDetails(map="SENTINEL-MAP-5d1e"))
     card_id = await seed(db, "alpha", title="SENTINEL-TITLE-5d1e",
                          location=cards.Location("SENTINEL-LOC-5d1e"),
-                         voice=cards.Voice(GUILD, VOICE, "SENTINEL-VOICE-5d1e", True),
-                         text_channel=(1, cards.Voice(GUILD, TEXT, "SENTINEL-TEXT-5d1e", True)),
+                         voice=cards.ChannelLink(GUILD, VOICE, "SENTINEL-VOICE-5d1e", True),
+                         text_channel=(1, cards.ChannelLink(GUILD, TEXT, "SENTINEL-TEXT-5d1e", True)),
                          probe=cards.ProbeRef("stub", "sentinel-host.invalid", PORT))
     await db.run(lambda c: cards.update_fields(c, card_id, 0, show_details=("map",)))
     await seed(db, "beta", probe=cards.ProbeRef("boom", "sentinel-host.invalid", PORT))
@@ -1000,7 +1000,7 @@ async def test_the_poller_logs_no_card_text_or_probe_detail(
 
 async def test_an_unchanged_voice_name_is_not_written(world: World, poller: Poller, db: Database):
     await track_voice_writes(db)
-    await seed(db, "alpha", voice=cards.Voice(GUILD, VOICE, "Old", True))
+    await seed(db, "alpha", voice=cards.ChannelLink(GUILD, VOICE, "Old", True))
     world.fluxer.channels[VOICE] = voice_channel(name="Old")
 
     await poller.tick()
@@ -1010,7 +1010,7 @@ async def test_an_unchanged_voice_name_is_not_written(world: World, poller: Poll
 
 async def test_a_changed_voice_name_is_refreshed_and_shown(world: World, poller: Poller, db: Database):
     await track_voice_writes(db)
-    card_id = await seed(db, "alpha", voice=cards.Voice(GUILD, VOICE, "Old", True))
+    card_id = await seed(db, "alpha", voice=cards.ChannelLink(GUILD, VOICE, "Old", True))
     world.fluxer.channels[VOICE] = voice_channel(name="New")
 
     await poller.tick()
@@ -1022,7 +1022,7 @@ async def test_a_changed_voice_name_is_refreshed_and_shown(world: World, poller:
 
 
 async def test_a_voice_cleared_during_a_name_refresh_stays_cleared(world: World, poller: Poller, db: Database):
-    card_id = await seed(db, "alpha", voice=cards.Voice(GUILD, VOICE, "Old", True))
+    card_id = await seed(db, "alpha", voice=cards.ChannelLink(GUILD, VOICE, "Old", True))
     world.fluxer.channels[VOICE] = voice_channel(name="New")
     world.fluxer.delays[f"GET /api/v1/channels/{VOICE}"] = 0.3
     tick = asyncio.create_task(poller.tick())
@@ -1037,12 +1037,12 @@ async def test_a_voice_cleared_during_a_name_refresh_stays_cleared(world: World,
 
 
 async def test_a_voice_set_during_a_name_refresh_stays_set(world: World, poller: Poller, db: Database):
-    card_id = await seed(db, "alpha", voice=cards.Voice(GUILD, VOICE, "Old", True))
+    card_id = await seed(db, "alpha", voice=cards.ChannelLink(GUILD, VOICE, "Old", True))
     world.fluxer.channels[VOICE] = voice_channel(name="New")
     world.fluxer.delays[f"GET /api/v1/channels/{VOICE}"] = 0.3
     tick = asyncio.create_task(poller.tick())
     await asyncio.sleep(0.1)
-    admin_choice = cards.Voice(GUILD, "2002", "Admin", True)
+    admin_choice = cards.ChannelLink(GUILD, "2002", "Admin", True)
     await db.run(lambda c: cards.set_voice(c, card_id, admin_choice))
     await tick
 
@@ -1057,7 +1057,7 @@ async def test_a_voice_set_during_a_name_refresh_stays_set(world: World, poller:
 async def test_a_voice_refresh_keeps_the_stored_name_when_fluxer_does_not_confirm_it(
         world: World, poller: Poller, db: Database, change: dict[str, Any]):
     await track_voice_writes(db)
-    card_id = await seed(db, "alpha", voice=cards.Voice(GUILD, VOICE, "Old", True))
+    card_id = await seed(db, "alpha", voice=cards.ChannelLink(GUILD, VOICE, "Old", True))
     world.fluxer.channels[VOICE] = voice_channel(**{"name": "New", **change})
 
     await poller.tick()
@@ -1067,7 +1067,7 @@ async def test_a_voice_refresh_keeps_the_stored_name_when_fluxer_does_not_confir
 
 
 async def test_a_voice_name_is_checked_once_per_refresh_interval(world: World, poller: Poller, db: Database):
-    await seed(db, "alpha", voice=cards.Voice(GUILD, VOICE, "Old", True))
+    await seed(db, "alpha", voice=cards.ChannelLink(GUILD, VOICE, "Old", True))
     world.fluxer.channels[VOICE] = voice_channel(name="Old")
 
     for now in (0, 10, 599, 600):
@@ -1078,7 +1078,7 @@ async def test_a_voice_name_is_checked_once_per_refresh_interval(world: World, p
 
 
 async def test_an_unverified_voice_is_never_checked(world: World, poller: Poller, db: Database):
-    await seed(db, "alpha", voice=cards.Voice(GUILD, VOICE, None, False))
+    await seed(db, "alpha", voice=cards.ChannelLink(GUILD, VOICE, None, False))
     world.fluxer.channels[VOICE] = voice_channel(name="New")
 
     await poller.tick()
@@ -1089,7 +1089,7 @@ async def test_an_unverified_voice_is_never_checked(world: World, poller: Poller
 async def test_a_failed_voice_check_is_logged_and_the_card_still_posts(
         world: World, poller: Poller, db: Database, caplog: pytest.LogCaptureFixture):
     caplog.set_level(logging.WARNING, logger="fluxer_panel.poller")
-    card_id = await seed(db, "alpha", voice=cards.Voice(GUILD, VOICE, "Old", True))
+    card_id = await seed(db, "alpha", voice=cards.ChannelLink(GUILD, VOICE, "Old", True))
     world.fluxer.overrides[f"GET /api/v1/channels/{VOICE}"] = Override(500, b'{"code": "X", "message": "no"}')
 
     await poller.tick()
@@ -1107,7 +1107,7 @@ def _iso(epoch: float) -> str:
 
 async def test_a_changed_text_channel_name_is_refreshed_and_shown(world: World, poller: Poller, db: Database):
     await track_text_channel_writes(db)
-    card_id = await seed(db, "alpha", text_channel=(1, cards.Voice(GUILD, TEXT, "Old", True)))
+    card_id = await seed(db, "alpha", text_channel=(1, cards.ChannelLink(GUILD, TEXT, "Old", True)))
     world.fluxer.channels[TEXT] = text_channel(name="New")
 
     await poller.tick()
@@ -1120,7 +1120,7 @@ async def test_a_changed_text_channel_name_is_refreshed_and_shown(world: World, 
 
 async def test_an_unchanged_text_channel_name_is_not_written(world: World, poller: Poller, db: Database):
     await track_text_channel_writes(db)
-    await seed(db, "alpha", text_channel=(2, cards.Voice(GUILD, TEXT, "general", True)))
+    await seed(db, "alpha", text_channel=(2, cards.ChannelLink(GUILD, TEXT, "general", True)))
     world.fluxer.channels[TEXT] = text_channel(name="general")
 
     await poller.tick()
@@ -1129,9 +1129,9 @@ async def test_an_unchanged_text_channel_name_is_not_written(world: World, polle
 
 
 async def test_each_verified_channel_link_is_refreshed_in_its_own_slot(world: World, poller: Poller, db: Database):
-    card_id = await seed(db, "alpha", voice=cards.Voice(GUILD, VOICE, "Old", True),
-                         text_channel=(1, cards.Voice(GUILD, TEXT, "Old", True)))
-    await db.run(lambda c: cards.set_text_channel(c, card_id, 3, cards.Voice(GUILD, "2003", "Third", True)))
+    card_id = await seed(db, "alpha", voice=cards.ChannelLink(GUILD, VOICE, "Old", True),
+                         text_channel=(1, cards.ChannelLink(GUILD, TEXT, "Old", True)))
+    await db.run(lambda c: cards.set_text_channel(c, card_id, 3, cards.ChannelLink(GUILD, "2003", "Third", True)))
     world.fluxer.channels[VOICE] = voice_channel(name="NewVoice")
     world.fluxer.channels[TEXT] = text_channel(name="NewText")
     world.fluxer.channels["2003"] = {"id": "2003", "name": "Third", "type": 0, "guild_id": GUILD}
@@ -1140,15 +1140,15 @@ async def test_each_verified_channel_link_is_refreshed_in_its_own_slot(world: Wo
 
     card = await load(db, card_id)
     assert card.voice.channel_name == "NewVoice"
-    assert card.text_channels == (cards.Voice(GUILD, TEXT, "NewText", True), None,
-                                  cards.Voice(GUILD, "2003", "Third", True))
+    assert card.text_channels == (cards.ChannelLink(GUILD, TEXT, "NewText", True), None,
+                                  cards.ChannelLink(GUILD, "2003", "Third", True))
 
 
 @pytest.mark.parametrize("change", [{"kind": 2}, {"guild": "9999"}], ids=["not-text", "other-community"])
 async def test_a_text_channel_refresh_keeps_the_stored_name_when_fluxer_does_not_confirm_it(
         world: World, poller: Poller, db: Database, change: dict[str, Any]):
     await track_text_channel_writes(db)
-    card_id = await seed(db, "alpha", text_channel=(1, cards.Voice(GUILD, TEXT, "Old", True)))
+    card_id = await seed(db, "alpha", text_channel=(1, cards.ChannelLink(GUILD, TEXT, "Old", True)))
     world.fluxer.channels[TEXT] = text_channel(**{"name": "New", **change})
 
     await poller.tick()
@@ -1158,7 +1158,7 @@ async def test_a_text_channel_refresh_keeps_the_stored_name_when_fluxer_does_not
 
 
 async def test_a_text_channel_name_is_checked_once_per_refresh_interval(world: World, poller: Poller, db: Database):
-    await seed(db, "alpha", text_channel=(1, cards.Voice(GUILD, TEXT, "general", True)))
+    await seed(db, "alpha", text_channel=(1, cards.ChannelLink(GUILD, TEXT, "general", True)))
     world.fluxer.channels[TEXT] = text_channel(name="general")
 
     for now in (0, 10, 599, 600):
@@ -1169,7 +1169,7 @@ async def test_a_text_channel_name_is_checked_once_per_refresh_interval(world: W
 
 
 async def test_an_unverified_text_channel_is_never_checked(world: World, poller: Poller, db: Database):
-    await seed(db, "alpha", text_channel=(1, cards.Voice(GUILD, TEXT, None, False)))
+    await seed(db, "alpha", text_channel=(1, cards.ChannelLink(GUILD, TEXT, None, False)))
     world.fluxer.channels[TEXT] = text_channel(name="general")
 
     await poller.tick()
@@ -1180,7 +1180,7 @@ async def test_an_unverified_text_channel_is_never_checked(world: World, poller:
 async def test_a_failed_text_channel_check_is_logged_by_card_and_reason_and_the_card_still_posts(
         world: World, poller: Poller, db: Database, caplog: pytest.LogCaptureFixture):
     caplog.set_level(logging.WARNING, logger="fluxer_panel.poller")
-    card_id = await seed(db, "alpha", text_channel=(1, cards.Voice(GUILD, TEXT, "Old", True)))
+    card_id = await seed(db, "alpha", text_channel=(1, cards.ChannelLink(GUILD, TEXT, "Old", True)))
     world.fluxer.overrides[f"GET /api/v1/channels/{TEXT}"] = Override(500, b'{"code": "X", "message": "no"}')
 
     await poller.tick()
@@ -1191,7 +1191,7 @@ async def test_a_failed_text_channel_check_is_logged_by_card_and_reason_and_the_
 
 
 async def test_a_text_channel_cleared_during_a_name_refresh_stays_cleared(world: World, poller: Poller, db: Database):
-    card_id = await seed(db, "alpha", text_channel=(1, cards.Voice(GUILD, TEXT, "Old", True)))
+    card_id = await seed(db, "alpha", text_channel=(1, cards.ChannelLink(GUILD, TEXT, "Old", True)))
     world.fluxer.channels[TEXT] = text_channel(name="New")
     world.fluxer.delays[f"GET /api/v1/channels/{TEXT}"] = 0.3
     tick = asyncio.create_task(poller.tick())
@@ -1206,12 +1206,12 @@ async def test_a_text_channel_cleared_during_a_name_refresh_stays_cleared(world:
 
 
 async def test_a_text_channel_set_during_a_name_refresh_stays_set(world: World, poller: Poller, db: Database):
-    card_id = await seed(db, "alpha", text_channel=(1, cards.Voice(GUILD, TEXT, "Old", True)))
+    card_id = await seed(db, "alpha", text_channel=(1, cards.ChannelLink(GUILD, TEXT, "Old", True)))
     world.fluxer.channels[TEXT] = text_channel(name="New")
     world.fluxer.delays[f"GET /api/v1/channels/{TEXT}"] = 0.3
     tick = asyncio.create_task(poller.tick())
     await asyncio.sleep(0.1)
-    admin_choice = cards.Voice(GUILD, "2004", "Admin", True)
+    admin_choice = cards.ChannelLink(GUILD, "2004", "Admin", True)
     await db.run(lambda c: cards.set_text_channel(c, card_id, 1, admin_choice))
     await tick
 

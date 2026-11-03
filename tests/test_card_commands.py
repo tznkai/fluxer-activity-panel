@@ -21,7 +21,7 @@ from fluxer_client.events import MessageCreate
 from fluxer_client.rest import FluxerREST
 from fluxer_panel import admin, cards, text
 from fluxer_panel.card_commands import LIST_CHUNK, CardContext, _chunks, help_fields_reply
-from fluxer_panel.cards import Voice
+from fluxer_panel.cards import ChannelLink
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.logs import setup_logging
@@ -261,7 +261,7 @@ async def test_set_voice_with_two_ids_stores_the_verified_channel(world: World) 
     await make_mc(world)
     await world.run("!card set mc voice 1001 2001")
 
-    assert (await world.card("mc")).voice == Voice("1001", "2001", "lobby", True)
+    assert (await world.card("mc")).voice == ChannelLink("1001", "2001", "lobby", True)
     assert world.last_reply() == text.CHANNEL_VERIFIED
     assert world.last_reply() == "Channel saved and checked."
     assert world.kicks == [1]
@@ -272,7 +272,7 @@ async def test_set_voice_accepts_a_pasted_channel_link(world: World) -> None:
     await make_mc(world)
     await world.run("!card set mc voice https://fluxer.invalid/channels/1001/2001")
 
-    assert (await world.card("mc")).voice == Voice("1001", "2001", "lobby", True)
+    assert (await world.card("mc")).voice == ChannelLink("1001", "2001", "lobby", True)
 
 
 @pytest.mark.parametrize(("seed", "reply"), [
@@ -300,7 +300,7 @@ async def test_community_the_bot_is_not_in_stores_unverified_without_name(world:
     await make_mc(world)
     await world.run("!card set mc voice 1001 2001")
 
-    assert (await world.card("mc")).voice == Voice("1001", "2001", None, False)
+    assert (await world.card("mc")).voice == ChannelLink("1001", "2001", None, False)
     assert world.last_reply() == text.CHANNEL_UNVERIFIED
     assert world.kicks == [1]
 
@@ -411,7 +411,7 @@ async def test_channel_name_is_cleaned_and_capped(world: World, raw: Any, stored
     await make_mc(world)
     await world.run("!card set mc voice 1001 2001")
 
-    assert (await world.card("mc")).voice == Voice("1001", "2001", stored, True)
+    assert (await world.card("mc")).voice == ChannelLink("1001", "2001", stored, True)
     assert world.last_reply() == text.CHANNEL_VERIFIED
 
 
@@ -425,7 +425,7 @@ async def test_set_text_channel_stores_the_verified_channel_in_its_slot(world: W
 
     card = await world.card("mc")
     assert card is not None
-    assert card.text_channels[slot - 1] == Voice("1001", "2002", "general", True)
+    assert card.text_channels[slot - 1] == ChannelLink("1001", "2002", "general", True)
     assert [link for link in card.text_channels if link is not None] == [card.text_channels[slot - 1]]
     assert world.last_reply() == text.CHANNEL_VERIFIED
     assert world.kicks == [1]
@@ -440,7 +440,10 @@ async def test_text_channel_accepts_a_pasted_channel_link_and_slots_stay_indepen
 
     card = await world.card("mc")
     assert card is not None
-    assert card.text_channels == (Voice("1001", "2002", "general", True), None, Voice("1001", "2003", "ops", True))
+    assert card.text_channels == (
+        ChannelLink("1001", "2002", "general", True),
+        None,
+        ChannelLink("1001", "2003", "ops", True))
 
 
 @pytest.mark.parametrize("status", [403, 404])
@@ -452,7 +455,7 @@ async def test_text_channel_in_a_community_the_bot_is_not_in_is_stored_unverifie
 
     card = await world.card("mc")
     assert card is not None
-    assert card.text_channels == (None, Voice("1001", "2002", None, False), None)
+    assert card.text_channels == (None, ChannelLink("1001", "2002", None, False), None)
     assert world.last_reply() == text.CHANNEL_UNVERIFIED
     assert world.kicks == [1]
 
@@ -528,7 +531,7 @@ async def test_clear_text_channel_removes_only_the_slot_named(world: World, clea
 
     card = await world.card("mc")
     assert card is not None
-    expected = [Voice("1001", channel, f"room{slot}", True) for slot, channel in channels.items()]
+    expected = [ChannelLink("1001", channel, f"room{slot}", True) for slot, channel in channels.items()]
     expected[cleared - 1] = None
     assert card.text_channels == tuple(expected)
     assert world.last_reply() == text.CARD_CLEARED

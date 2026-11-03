@@ -201,7 +201,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/render.py:178` `def outside_location(has_location: bool)` — takes a bool, so the location text cannot reach the outside line.
 - `src/fluxer_panel/render.py:144` `fit(escape(channel.channel_name)` — a voice or text channel's name is escaped before it enters the field, so a name cannot form a link or a mention.
 - `src/fluxer_panel/render.py:162` `def _outside_channel(` — a channel name on the outside line is mention-neutralised, and the line shows it only when the link is verified.
-- `tests/test_render.py:672` `SENTINEL_LOCATION not in outside` — the test that the location text never appears in the outside rendering.
+- `tests/test_render.py:673` `SENTINEL_LOCATION not in outside` — the test that the location text never appears in the outside rendering.
 - `src/fluxer_panel/render.py:87` `def channel_link(` — the only place a channel link is built. Both ids pass the snowflake check first.
 - `tests/test_text.py:27` `"guild" in node.value.lower()` — the scan that fails on any user-facing string that mentions a guild.
 

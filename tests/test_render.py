@@ -19,7 +19,7 @@ import pytest
 
 from fluxer_panel import render, resolver, text
 from fluxer_panel.config import INSTANCE_URL_MAX
-from fluxer_panel.cards import Address, Card, Location, ManagerRef, ProbeRef, Voice
+from fluxer_panel.cards import Address, Card, ChannelLink, Location, ManagerRef, ProbeRef
 from fluxer_panel.render import CHANNEL_LINK_RE, ZWJ, channel_link
 from fluxer_panel.resolver import CardStatus, StatusKind, next_action_text, resolve
 from fluxer_panel.sources.base import PlayerCounts, PowerAction, ProbeDetails, ProbeResult
@@ -86,7 +86,7 @@ def test_each_mention_form_is_neutralised_in_every_field(payload: str, broken: s
         how_to_join=f"J {payload}",
         first_time=f"F {payload}",
         location=Location(f"L {payload}"),
-        voice=Voice(guild_id="1001", channel_id="2001", channel_name=f"V {payload}", verified=True),
+        voice=ChannelLink(guild_id="1001", channel_id="2001", channel_name=f"V {payload}", verified=True),
         show_details=ALL_DETAILS,
     )
     status = CardStatus(
@@ -162,7 +162,7 @@ def test_link_syntax_is_escaped_in_every_text_field_but_voice() -> None:
         how_to_join=payload,
         first_time=payload,
         location=Location(payload),
-        voice=Voice(guild_id="1001", channel_id="2001", channel_name=payload, verified=True),
+        voice=ChannelLink(guild_id="1001", channel_id="2001", channel_name=payload, verified=True),
         show_details=ALL_DETAILS,
     )
     embed = render.render_embed(card, CardStatus(StatusKind.READY, details=ProbeDetails(map=payload)),
@@ -258,7 +258,7 @@ def test_no_status_uses_the_neutral_colour() -> None:
 # The inside embed for a card with every slot filled.
 def full_card(**overrides: object) -> Card:
     base: dict[str, object] = {
-        "voice": Voice(guild_id="1001", channel_id="2001", channel_name="lobby", verified=True),
+        "voice": ChannelLink(guild_id="1001", channel_id="2001", channel_name="lobby", verified=True),
         "address": Address(host="mc.example.invalid", port=19132, public=True),
         "location": Location("Behind the hall"),
         "seats": 4,
@@ -290,13 +290,13 @@ def test_only_opted_in_details_appear() -> None:
 
 
 def test_unverified_voice_shows_the_plain_label_inside_the_link() -> None:
-    card = full_card(voice=Voice(guild_id="1001", channel_id="2001", channel_name=None, verified=False))
+    card = full_card(voice=ChannelLink(guild_id="1001", channel_id="2001", channel_name=None, verified=False))
     embed = render.render_embed(card, READY_FULL, None, instance_url=INSTANCE)
     assert fields_of(embed)[text.FIELD_VOICE] == f"[{text.VOICE_UNNAMED}]({INSTANCE}/channels/1001/2001)"
 
 
 def test_unverified_voice_ignores_a_stored_name() -> None:
-    card = full_card(voice=Voice(guild_id="1001", channel_id="2001", channel_name="lobby", verified=False))
+    card = full_card(voice=ChannelLink(guild_id="1001", channel_id="2001", channel_name="lobby", verified=False))
     embed = render.render_embed(card, READY_FULL, None, instance_url=INSTANCE)
     assert f"[{text.VOICE_UNNAMED}]" in fields_of(embed)[text.FIELD_VOICE]
     assert "lobby" not in fields_of(embed)[text.FIELD_VOICE]
@@ -305,7 +305,7 @@ def test_unverified_voice_ignores_a_stored_name() -> None:
 def test_voice_without_instance_url_has_no_link() -> None:
     embed = render.render_embed(full_card(), READY_FULL, None, instance_url=None)
     assert fields_of(embed)[text.FIELD_VOICE] == "#lobby"
-    unverified = full_card(voice=Voice(guild_id="1001", channel_id="2001", channel_name=None, verified=False))
+    unverified = full_card(voice=ChannelLink(guild_id="1001", channel_id="2001", channel_name=None, verified=False))
     embed = render.render_embed(unverified, READY_FULL, None, instance_url=None)
     assert fields_of(embed)[text.FIELD_VOICE] == text.VOICE_UNNAMED
 
@@ -364,7 +364,8 @@ def test_description_is_present_when_set() -> None:
         ({"how_to_join": "Join"}, text.FIELD_JOIN),
         ({"first_time": "Ask"}, text.FIELD_FIRST_TIME),
         ({"address": Address(host="mc.example.invalid", port=1, public=False)}, text.FIELD_ADDRESS),
-        ({"voice": Voice(guild_id="1001", channel_id="2001", channel_name=None, verified=False)}, text.FIELD_VOICE),
+        ({"voice": ChannelLink(guild_id="1001", channel_id="2001", channel_name=None, verified=False)},
+         text.FIELD_VOICE),
         ({"location": Location("Hall")}, text.FIELD_LOCATION),
     ],
 )
@@ -441,7 +442,7 @@ def test_maximum_length_card_stays_within_embed_limits(unit: str) -> None:
         how_to_join=repeated(unit, 1000),
         first_time=repeated(unit, 1000),
         location=Location(repeated(unit, 200)),
-        voice=Voice(guild_id="1001", channel_id="2001", channel_name=repeated(unit, 100), verified=True),
+        voice=ChannelLink(guild_id="1001", channel_id="2001", channel_name=repeated(unit, 100), verified=True),
         text_channels=tuple(_text("2" * 25, repeated(unit, 100)) for _ in range(3)),
         address=Address(host="mc.example.invalid", port=19132, public=True),
         show_details=ALL_DETAILS,
@@ -696,8 +697,8 @@ def test_outside_voice_neutralises_a_mention_in_the_name() -> None:
 
 
 def test_outside_voice_line_uses_the_name_only_when_verified() -> None:
-    verified = make_card(voice=Voice(guild_id="1001", channel_id="2001", channel_name="lobby", verified=True))
-    unverified = make_card(voice=Voice(guild_id="1001", channel_id="2001", channel_name="lobby", verified=False))
+    verified = make_card(voice=ChannelLink(guild_id="1001", channel_id="2001", channel_name="lobby", verified=True))
+    unverified = make_card(voice=ChannelLink(guild_id="1001", channel_id="2001", channel_name="lobby", verified=False))
     assert "Fluxer: #lobby" in render.outside_text(verified, None, None).splitlines()
     unverified_lines = render.outside_text(unverified, None, None).splitlines()
     assert text.OUTSIDE_VOICE in unverified_lines
@@ -775,8 +776,8 @@ def test_outside_text_without_probe_never_mentions_players() -> None:
 
 # Text channels: one Channels field, in slot order, each entry rendered like the voice field ----------
 
-def _text(channel_id: str, name: str | None = "general", verified: bool = True) -> Voice:
-    return Voice(guild_id="1001", channel_id=channel_id, channel_name=name, verified=verified)
+def _text(channel_id: str, name: str | None = "general", verified: bool = True) -> ChannelLink:
+    return ChannelLink(guild_id="1001", channel_id=channel_id, channel_name=name, verified=verified)
 
 
 def test_text_channels_render_in_slot_order_as_links_in_one_field() -> None:

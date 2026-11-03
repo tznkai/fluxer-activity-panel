@@ -48,9 +48,6 @@ class ChannelLink:
     verified: bool
 
 
-Voice = ChannelLink   # the voice slot's link: the same shape as a text channel's
-
-
 @dataclass(frozen=True)
 class Address:
     host: str
@@ -97,7 +94,7 @@ class Card:
     channel_id: str | None
     message_id: str | None
     created_by: str
-    voice: Voice | None = None
+    voice: ChannelLink | None = None
     text_channels: tuple[ChannelLink | None, ...] = (None, None, None)   # by slot: index 0 is slot 1
     address: Address | None = None
     location: Location | None = None
@@ -191,10 +188,10 @@ def _load(conn: sqlite3.Connection, row: tuple) -> Card:
     )
 
 
-def _load_voice(conn: sqlite3.Connection, card_id: int) -> Voice | None:
+def _load_voice(conn: sqlite3.Connection, card_id: int) -> ChannelLink | None:
     row = conn.execute("SELECT guild_id, channel_id, channel_name, verified FROM card_voice WHERE card_id = ?",
                        (card_id,)).fetchone()
-    return None if row is None else Voice(row[0], row[1], row[2], bool(row[3]))
+    return None if row is None else ChannelLink(row[0], row[1], row[2], bool(row[3]))
 
 
 def _load_text_channels(conn: sqlite3.Connection, card_id: int) -> tuple[ChannelLink | None, ...]:
@@ -268,7 +265,7 @@ def set_state(conn: sqlite3.Connection, card_id: int, state: str, now: int) -> N
 
 # Slots -------------------------------------------------------------------------------------------------
 
-def set_voice(conn: sqlite3.Connection, card_id: int, voice: Voice) -> None:
+def set_voice(conn: sqlite3.Connection, card_id: int, voice: ChannelLink) -> None:
     conn.execute(
         "INSERT INTO card_voice (card_id, guild_id, channel_id, channel_name, verified) VALUES (?, ?, ?, ?, ?) "
         "ON CONFLICT(card_id) DO UPDATE SET guild_id = excluded.guild_id, channel_id = excluded.channel_id, "

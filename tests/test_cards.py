@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from fluxer_panel import cards
-from fluxer_panel.cards import Address, CardFieldError, Location, ManagerRef, ProbeRef, Voice
+from fluxer_panel.cards import Address, CardFieldError, ChannelLink, Location, ManagerRef, ProbeRef
 from fluxer_panel.db import Database
 
 NOW = 1_800_000_000
@@ -19,7 +19,7 @@ HASH = "a" * 64
 SENTINEL_SLUG = "sentinel-slug-91c2"
 
 SLOT_SETTERS = {
-    "voice": lambda c, card_id: cards.set_voice(c, card_id, Voice("1001", "1002", "general", True)),
+    "voice": lambda c, card_id: cards.set_voice(c, card_id, ChannelLink("1001", "1002", "general", True)),
     "address": lambda c, card_id: cards.set_address(c, card_id, Address("h.invalid", 25565, False)),
     "location": lambda c, card_id: cards.set_location(c, card_id, Location("Room 4")),
     "seats": lambda c, card_id: cards.set_seats(c, card_id, 4),
@@ -89,14 +89,14 @@ async def test_card_loads_with_exactly_the_slots_set(db: Database, slots: tuple[
 
 async def test_loaded_slots_hold_the_values_written(db: Database) -> None:
     card_id = await _create(db)
-    await db.run(lambda c: cards.set_voice(c, card_id, Voice("1001", "1002", None, False)))
+    await db.run(lambda c: cards.set_voice(c, card_id, ChannelLink("1001", "1002", None, False)))
     await db.run(lambda c: cards.set_address(c, card_id, Address("h.invalid", 25565, True)))
     await db.run(lambda c: cards.set_probe(c, card_id, ProbeRef("a2s", "h.invalid", 27015)))
 
     card = await _get(db, "alpha")
 
     assert card is not None
-    assert card.voice == Voice("1001", "1002", None, False)
+    assert card.voice == ChannelLink("1001", "1002", None, False)
     assert card.address == Address("h.invalid", 25565, True)
     assert card.probe == ProbeRef("a2s", "h.invalid", 27015)
 
@@ -158,7 +158,7 @@ async def test_update_fields_with_no_columns_raises_a_clear_error(db: Database) 
 
 async def test_clear_slot_removes_only_that_slot(db: Database) -> None:
     card_id = await _create(db)
-    await db.run(lambda c: cards.set_voice(c, card_id, Voice("1001", "1002", None, False)))
+    await db.run(lambda c: cards.set_voice(c, card_id, ChannelLink("1001", "1002", None, False)))
     await db.run(lambda c: cards.set_seats(c, card_id, 4))
 
     await db.run(lambda c: cards.clear_slot(c, card_id, "voice"))
@@ -237,27 +237,30 @@ async def test_clear_message_if_stale_changes_nothing(db: Database) -> None:
 
 async def test_set_voice_name_if_renames_the_voice_that_was_read(db: Database) -> None:
     card_id = await _create(db)
-    await db.run(lambda c: cards.set_voice(c, card_id, Voice("1001", "1002", "Old", True)))
+    await db.run(lambda c: cards.set_voice(c, card_id, ChannelLink("1001", "1002", "Old", True)))
 
-    changed = await db.run(lambda c: cards.set_voice_name_if(c, card_id, Voice("1001", "1002", "Old", True), "New"))
+    changed = await db.run(lambda c: cards.set_voice_name_if(
+        c, card_id, ChannelLink("1001", "1002", "Old", True), "New"))
 
     assert changed is True
     card = await _get(db, "alpha")
     assert card is not None
-    assert card.voice == Voice("1001", "1002", "New", True)
+    assert card.voice == ChannelLink("1001", "1002", "New", True)
 
 
 @pytest.mark.parametrize("stored", [
-    Voice("1001", "1002", "Renamed", True),     # the name changed since it was read
-    Voice("1001", "1003", "Old", True),         # another channel
-    Voice("1009", "1002", "Old", True),         # another community
-    Voice("1001", "1002", None, False),         # no longer verified (the schema keeps no name for these)
+    ChannelLink("1001", "1002", "Renamed", True),     # the name changed since it was read
+    ChannelLink("1001", "1003", "Old", True),         # another channel
+    ChannelLink("1009", "1002", "Old", True),         # another community
+    ChannelLink("1001", "1002", None, False),         # no longer verified (the schema keeps no name for these)
 ], ids=["renamed", "other-channel", "other-guild", "unverified"])
-async def test_set_voice_name_if_leaves_a_voice_that_changed_since_it_was_read(db: Database, stored: Voice) -> None:
+async def test_set_voice_name_if_leaves_a_voice_that_changed_since_it_was_read(
+        db: Database, stored: ChannelLink) -> None:
     card_id = await _create(db)
     await db.run(lambda c: cards.set_voice(c, card_id, stored))
 
-    changed = await db.run(lambda c: cards.set_voice_name_if(c, card_id, Voice("1001", "1002", "Old", True), "New"))
+    changed = await db.run(lambda c: cards.set_voice_name_if(
+        c, card_id, ChannelLink("1001", "1002", "Old", True), "New"))
 
     assert changed is False
     card = await _get(db, "alpha")
@@ -269,10 +272,11 @@ async def test_set_voice_name_if_leaves_an_unverified_voice_without_a_name_alone
     # The voice was read verified with no name, then became unverified. A rename here would violate the schema's
     # rule that only a verified voice carries a name, so the write must be refused rather than raise.
     card_id = await _create(db)
-    stored = Voice("1001", "1002", None, False)
+    stored = ChannelLink("1001", "1002", None, False)
     await db.run(lambda c: cards.set_voice(c, card_id, stored))
 
-    changed = await db.run(lambda c: cards.set_voice_name_if(c, card_id, Voice("1001", "1002", None, True), "New"))
+    changed = await db.run(lambda c: cards.set_voice_name_if(
+        c, card_id, ChannelLink("1001", "1002", None, True), "New"))
 
     assert changed is False
     card = await _get(db, "alpha")
@@ -283,7 +287,8 @@ async def test_set_voice_name_if_leaves_an_unverified_voice_without_a_name_alone
 async def test_set_voice_name_if_never_inserts_a_cleared_voice(db: Database) -> None:
     card_id = await _create(db)
 
-    changed = await db.run(lambda c: cards.set_voice_name_if(c, card_id, Voice("1001", "1002", "Old", True), "New"))
+    changed = await db.run(lambda c: cards.set_voice_name_if(
+        c, card_id, ChannelLink("1001", "1002", "Old", True), "New"))
 
     assert changed is False
     card = await _get(db, "alpha")
@@ -410,13 +415,16 @@ def test_location_repr_hides_its_text() -> None:
 
 async def test_text_channels_load_in_slot_order_with_gaps(db: Database) -> None:
     card_id = await _create(db)
-    await db.run(lambda c: cards.set_text_channel(c, card_id, 3, Voice("1001", "1003", "ops", True)))
-    await db.run(lambda c: cards.set_text_channel(c, card_id, 1, Voice("1001", "1002", None, False)))
+    await db.run(lambda c: cards.set_text_channel(c, card_id, 3, ChannelLink("1001", "1003", "ops", True)))
+    await db.run(lambda c: cards.set_text_channel(c, card_id, 1, ChannelLink("1001", "1002", None, False)))
 
     card = await _get(db, "alpha")
 
     assert card is not None
-    assert card.text_channels == (Voice("1001", "1002", None, False), None, Voice("1001", "1003", "ops", True))
+    assert card.text_channels == (
+        ChannelLink("1001", "1002", None, False),
+        None,
+        ChannelLink("1001", "1003", "ops", True))
 
 
 async def test_a_card_with_no_text_channels_loads_three_empty_slots(db: Database) -> None:
@@ -430,49 +438,55 @@ async def test_a_card_with_no_text_channels_loads_three_empty_slots(db: Database
 
 async def test_set_text_channel_replaces_only_its_own_slot(db: Database) -> None:
     card_id = await _create(db)
-    await db.run(lambda c: cards.set_text_channel(c, card_id, 1, Voice("1001", "1002", "general", True)))
-    await db.run(lambda c: cards.set_text_channel(c, card_id, 2, Voice("1001", "1003", "old", True)))
-    await db.run(lambda c: cards.set_text_channel(c, card_id, 2, Voice("1001", "1004", "new", True)))
+    await db.run(lambda c: cards.set_text_channel(c, card_id, 1, ChannelLink("1001", "1002", "general", True)))
+    await db.run(lambda c: cards.set_text_channel(c, card_id, 2, ChannelLink("1001", "1003", "old", True)))
+    await db.run(lambda c: cards.set_text_channel(c, card_id, 2, ChannelLink("1001", "1004", "new", True)))
 
     card = await _get(db, "alpha")
 
     assert card is not None
-    assert card.text_channels == (Voice("1001", "1002", "general", True), Voice("1001", "1004", "new", True), None)
+    assert card.text_channels == (
+        ChannelLink("1001", "1002", "general", True),
+        ChannelLink("1001", "1004", "new", True),
+        None)
 
 
 @pytest.mark.parametrize("slot", [1, 2, 3])
 async def test_replacing_a_verified_link_with_an_unverified_one_drops_the_name(db: Database, slot: int) -> None:
     card_id = await _create(db)
-    await db.run(lambda c: cards.set_text_channel(c, card_id, slot, Voice("1001", "1003", "general", True)))
-    await db.run(lambda c: cards.set_text_channel(c, card_id, slot, Voice("1001", "1003", None, False)))
+    await db.run(lambda c: cards.set_text_channel(c, card_id, slot, ChannelLink("1001", "1003", "general", True)))
+    await db.run(lambda c: cards.set_text_channel(c, card_id, slot, ChannelLink("1001", "1003", None, False)))
 
     card = await _get(db, "alpha")
 
     assert card is not None
-    assert card.text_channels[slot - 1] == Voice("1001", "1003", None, False)
+    assert card.text_channels[slot - 1] == ChannelLink("1001", "1003", None, False)
 
 
 async def test_set_text_channel_name_if_renames_only_slot_two_when_both_slots_hold_one_channel(db: Database) -> None:
     card_id = await _create(db)
-    await db.run(lambda c: cards.set_text_channel(c, card_id, 1, Voice("1001", "1003", "Old", True)))
-    await db.run(lambda c: cards.set_text_channel(c, card_id, 2, Voice("1001", "1003", "Old", True)))
+    await db.run(lambda c: cards.set_text_channel(c, card_id, 1, ChannelLink("1001", "1003", "Old", True)))
+    await db.run(lambda c: cards.set_text_channel(c, card_id, 2, ChannelLink("1001", "1003", "Old", True)))
 
     changed = await db.run(lambda c: cards.set_text_channel_name_if(
-        c, card_id, 2, Voice("1001", "1003", "Old", True), "New"))
+        c, card_id, 2, ChannelLink("1001", "1003", "Old", True), "New"))
 
     assert changed is True
     card = await _get(db, "alpha")
     assert card is not None
-    assert card.text_channels == (Voice("1001", "1003", "Old", True), Voice("1001", "1003", "New", True), None)
+    assert card.text_channels == (
+        ChannelLink("1001", "1003", "Old", True),
+        ChannelLink("1001", "1003", "New", True),
+        None)
 
 
 async def test_set_text_channel_name_if_refuses_an_expected_verified_link_over_an_unverified_one(db: Database) -> None:
     card_id = await _create(db)
-    stored = Voice("1001", "1003", None, False)
+    stored = ChannelLink("1001", "1003", None, False)
     await db.run(lambda c: cards.set_text_channel(c, card_id, 2, stored))
 
     changed = await db.run(lambda c: cards.set_text_channel_name_if(
-        c, card_id, 2, Voice("1001", "1003", None, True), "New"))
+        c, card_id, 2, ChannelLink("1001", "1003", None, True), "New"))
 
     assert changed is False
     card = await _get(db, "alpha")
@@ -482,43 +496,46 @@ async def test_set_text_channel_name_if_refuses_an_expected_verified_link_over_a
 
 async def test_clear_text_channel_removes_only_its_slot(db: Database) -> None:
     card_id = await _create(db)
-    await db.run(lambda c: cards.set_text_channel(c, card_id, 1, Voice("1001", "1002", "a", True)))
-    await db.run(lambda c: cards.set_text_channel(c, card_id, 2, Voice("1001", "1003", "b", True)))
+    await db.run(lambda c: cards.set_text_channel(c, card_id, 1, ChannelLink("1001", "1002", "a", True)))
+    await db.run(lambda c: cards.set_text_channel(c, card_id, 2, ChannelLink("1001", "1003", "b", True)))
     await db.run(lambda c: cards.clear_text_channel(c, card_id, 1))
 
     card = await _get(db, "alpha")
 
     assert card is not None
-    assert card.text_channels == (None, Voice("1001", "1003", "b", True), None)
+    assert card.text_channels == (None, ChannelLink("1001", "1003", "b", True), None)
 
 
 async def test_set_text_channel_name_if_renames_only_the_slot_that_was_read(db: Database) -> None:
     card_id = await _create(db)
-    await db.run(lambda c: cards.set_text_channel(c, card_id, 1, Voice("1001", "1002", "Keep", True)))
-    await db.run(lambda c: cards.set_text_channel(c, card_id, 2, Voice("1001", "1003", "Old", True)))
+    await db.run(lambda c: cards.set_text_channel(c, card_id, 1, ChannelLink("1001", "1002", "Keep", True)))
+    await db.run(lambda c: cards.set_text_channel(c, card_id, 2, ChannelLink("1001", "1003", "Old", True)))
 
     changed = await db.run(lambda c: cards.set_text_channel_name_if(
-        c, card_id, 2, Voice("1001", "1003", "Old", True), "New"))
+        c, card_id, 2, ChannelLink("1001", "1003", "Old", True), "New"))
 
     assert changed is True
     card = await _get(db, "alpha")
     assert card is not None
-    assert card.text_channels == (Voice("1001", "1002", "Keep", True), Voice("1001", "1003", "New", True), None)
+    assert card.text_channels == (
+        ChannelLink("1001", "1002", "Keep", True),
+        ChannelLink("1001", "1003", "New", True),
+        None)
 
 
 @pytest.mark.parametrize("stored", [
-    Voice("1001", "1003", "Renamed", True),     # the name changed since it was read
-    Voice("1001", "1004", "Old", True),         # another channel
-    Voice("1009", "1003", "Old", True),         # another community
-    Voice("1001", "1003", None, False),         # no longer verified (the schema keeps no name for these)
+    ChannelLink("1001", "1003", "Renamed", True),     # the name changed since it was read
+    ChannelLink("1001", "1004", "Old", True),         # another channel
+    ChannelLink("1009", "1003", "Old", True),         # another community
+    ChannelLink("1001", "1003", None, False),         # no longer verified (the schema keeps no name for these)
 ], ids=["renamed", "other-channel", "other-guild", "unverified"])
 async def test_set_text_channel_name_if_leaves_a_link_that_changed_since_it_was_read(
-        db: Database, stored: Voice) -> None:
+        db: Database, stored: ChannelLink) -> None:
     card_id = await _create(db)
     await db.run(lambda c: cards.set_text_channel(c, card_id, 2, stored))
 
     changed = await db.run(lambda c: cards.set_text_channel_name_if(
-        c, card_id, 2, Voice("1001", "1003", "Old", True), "New"))
+        c, card_id, 2, ChannelLink("1001", "1003", "Old", True), "New"))
 
     assert changed is False
     card = await _get(db, "alpha")
@@ -530,7 +547,7 @@ async def test_set_text_channel_name_if_never_inserts_a_cleared_slot(db: Databas
     card_id = await _create(db)
 
     changed = await db.run(lambda c: cards.set_text_channel_name_if(
-        c, card_id, 3, Voice("1001", "1003", "Old", True), "New"))
+        c, card_id, 3, ChannelLink("1001", "1003", "Old", True), "New"))
 
     assert changed is False
     card = await _get(db, "alpha")

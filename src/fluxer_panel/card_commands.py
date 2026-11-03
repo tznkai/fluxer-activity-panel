@@ -29,7 +29,7 @@ VOICE_CHANNEL_TYPE = 2
 # posting channel, so the operator can check this value on a real instance.
 TEXT_CHANNEL_TYPE = 0
 _CHANNEL_KINDS = {VOICE_CHANNEL_TYPE: text.CHANNEL_KIND_VOICE, TEXT_CHANNEL_TYPE: text.CHANNEL_KIND_TEXT}
-VOICE_NAME_MAX = 100
+CHANNEL_NAME_MAX = 100
 LIST_CHUNK = 1900
 PREVIEW_LIMIT = 2000  # Fluxer's message content limit
 SUBCOMMANDS = ("new", "set", "clear", "show", "list", "publish", "archive", "help")
@@ -204,12 +204,12 @@ async def _prepare_set(ctx: CardContext, card: cards.Card, field_name: str,
         return (lambda c: cards.set_probe(c, card_id, probe)), text.CARD_UPDATED
     if field_name in TEXT_CHANNEL_SLOTS:
         slot = TEXT_CHANNEL_SLOTS[field_name]
-        guild_id, channel_id = card_fields.voice_target(field_name, value)
+        guild_id, channel_id = card_fields.channel_target(field_name, value)
         link, reply = await _check_channel(ctx.rest, guild_id, channel_id, TEXT_CHANNEL_TYPE)
         if link is None:
             return None, reply
         return (lambda c: cards.set_text_channel(c, card_id, slot, link)), reply
-    guild_id, channel_id = card_fields.voice_target("voice", value)
+    guild_id, channel_id = card_fields.channel_target("voice", value)
     voice, reply = await _check_channel(ctx.rest, guild_id, channel_id, VOICE_CHANNEL_TYPE)
     if voice is None:
         return None, reply
@@ -252,11 +252,11 @@ async def _check_channel(rest: FluxerREST, guild_id: str, channel_id: str,
 
 
 def channel_name(value: object) -> str | None:
-    """A channel name from Fluxer: printable characters only, whitespace collapsed, at most VOICE_NAME_MAX."""
+    """A channel name from Fluxer: printable characters only, whitespace collapsed, at most CHANNEL_NAME_MAX."""
     if not isinstance(value, str):
         return None
     printable = "".join(ch for ch in value if ch.isprintable())
-    return " ".join(printable.split())[:VOICE_NAME_MAX] or None
+    return " ".join(printable.split())[:CHANNEL_NAME_MAX] or None
 
 
 # clear -----------------------------------------------------------------------------------------------

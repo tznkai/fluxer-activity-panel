@@ -199,12 +199,12 @@ def test_show_refuses_unknown_items(value: str) -> None:
 
 @pytest.mark.parametrize("field_name", ["voice", "text_channel1", "text_channel2", "text_channel3"])
 def test_channel_target_accepts_two_ids_for_any_channel_field(field_name: str) -> None:
-    assert card_fields.voice_target(field_name, "1001 2001") == ("1001", "2001")
+    assert card_fields.channel_target(field_name, "1001 2001") == ("1001", "2001")
 
 
 def test_channel_target_accepts_a_pasted_channel_link() -> None:
     link = "https://fluxer.invalid/channels/1001/2001"
-    assert card_fields.voice_target("text_channel3", link) == ("1001", "2001")
+    assert card_fields.channel_target("text_channel3", link) == ("1001", "2001")
 
 
 @pytest.mark.parametrize("field_name", ["voice", "text_channel2"])
@@ -215,7 +215,7 @@ def test_channel_target_accepts_a_pasted_channel_link() -> None:
     ("12a{s} 2001", "snowflake"),                           # a non-numeric id
 ])
 def test_channel_target_refuses_other_shapes_and_names_its_field(field_name: str, template: str, rule: str) -> None:
-    err = refused(lambda: card_fields.voice_target(field_name, template.format(s=SENTINEL)))
+    err = refused(lambda: card_fields.channel_target(field_name, template.format(s=SENTINEL)))
     assert (err.field, err.rule) == (field_name, rule)
     assert SENTINEL not in card_fields.refusal_reply(err)
 

@@ -120,7 +120,7 @@ def show(value: str) -> tuple[str, ...]:
     return tuple(item for item in SHOW_ITEMS if item in items)
 
 
-def voice_target(field: str, value: str) -> tuple[str, str]:
+def channel_target(field: str, value: str) -> tuple[str, str]:
     """A channel target for `field`: `<community id> <channel id>`, or a pasted channel link. A refusal names `field`."""
     stripped = value.strip()
     link = CHANNEL_LINK_RE.fullmatch(stripped)
