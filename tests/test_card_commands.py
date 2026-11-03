@@ -702,6 +702,17 @@ async def test_show_preview_fits_the_message_limit_after_escaping(world: World) 
     assert len(outside) <= 2000
 
 
+async def test_show_preview_fits_the_message_limit_in_utf16_units_for_astral_text(world: World) -> None:
+    await make_mc(world)
+    await world.run("!card set mc join " + "\U0001F600" * 1000)
+    world.clear_requests()
+    await world.run("!card show mc")
+
+    outside = world.payloads()[1]["content"]
+    assert outside.startswith(text.SHOW_OUTSIDE_LABEL + "\n")
+    assert render.units(outside) <= 2000
+
+
 async def test_list_shows_cards_in_sort_order(world: World) -> None:
     await world.run("!card new a Alpha")
     await world.run("!card new b Bravo")
