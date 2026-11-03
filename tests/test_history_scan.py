@@ -1,0 +1,273 @@
+# SPDX-FileCopyrightText: 2026 K. Chen
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Tests for tools/history_scan.py: the subtree-history scan.
+
+Parser branches are tested on synthetic `git log` streams. End-to-end behaviour is tested on temp git repos only.
+Literals are built from parts, so this file carries none of the values it checks for.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import re
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+TOOL = Path(__file__).resolve().parents[1] / "tools" / "history_scan.py"
+_spec = importlib.util.spec_from_file_location("history_scan", TOOL)
+history_scan = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(history_scan)
+
+LITERAL = "SENT" + "INEL-HIST-7d1a"
+DENY = [LITERAL]
+SAMPLE_IP = ".".join(["203", "0", "113", "9"])
+SAMPLE_HOST = "".join(["nas", ".", "lan"])
+SAMPLE_IPV6 = ":".join(["fd00", "", "1"])
+LONG_RUN = "1" * 15
+SHA = "a" * 40
+NUL = "\x00"
+IDENTITY = ["-c", "user.name=test", "-c", "user.email=test@example.invalid"]
+needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git is not on PATH")
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(repo), *IDENTITY, *args], capture_output=True, text=True,
+                          check=True, timeout=60).stdout
+
+
+def _repo(root: Path, commits: list[tuple[str, dict[str, str | None]]]) -> Path:
+    """Each commit is (message, {path: text}); a None text deletes the path."""
+    root.mkdir(parents=True)
+    _git(root, "init", "-q")
+    for message, files in commits:
+        for name, text in files.items():
+            path = root / name
+            if text is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text, "utf-8")
+        _git(root, "add", "-A")
+        _git(root, "commit", "-q", "--allow-empty", "-m", message)
+    return root
+
+
+def _denylist(tmp_path: Path, text: str) -> Path:
+    path = tmp_path / "denylist.txt"
+    path.write_text(text, "utf-8")
+    return path
+
+
+def _patch_hits(lines: list[str], literals: list[str] = DENY) -> set[tuple[str, str]]:
+    return set(history_scan.scan_patch_lines(lines, literals))
+
+
+def _message_hits(lines: list[str], literals: list[str] = DENY) -> set[tuple[str, str]]:
+    return set(history_scan.scan_message_lines(lines, literals))
+
+
+# Synthetic streams: every parser branch, without git.
+
+
+def test_removed_line_whose_content_starts_with_dashes_is_checked() -> None:
+    # A removed SQL comment "-- LIT" shows as "--- LIT". It is a hunk line, not a header line.
+    lines = [NUL + SHA, "", "diff --git a/src/x.sql b/src/x.sql", "index 1..2 100644",
+             "--- a/src/x.sql", "+++ b/src/x.sql", "@@ -1 +0,0 @@", "--- " + LITERAL]
+    assert _patch_hits(lines) == {(SHA, "patch:denylist")}
+
+
+def test_a_new_diff_header_after_a_hunk_is_not_hunk_content() -> None:
+    lines = [NUL + SHA, "", "diff --git a/one.txt b/one.txt", "@@ -0,0 +1 @@", "+plain",
+             "diff --git a/two.txt b/two.txt", "--- a/two.txt", "+++ b/" + LITERAL]
+    assert _patch_hits(lines) == set()
+
+
+def test_header_lines_are_not_checked_as_patch_content() -> None:
+    lines = [NUL + SHA, "", "diff --git a/clean.txt b/clean.txt", "--- a/clean.txt", "+++ b/" + LITERAL]
+    assert _patch_hits(lines) == set()
+
+
+def test_diff_header_path_is_checked_as_path() -> None:
+    lines = [NUL + SHA, "", f"diff --git a/{LITERAL}.txt b/{LITERAL}.txt"]
+    assert _patch_hits(lines) == {(SHA, "path:denylist")}
+
+
+def test_message_lines_are_checked_and_the_sha_line_is_not() -> None:
+    sha_line_with_digits = NUL + LONG_RUN + "a" * 25
+    lines = [sha_line_with_digits, "subject", "", "body mentions " + LITERAL]
+    assert _message_hits(lines) == {(LONG_RUN + "a" * 25, "message:denylist")}
+
+
+@pytest.mark.parametrize(("sample", "kind"), [
+    (LITERAL, "denylist"),
+    (SAMPLE_IP, "ipv4"),
+    ("ssh " + SAMPLE_HOST, "host"),
+    ("ws://" + SAMPLE_HOST + "/gateway", "url-host"),
+    (SAMPLE_IPV6, "ipv6"),
+    (LONG_RUN, "long-digits"),
+])
+def test_each_kind_is_reported_from_a_patch_line(sample: str, kind: str) -> None:
+    lines = [NUL + SHA, "", "diff --git a/x.txt b/x.txt", "@@ -0,0 +1 @@", "+" + sample]
+    assert _patch_hits(lines) == {(SHA, f"patch:{kind}")}
+
+
+@pytest.mark.parametrize(("sample", "kind"), [
+    (LITERAL, "denylist"),
+    (SAMPLE_IP, "ipv4"),
+    ("ssh " + SAMPLE_HOST, "host"),
+    ("ws://" + SAMPLE_HOST + "/gateway", "url-host"),
+    (SAMPLE_IPV6, "ipv6"),
+    (LONG_RUN, "long-digits"),
+])
+def test_each_kind_is_reported_from_a_message_line(sample: str, kind: str) -> None:
+    assert _message_hits([NUL + SHA, sample]) == {(SHA, f"message:{kind}")}
+
+
+def test_a_clean_stream_has_no_hits() -> None:
+    lines = [NUL + SHA, "clean subject", "", "diff --git a/x.txt b/x.txt", "@@ -0,0 +1 @@", "+plain text"]
+    assert _patch_hits(lines) == set()
+    assert _message_hits(lines) == set()
+
+
+def test_each_hit_is_attributed_to_the_commit_that_contains_it() -> None:
+    other = "b" * 40
+    lines = [NUL + SHA, "", "diff --git a/x.txt b/x.txt", "@@ -0,0 +1 @@", "+plain",
+             NUL + other, "", "diff --git a/y.txt b/y.txt", "@@ -0,0 +1 @@", "+" + LITERAL]
+    assert _patch_hits(lines) == {(other, "patch:denylist")}
+
+
+# End to end on temp repos.
+
+
+@needs_git
+def test_literal_on_a_prefixed_patch_is_reported_by_short_sha_and_kind(tmp_path: Path, capsys) -> None:
+    repo = _repo(tmp_path / "mono", [("add notes", {"proj/notes.txt": f"clean\nhas {LITERAL} inside\n"})])
+
+    code = history_scan.run(repo, "proj", _denylist(tmp_path, LITERAL + "\n"))
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert re.search(r"^[0-9a-f]{12} patch:denylist$", out, re.MULTILINE), out
+    assert LITERAL not in out, "the matched literal must never be printed"
+
+
+@needs_git
+def test_literal_only_outside_the_prefix_is_not_reported(tmp_path: Path, capsys) -> None:
+    repo = _repo(tmp_path / "mono", [
+        ("add prefixed file", {"proj/a.txt": "clean\n"}),
+        (f"outside note {LITERAL}", {"other/b.txt": f"{LITERAL}\n"}),
+    ])
+
+    code = history_scan.run(repo, "proj", _denylist(tmp_path, LITERAL + "\n"))
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "clean" in out
+    assert LITERAL not in out
+
+
+@needs_git
+def test_literal_only_in_a_prefixed_commit_message_is_reported_as_message(tmp_path: Path, capsys) -> None:
+    repo = _repo(tmp_path / "mono", [(f"note {LITERAL}", {"proj/a.txt": "clean\n"})])
+
+    code = history_scan.run(repo, "proj", _denylist(tmp_path, LITERAL + "\n"))
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert re.search(r"^[0-9a-f]{12} message:denylist$", out, re.MULTILINE), out
+    assert " patch:" not in out
+    assert LITERAL not in out
+
+
+@needs_git
+def test_literal_on_a_removed_line_is_reported_as_patch(tmp_path: Path, capsys) -> None:
+    repo = _repo(tmp_path / "mono", [
+        ("add migration", {"proj/m.sql": f"-- {LITERAL}\nSELECT 1;\n"}),
+        ("drop comment", {"proj/m.sql": "SELECT 1;\n"}),
+    ])
+
+    code = history_scan.run(repo, "proj", _denylist(tmp_path, LITERAL + "\n"))
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "patch:denylist" in out
+    assert LITERAL not in out
+
+
+@needs_git
+def test_a_clean_subtree_exits_0(tmp_path: Path, capsys) -> None:
+    repo = _repo(tmp_path / "mono", [("add file", {"proj/a.txt": "plain text\n"})])
+
+    code = history_scan.run(repo, "proj", _denylist(tmp_path, LITERAL + "\n"))
+
+    assert code == 0
+    assert "clean" in capsys.readouterr().out
+
+
+@needs_git
+def test_missing_denylist_refuses_with_exit_2(tmp_path: Path, capsys) -> None:
+    repo = _repo(tmp_path / "mono", [("add file", {"proj/a.txt": "plain text\n"})])
+
+    assert history_scan.run(repo, "proj", None) == 2
+    assert history_scan.run(repo, "proj", tmp_path / "absent.txt") == 2
+    assert "refused" in capsys.readouterr().out
+
+
+@needs_git
+def test_short_denylist_entry_refuses_with_exit_2_without_echoing_it(tmp_path: Path, capsys) -> None:
+    repo = _repo(tmp_path / "mono", [("add file", {"proj/a.txt": "plain text\n"})])
+
+    code = history_scan.run(repo, "proj", _denylist(tmp_path, "abc\n"))
+
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "abc" not in out
+
+
+@needs_git
+def test_prefix_git_cannot_split_refuses_with_exit_2(tmp_path: Path, capsys) -> None:
+    repo = _repo(tmp_path / "mono", [("add file", {"proj/a.txt": "plain text\n"})])
+
+    code = history_scan.run(repo, "no-such-prefix", _denylist(tmp_path, LITERAL + "\n"))
+
+    assert code == 2
+    assert "git cannot split" in capsys.readouterr().out
+
+
+@needs_git
+def test_git_log_failure_on_the_split_refuses_with_exit_2(tmp_path: Path, capsys, monkeypatch) -> None:
+    repo = _repo(tmp_path / "mono", [("add file", {"proj/a.txt": "plain text\n"})])
+    monkeypatch.setattr(history_scan, "_stream", lambda *args, **kwargs: None)
+
+    code = history_scan.run(repo, "proj", _denylist(tmp_path, LITERAL + "\n"))
+
+    assert code == 2
+    assert "git log failed" in capsys.readouterr().out
+
+
+@needs_git
+def test_stream_returns_none_when_git_log_exits_with_an_error(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "mono", [("add file", {"proj/a.txt": "plain text\n"})])
+
+    assert history_scan._stream(repo, ["no-such-revision"], history_scan.scan_message_lines, DENY) is None
+
+
+@needs_git
+def test_main_scans_the_named_prefix_with_the_given_denylist(tmp_path: Path, capsys, monkeypatch) -> None:
+    repo = _repo(tmp_path / "mono", [("add notes", {"proj/notes.txt": f"has {LITERAL} inside\n"})])
+    monkeypatch.setattr(history_scan, "_monorepo_root", lambda start: repo)
+    monkeypatch.setattr(history_scan, "denylist_path", lambda root: _denylist(tmp_path, LITERAL + "\n"))
+
+    assert history_scan.main(["--prefix", "proj"]) == 1
+    assert "patch:denylist" in capsys.readouterr().out
+
+
+def test_main_refuses_when_the_monorepo_root_cannot_be_found(tmp_path: Path, capsys, monkeypatch) -> None:
+    monkeypatch.setattr(history_scan, "_monorepo_root", lambda start: None)
+    monkeypatch.setattr(history_scan, "denylist_path", lambda root: _denylist(tmp_path, LITERAL + "\n"))
+
+    assert history_scan.main([]) == 2
+    assert "cannot find the monorepo root" in capsys.readouterr().out

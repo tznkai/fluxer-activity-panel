@@ -58,6 +58,11 @@ user-facing description, the purge status file format and the "Exit 3" recovery 
   in `tests/test_repo_hygiene.py` finds it through the git common directory, so worktrees use the same file. It is
   gitignored and absent in the published split, so the check skips there. Never print its entries or copy them into
   a tracked file. Denylist findings name the path and line only.
+- `tools/history_scan.py` is a hand-run check of the subtree split's full history against the same denylist and the
+  hygiene rules. Run it from this directory with `.venv/bin/python tools/history_scan.py`. It checks commit messages,
+  diff paths and every added or removed line, and prints a short commit sha and a kind per hit, never the matched
+  text. Exit 0 is clean, 1 means hits, and 2 means refused (no denylist, or git cannot make the split). A hit in
+  history is raised with the user before anything is rewritten. The scan never rewrites history.
 - Bidi overrides, isolates and zero-width characters are refused in tracked text
   (`test_no_bidi_or_zero_width_characters_in_tracked_files`). A finding names the path and line, never the character.
 - Every new file needs an SPDX header or a `REUSE.toml` entry, or `reuse lint` fails.
