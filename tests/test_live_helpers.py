@@ -985,8 +985,9 @@ def test_ptero_secrets_hide_only_the_host_when_the_url_has_no_known_port():
     assert ptero_live.ptero_secrets({"PTERODACTYL_URL": url}) == (url, PANEL_HOST)
 
 
-def test_ptero_secrets_skip_a_host_that_is_not_there_and_a_missing_bot_token():
+def test_ptero_secrets_skip_a_host_that_is_not_there_and_a_missing_or_empty_bot_token():
     assert ptero_live.ptero_secrets({"PTERODACTYL_URL": "/relative/path"}) == ("/relative/path",)
+    assert ptero_live.ptero_secrets({"PTERODACTYL_URL": "/relative/path", "FLUXER_TOKEN": ""}) == ("/relative/path",)
 
 
 def test_a_panel_error_naming_host_and_port_is_redacted_through_ptero_redactor(no_live_redactor, capsys):
