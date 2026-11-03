@@ -37,6 +37,9 @@ VOICE_CHANNEL = "/api/v1/channels/2001"
 VOICE_CHANNEL_GET = "GET /api/v1/channels/2001"
 POSTED_MESSAGE = f"/api/v1/channels/{GUILD}/messages/5101"
 VOICE_GUILD = "/api/v1/guilds/1001"
+TEXT_CHANNEL = "/api/v1/channels/2002"
+NOT_VOICE = text.CHANNEL_WRONG_TYPE.format(kind=text.CHANNEL_KIND_VOICE)
+NOT_TEXT = text.CHANNEL_WRONG_TYPE.format(kind=text.CHANNEL_KIND_TEXT)
 PTERO_ENV = {"PTERODACTYL_URL": "https://fluxer.invalid", "PTERODACTYL_API_KEY": "test-key"}
 
 
@@ -136,6 +139,13 @@ def seed_voice(state: FakeFluxerState, *, name: Any = "lobby", kind: int = 2, gu
     state.channels[channel] = {"id": channel, "type": kind, "guild_id": guild, "name": name}
 
 
+def seed_text(state: FakeFluxerState, *, name: Any = "general", kind: int = 0, guild: str = "1001",
+              channel: str = "2002") -> None:
+    """A text channel, as the fake reports it: type 0 is a text channel."""
+    state.guilds["1001"] = {"id": "1001"}
+    state.channels[channel] = {"id": channel, "type": kind, "guild_id": guild, "name": name}
+
+
 async def make_mc(world: World) -> None:
     await world.run("!card new mc Minecraft")
 
@@ -205,6 +215,8 @@ async def test_non_admin_list_makes_no_request(world: World) -> None:
     ("mc", f"!card set mc show {SENTINEL}", "Can't set show: it must be none or a list of map, version, game_mode."),
     ("mc", f"!card set mc voice {SENTINEL} 2001", "Can't set voice: it must be a numeric id."),
     ("mc", "!card set mc voice 1001", "Can't set voice: it must be <community id> <channel id> or a channel link."),
+    ("mc", "!card set mc text_channel1 1001", "Can't set text_channel1: it must be <community id> <channel id> or a channel link."),
+    ("mc", f"!card set mc text_channel3 {SENTINEL} 2001", "Can't set text_channel3: it must be a numeric id."),
     ("mc", f"!card set mc manager steam 12345678{SENTINEL}", "Can't set manager: it is not a known kind."),
     ("mc", "!card set mc manager pterodactyl abcd1234", "Can't set manager: it is not configured on this bot."),
     ("mc", "!card set mc manager pterodactyl", "Can't set manager: it must be <kind> <ref>."),
@@ -250,7 +262,7 @@ async def test_set_voice_with_two_ids_stores_the_verified_channel(world: World) 
     await world.run("!card set mc voice 1001 2001")
 
     assert (await world.card("mc")).voice == Voice("1001", "2001", "lobby", True)
-    assert world.last_reply() == text.VOICE_VERIFIED
+    assert world.last_reply() == text.CHANNEL_VERIFIED
     assert world.kicks == [1]
 
 
@@ -263,9 +275,9 @@ async def test_set_voice_accepts_a_pasted_channel_link(world: World) -> None:
 
 
 @pytest.mark.parametrize(("seed", "reply"), [
-    ({"channel": "2999"}, text.VOICE_MISSING),          # the asked-for channel 2001 does not exist: 404
-    ({"kind": 0}, text.VOICE_NOT_VOICE),                  # a text channel
-    ({"guild": "1009"}, text.VOICE_OTHER_COMMUNITY),      # a channel in another community
+    ({"channel": "2999"}, text.CHANNEL_MISSING),          # the asked-for channel 2001 does not exist: 404
+    ({"kind": 0}, NOT_VOICE),                  # a text channel
+    ({"guild": "1009"}, text.CHANNEL_OTHER_COMMUNITY),      # a channel in another community
 ])
 async def test_voice_channel_that_does_not_fit_is_refused_and_stores_nothing(
         world: World, seed: dict[str, Any], reply: str) -> None:
@@ -288,7 +300,7 @@ async def test_community_the_bot_is_not_in_stores_unverified_without_name(world:
     await world.run("!card set mc voice 1001 2001")
 
     assert (await world.card("mc")).voice == Voice("1001", "2001", None, False)
-    assert world.last_reply() == text.VOICE_UNVERIFIED
+    assert world.last_reply() == text.CHANNEL_UNVERIFIED
     assert world.kicks == [1]
 
 
@@ -299,7 +311,7 @@ async def test_server_error_on_the_community_refuses_with_retry(world: World) ->
     await make_mc(world)
     await world.run("!card set mc voice 1001 2001")
 
-    assert world.last_reply() == text.VOICE_RETRY
+    assert world.last_reply() == text.CHANNEL_RETRY
     assert (await world.card("mc")).voice is None
 
 
@@ -309,7 +321,7 @@ async def test_server_error_on_the_channel_refuses_with_retry(world: World) -> N
     await make_mc(world)
     await world.run("!card set mc voice 1001 2001")
 
-    assert world.last_reply() == text.VOICE_RETRY
+    assert world.last_reply() == text.CHANNEL_RETRY
     assert (await world.card("mc")).voice is None
 
 
@@ -319,7 +331,7 @@ async def test_bad_request_on_the_channel_refuses_with_retry(world: World) -> No
     await make_mc(world)
     await world.run("!card set mc voice 1001 2001")
 
-    assert world.last_reply() == text.VOICE_RETRY
+    assert world.last_reply() == text.CHANNEL_RETRY
     assert (await world.card("mc")).voice is None
 
 
@@ -329,7 +341,7 @@ async def test_forbidden_channel_is_reported_as_missing(world: World) -> None:
     await make_mc(world)
     await world.run("!card set mc voice 1001 2001")
 
-    assert world.last_reply() == text.VOICE_MISSING
+    assert world.last_reply() == text.CHANNEL_MISSING
     assert (await world.card("mc")).voice is None
 
 
@@ -338,7 +350,7 @@ async def test_unreachable_community_refuses_with_retry(world: World) -> None:
     await make_mc(world)
     await world.run("!card set mc voice 1001 2001")
 
-    assert world.last_reply() == text.VOICE_RETRY
+    assert world.last_reply() == text.CHANNEL_RETRY
     assert (await world.card("mc")).voice is None
 
 
@@ -351,7 +363,7 @@ async def test_timed_out_community_refuses_with_retry(db: Database, fake) -> Non
         await make_mc(world)
         await world.run("!card set mc voice 1001 2001")
 
-    assert world.last_reply() == text.VOICE_RETRY
+    assert world.last_reply() == text.CHANNEL_RETRY
     assert (await world.card("mc")).voice is None
 
 
@@ -364,7 +376,7 @@ async def test_timed_out_channel_refuses_with_retry(db: Database, fake) -> None:
         await make_mc(world)
         await world.run("!card set mc voice 1001 2001")
 
-    assert world.last_reply() == text.VOICE_RETRY
+    assert world.last_reply() == text.CHANNEL_RETRY
     assert (await world.card("mc")).voice is None
 
 
@@ -373,7 +385,7 @@ async def test_unexpected_community_shape_refuses_with_retry(world: World) -> No
     await make_mc(world)
     await world.run("!card set mc voice 1001 2001")
 
-    assert world.last_reply() == text.VOICE_RETRY
+    assert world.last_reply() == text.CHANNEL_RETRY
     assert (await world.card("mc")).voice is None
 
 
@@ -383,7 +395,7 @@ async def test_connection_error_on_the_channel_refuses_with_retry(world: World) 
     await make_mc(world)
     await world.run("!card set mc voice 1001 2001")
 
-    assert world.last_reply() == text.VOICE_RETRY
+    assert world.last_reply() == text.CHANNEL_RETRY
     assert (await world.card("mc")).voice is None
 
 
@@ -399,7 +411,131 @@ async def test_channel_name_is_cleaned_and_capped(world: World, raw: Any, stored
     await world.run("!card set mc voice 1001 2001")
 
     assert (await world.card("mc")).voice == Voice("1001", "2001", stored, True)
-    assert world.last_reply() == text.VOICE_VERIFIED
+    assert world.last_reply() == text.CHANNEL_VERIFIED
+
+
+# Text channels: the same checks as voice, for three slots --------------------------------------------
+
+@pytest.mark.parametrize("slot", [1, 2, 3])
+async def test_set_text_channel_stores_the_verified_channel_in_its_slot(world: World, slot: int) -> None:
+    seed_text(world.state)
+    await make_mc(world)
+    await world.run(f"!card set mc text_channel{slot} 1001 2002")
+
+    card = await world.card("mc")
+    assert card is not None
+    assert card.text_channels[slot - 1] == Voice("1001", "2002", "general", True)
+    assert [link for link in card.text_channels if link is not None] == [card.text_channels[slot - 1]]
+    assert world.last_reply() == text.CHANNEL_VERIFIED
+    assert world.kicks == [1]
+
+
+async def test_text_channel_accepts_a_pasted_channel_link_and_slots_stay_independent(world: World) -> None:
+    seed_text(world.state)
+    seed_text(world.state, name="ops", channel="2003")
+    await make_mc(world)
+    await world.run("!card set mc text_channel1 https://fluxer.invalid/channels/1001/2002")
+    await world.run("!card set mc text_channel3 1001 2003")
+
+    card = await world.card("mc")
+    assert card is not None
+    assert card.text_channels == (Voice("1001", "2002", "general", True), None, Voice("1001", "2003", "ops", True))
+
+
+@pytest.mark.parametrize("status", [403, 404])
+async def test_text_channel_in_a_community_the_bot_is_not_in_is_stored_unverified(world: World, status: int) -> None:
+    if status == 403:
+        world.state.overrides[f"GET {VOICE_GUILD}"] = Override(403, b'{"code": "MISSING_ACCESS", "message": "no"}')
+    await make_mc(world)
+    await world.run("!card set mc text_channel2 1001 2002")
+
+    card = await world.card("mc")
+    assert card is not None
+    assert card.text_channels == (None, Voice("1001", "2002", None, False), None)
+    assert world.last_reply() == text.CHANNEL_UNVERIFIED
+    assert world.kicks == [1]
+
+
+async def test_missing_text_channel_is_refused_and_stores_nothing(world: World) -> None:
+    seed_text(world.state, channel="2999")
+    await make_mc(world)
+    await world.run("!card set mc text_channel1 1001 2002")
+
+    assert world.last_reply() == text.CHANNEL_MISSING
+    assert (await world.card("mc")).text_channels == (None, None, None)
+    assert world.kicks == []
+
+
+@pytest.mark.parametrize(("field_name", "kind", "reply"), [
+    ("text_channel1", 2, NOT_TEXT),     # a voice channel in a text slot
+    ("text_channel3", 4, NOT_TEXT),     # a category, also not a text channel
+    ("voice", 0, NOT_VOICE),            # a text channel in the voice slot
+])
+async def test_channel_of_the_wrong_type_is_refused_for_its_field(
+        world: World, field_name: str, kind: int, reply: str) -> None:
+    seed_text(world.state, kind=kind)
+    await make_mc(world)
+    await world.run(f"!card set mc {field_name} 1001 2002")
+
+    assert world.last_reply() == reply
+    assert (await world.card("mc")).text_channels == (None, None, None)
+    assert (await world.card("mc")).voice is None
+
+
+async def test_text_channel_in_another_community_is_refused(world: World) -> None:
+    seed_text(world.state, guild="1009")
+    await make_mc(world)
+    await world.run("!card set mc text_channel2 1001 2002")
+
+    assert world.last_reply() == text.CHANNEL_OTHER_COMMUNITY
+    assert (await world.card("mc")).text_channels == (None, None, None)
+
+
+@pytest.mark.parametrize("setup", ["community-500", "channel-500", "channel-dropped", "channel-timeout"])
+async def test_transient_failure_on_a_text_channel_refuses_with_retry_and_stores_nothing(
+        db: Database, fake, session, setup: str) -> None:
+    state, base = fake
+    seed_text(state)
+    timeout = aiohttp.ClientTimeout(total=0.2)
+    if setup == "community-500":
+        state.overrides[f"GET {VOICE_GUILD}"] = Override(500, b'{"code": "X", "message": "boom"}')
+    elif setup == "channel-500":
+        state.overrides[f"GET {TEXT_CHANNEL}"] = Override(500, b'{"code": "X", "message": "boom"}')
+    elif setup == "channel-dropped":
+        state.drops.add(f"GET {TEXT_CHANNEL}")
+    else:
+        state.delays[f"GET {TEXT_CHANNEL}"] = 1.0
+    async with aiohttp.ClientSession(timeout=timeout) as client:
+        world = await build(db, state, base, client)
+        await make_mc(world)
+        await world.run("!card set mc text_channel2 1001 2002")
+
+    assert world.last_reply() == text.CHANNEL_RETRY
+    assert (await world.card("mc")).text_channels == (None, None, None)
+    assert world.kicks == []
+
+
+async def test_clear_text_channel_removes_only_its_slot(world: World) -> None:
+    seed_text(world.state)
+    await make_mc(world)
+    await world.run("!card set mc text_channel1 1001 2002")
+    await world.run("!card set mc text_channel2 1001 2002")
+    world.kicks.clear()
+    await world.run("!card clear mc text_channel1")
+
+    card = await world.card("mc")
+    assert card is not None
+    assert card.text_channels == (None, Voice("1001", "2002", "general", True), None)
+    assert world.last_reply() == text.CARD_CLEARED
+    assert world.kicks == [1]
+
+
+async def test_clear_of_a_fourth_text_channel_is_unknown(world: World) -> None:
+    await make_mc(world)
+    await world.run("!card clear mc text_channel4")
+
+    assert world.last_reply() == text.UNKNOWN_FIELD
+    assert world.kicks == []
 
 
 # AC7.1 to AC7.3: subcommand and field names, and the public flag of an address ---------------------------

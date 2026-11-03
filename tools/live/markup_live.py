@@ -179,6 +179,17 @@ async def report_voice_and_guild(ctx: Ctx) -> None:
         out(redactor, "GET /guilds for a community the bot is not in: HTTP 200 (the bot can read it)")
 
 
+async def report_text_channel(ctx: Ctx) -> None:
+    """The type of the posting channel. It confirms TEXT_CHANNEL_TYPE on a live instance: a text channel should be 0."""
+    redactor, rest = ctx.lv.redactor, ctx.lv.rest
+    try:
+        channel = await rest.get_channel(ctx.channel)
+    except FluxerHTTPError as exc:
+        out(redactor, f"text channel: HTTP {exc.status}")
+    else:
+        out(redactor, "text channel type:", channel.get("type"))
+
+
 async def delete_sent(rest: FluxerREST, channel: str, message_ids: Sequence[str], redactor: Redactor) -> None:
     """Deletes each test message. A failed delete is reported by its label alone, and the rest are still tried."""
     for message_id in message_ids:
@@ -203,6 +214,7 @@ async def run() -> Results:
             await check_edit_burst(ctx)
             await check_escaping(ctx)
             await report_voice_and_guild(ctx)
+            await report_text_channel(ctx)
         finally:
             await delete_sent(lv.rest, ctx.channel, ctx.sent, lv.redactor)
         return ctx.res

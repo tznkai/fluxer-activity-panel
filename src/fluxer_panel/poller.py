@@ -21,7 +21,7 @@ from typing import Any
 from fluxer_client.events import MessageDelete
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
 from fluxer_panel import cards, render, text
-from fluxer_panel.card_commands import VOICE_CHANNEL_TYPE, CardLocks, channel_name
+from fluxer_panel.card_commands import TEXT_CHANNEL_TYPE, VOICE_CHANNEL_TYPE, CardLocks, channel_name
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.logs import log_event
@@ -56,7 +56,7 @@ class Poller:
         self._clock = clock
         self._kick = asyncio.Event()
         self._schedules: dict[int, _ScheduleCache] = {}
-        self._voice_checked: dict[int, float] = {}
+        self._names_checked: dict[int, float] = {}
         self._deleted: OrderedDict[tuple[str, str], None] = OrderedDict()
         self._warned_no_channel = False
 
@@ -115,10 +115,10 @@ class Poller:
         await asyncio.gather(*(self._guarded(card, sem) for card in live))
 
     def _forget_cards_not_in(self, live_ids: set[int]) -> None:
-        """Drops the cached schedule and voice check of every card not in `live_ids`, the live set of this tick. A card
-        republished after such a tick fetches them again. A card republished before any tick saw it as non-live keeps
-        its cache. A manager change is handled by the ManagerRef comparison in `_next_action`, not by this drop."""
-        for entries in (self._schedules, self._voice_checked):
+        """Drops the cached schedule and channel name check of every card not in `live_ids`, the live set of this tick.
+        A card republished after such a tick fetches them again. A card republished before any tick saw it as non-live
+        keeps its cache. A manager change is handled by the ManagerRef comparison in `_next_action`, not by this drop."""
+        for entries in (self._schedules, self._names_checked):
             for card_id in [card_id for card_id in entries if card_id not in live_ids]:
                 del entries[card_id]
 
@@ -133,7 +133,7 @@ class Poller:
     async def _process(self, card: cards.Card) -> None:
         now = int(self._clock())
         now_dt = datetime.fromtimestamp(now, UTC)
-        card = await self._refresh_voice(card)
+        card = await self._refresh_names(card)
         power: PowerState | None = None
         action: PowerAction | None = None
         if card.manager is not None:
@@ -160,32 +160,47 @@ class Poller:
         embed = render.render_embed(card, res.status, next_text, instance_url=self._config.instance_url)
         await self._publish(card.id, embed)
 
-    async def _refresh_voice(self, card: cards.Card) -> cards.Card:
-        """Re-reads a verified voice channel's name, at most once per refresh interval. Returns the card to render."""
-        voice = card.voice
-        if voice is None or not voice.verified:
+    async def _refresh_names(self, card: cards.Card) -> cards.Card:
+        """Re-reads the name of each verified channel link (the voice channel and the text channels), at most once per
+        refresh interval. Returns the card to render."""
+        links = _verified_links(card)
+        if not links:
             return card
         now = self._clock()
-        last = self._voice_checked.get(card.id)
+        last = self._names_checked.get(card.id)
         if last is not None and now - last < self._config.schedule_refresh_seconds:
             return card
-        self._voice_checked[card.id] = now
-        try:
-            channel = await self._rest.get_channel(voice.channel_id)
-        except Exception as exc:  # noqa: BLE001 - a failed name check keeps the stored name
-            log_event(log, "voice_refresh_failed", level=logging.WARNING, card_id=card.id,
-                      reason=type(exc).__name__)
+        self._names_checked[card.id] = now
+        attempted = False
+        for slot, link, channel_type in links:
+            attempted = await self._refresh_name(card.id, slot, link, channel_type) or attempted
+        if not attempted:
             return card
-        name = channel_name(channel.get("name"))
-        if name is None or name == voice.channel_name:
-            return card
-        if channel.get("type") != VOICE_CHANNEL_TYPE or str(channel.get("guild_id")) != voice.guild_id:
-            return card
-        # Only the name is written, and only while the voice still matches the one read: an admin's clear or set
-        # that landed during the channel lookup stands. The card is reloaded either way, so this tick renders
-        # what the store holds now, not the voice as it was read.
-        await self._db.run(lambda c: cards.set_voice_name_if(c, card.id, voice, name))
+        # Reloaded after any write attempt, so this tick renders what the store holds now, not the links as read.
         return await self._db.run(lambda c: cards.get_by_id(c, card.id)) or card
+
+    async def _refresh_name(self, card_id: int, slot: int | None, link: cards.ChannelLink,
+                            channel_type: int) -> bool:
+        """Re-reads one link's channel and writes a changed name. `slot` is None for the voice link. Returns whether a
+        write was attempted."""
+        try:
+            channel = await self._rest.get_channel(link.channel_id)
+        except Exception as exc:  # noqa: BLE001 - a failed name check keeps the stored name
+            event = "voice_refresh_failed" if slot is None else "text_channel_refresh_failed"
+            log_event(log, event, level=logging.WARNING, card_id=card_id, reason=type(exc).__name__)
+            return False
+        name = channel_name(channel.get("name"))
+        if name is None or name == link.channel_name:
+            return False
+        if channel.get("type") != channel_type or str(channel.get("guild_id")) != link.guild_id:
+            return False
+        # Only the name is written, and only while the link still matches the one read: an admin's clear or set that
+        # landed during the channel lookup stands.
+        if slot is None:
+            await self._db.run(lambda c: cards.set_voice_name_if(c, card_id, link, name))
+        else:
+            await self._db.run(lambda c: cards.set_text_channel_name_if(c, card_id, slot, link, name))
+        return True
 
     async def _manager_state(self, card_id: int, ref: cards.ManagerRef,
                              now_dt: datetime) -> tuple[PowerState, PowerAction | None]:
@@ -284,6 +299,17 @@ class Poller:
 
     async def _forget_message(self, channel_id: str, message_id: str) -> None:
         await self._db.run(lambda c: cards.clear_message_if(c, channel_id, message_id))
+
+
+def _verified_links(card: cards.Card) -> list[tuple[int | None, cards.ChannelLink, int]]:
+    """Each verified channel link, with its slot (None for voice) and the channel type it must still have."""
+    links: list[tuple[int | None, cards.ChannelLink, int]] = []
+    if card.voice is not None and card.voice.verified:
+        links.append((None, card.voice, VOICE_CHANNEL_TYPE))
+    for slot, link in enumerate(card.text_channels, start=1):
+        if link is not None and link.verified:
+            links.append((slot, link, TEXT_CHANNEL_TYPE))
+    return links
 
 
 def _reconcile_failed(card_id: int, exc: Exception) -> None:

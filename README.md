@@ -43,7 +43,7 @@ Cards and sources:
   manager is registered.
 - `POLL_INTERVAL_SECONDS` (default `60`): how often the card poller runs when nothing kicks it.
 - `SCHEDULE_REFRESH_SECONDS` (default `600`): how often a card re-reads its Panel schedules and the
-  name of its verified voice channel.
+  names of its verified voice and text channels.
 - `POLL_CONCURRENCY` (default `8`): how many cards are polled at once.
 - `PROBE_TIMEOUT_SECONDS` (default `3`): the timeout for one probe.
 - `PROBE_GRACE_SECONDS` (default `600`): how long a running server's failing probe is tolerated
@@ -108,7 +108,7 @@ file means the bot has never run a purge.
 
 Admins manage cards by direct message with `!card` commands. A card is one message in the games
 channel. It shows how to join, what a first-timer should know, and optional extras: a voice
-channel, a server address, an in-person location and seats. A card for a game server can also
+channel, up to three text channels, a server address, an in-person location and seats. A card for a game server can also
 show a status line, such as Asleep, Waking up or Ready with a player count.
 
 ### Lifecycle
@@ -148,6 +148,10 @@ The last argument takes the rest of the line, so no quoting is needed. `!card he
 - `voice <guild_id> <channel_id>`, or a pasted channel link. When the bot is in that community,
   the channel must be a voice channel there, and its name is stored. When the bot is not in it,
   the channel is stored unverified and the reply says so.
+- `text_channel1`, `text_channel2` and `text_channel3`: three slots for text channels. Each takes the same input
+  as `voice`, and each is checked the same way, except that the channel must be a text channel there. Each
+  slot is separate: `!card clear <slug> text_channel2` clears only the second. The channels are listed in one
+  `Channels` field, in slot order.
 - `address <host>:<port>`: the server address. `address_public yes` or `no` (the default `no`)
   decides whether the outside text shows it.
 - `manager <kind> <ref>`: a configured host manager and its reference. Only `pterodactyl` exists.

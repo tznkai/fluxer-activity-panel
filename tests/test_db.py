@@ -20,7 +20,8 @@ import fluxer_panel.db as dbmod
 from fluxer_panel.db import Database, DatabaseRefused
 
 EXPECTED_TABLES = {
-    "cards", "card_location", "card_seats", "card_voice", "card_address", "card_manager", "card_probe",
+    "cards", "card_location", "card_seats", "card_voice", "card_text_channel", "card_address", "card_manager",
+    "card_probe",
     "card_runtime", "families", "family_members", "sessions", "rsvps", "requests",
 }
 

@@ -40,11 +40,15 @@ class CardFieldError(ValueError):
 
 
 @dataclass(frozen=True)
-class Voice:
+class ChannelLink:
+    """A community channel the card links to. `channel_name` is kept only while `verified` is true."""
     guild_id: str
     channel_id: str
     channel_name: str | None
     verified: bool
+
+
+Voice = ChannelLink   # the voice slot's link: the same shape as a text channel's
 
 
 @dataclass(frozen=True)
@@ -94,6 +98,7 @@ class Card:
     message_id: str | None
     created_by: str
     voice: Voice | None = None
+    text_channels: tuple[ChannelLink | None, ...] = (None, None, None)   # by slot: index 0 is slot 1
     address: Address | None = None
     location: Location | None = None
     seats: int | None = None
@@ -176,6 +181,7 @@ def _load(conn: sqlite3.Connection, row: tuple) -> Card:
         message_id=message_id,
         created_by=created_by,
         voice=_load_voice(conn, card_id),
+        text_channels=_load_text_channels(conn, card_id),
         address=_load_address(conn, card_id),
         location=_load_location(conn, card_id),
         seats=_load_seats(conn, card_id),
@@ -189,6 +195,15 @@ def _load_voice(conn: sqlite3.Connection, card_id: int) -> Voice | None:
     row = conn.execute("SELECT guild_id, channel_id, channel_name, verified FROM card_voice WHERE card_id = ?",
                        (card_id,)).fetchone()
     return None if row is None else Voice(row[0], row[1], row[2], bool(row[3]))
+
+
+def _load_text_channels(conn: sqlite3.Connection, card_id: int) -> tuple[ChannelLink | None, ...]:
+    slots: list[ChannelLink | None] = [None, None, None]
+    rows = conn.execute("SELECT slot, guild_id, channel_id, channel_name, verified FROM card_text_channel "
+                        "WHERE card_id = ?", (card_id,)).fetchall()
+    for slot, guild_id, channel_id, channel_name, verified in rows:
+        slots[slot - 1] = ChannelLink(guild_id, channel_id, channel_name, bool(verified))
+    return tuple(slots)
 
 
 def _load_address(conn: sqlite3.Connection, card_id: int) -> Address | None:
@@ -261,13 +276,36 @@ def set_voice(conn: sqlite3.Connection, card_id: int, voice: Voice) -> None:
         (card_id, voice.guild_id, voice.channel_id, voice.channel_name, int(voice.verified)))
 
 
-def set_voice_name_if(conn: sqlite3.Connection, card_id: int, expected: Voice, channel_name: str) -> bool:
+def set_voice_name_if(conn: sqlite3.Connection, card_id: int, expected: ChannelLink, channel_name: str) -> bool:
     """Writes a refreshed channel name, and only while the stored voice is still the `expected` one, verified and
     under the same name. Never inserts a row and never changes the channel. Returns whether a row changed."""
     cur = conn.execute(
         "UPDATE card_voice SET channel_name = ? WHERE card_id = ? AND guild_id = ? AND channel_id = ? "
         "AND verified = 1 AND channel_name IS ?",
         (channel_name, card_id, expected.guild_id, expected.channel_id, expected.channel_name))
+    return cur.rowcount == 1
+
+
+def set_text_channel(conn: sqlite3.Connection, card_id: int, slot: int, link: ChannelLink) -> None:
+    conn.execute(
+        "INSERT INTO card_text_channel (card_id, slot, guild_id, channel_id, channel_name, verified) "
+        "VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(card_id, slot) DO UPDATE SET guild_id = excluded.guild_id, channel_id = excluded.channel_id, "
+        "channel_name = excluded.channel_name, verified = excluded.verified",
+        (card_id, slot, link.guild_id, link.channel_id, link.channel_name, int(link.verified)))
+
+
+def clear_text_channel(conn: sqlite3.Connection, card_id: int, slot: int) -> None:
+    conn.execute("DELETE FROM card_text_channel WHERE card_id = ? AND slot = ?", (card_id, slot))
+
+
+def set_text_channel_name_if(conn: sqlite3.Connection, card_id: int, slot: int, expected: ChannelLink,
+                             channel_name: str) -> bool:
+    """The compare-and-set of set_voice_name_if, for one text channel slot. Returns whether a row changed."""
+    cur = conn.execute(
+        "UPDATE card_text_channel SET channel_name = ? WHERE card_id = ? AND slot = ? AND guild_id = ? "
+        "AND channel_id = ? AND verified = 1 AND channel_name IS ?",
+        (channel_name, card_id, slot, expected.guild_id, expected.channel_id, expected.channel_name))
     return cur.rowcount == 1
 
 

@@ -883,6 +883,26 @@ async def test_channel_links_and_mention_point_at_the_voice_channel_not_the_post
     assert "voice channel" in capsys.readouterr().out
 
 
+async def test_report_prints_the_type_of_the_posting_text_channel(fake, session, capsys):
+    state, base = fake
+    state.channels[CHANNEL] = {"id": CHANNEL, "type": 0, "guild_id": GUILD, "name": "general"}
+    ctx = markup_ctx(session, base)
+
+    await markup_live.report_text_channel(ctx)
+
+    assert "text channel type: 0" in capsys.readouterr().out
+
+
+async def test_report_says_when_the_posting_text_channel_cannot_be_read(fake, session, capsys):
+    state, base = fake
+    state.channels.pop(CHANNEL)
+    ctx = markup_ctx(session, base)
+
+    await markup_live.report_text_channel(ctx)
+
+    assert "text channel: HTTP 404" in capsys.readouterr().out
+
+
 def test_markup_secrets_hide_the_instance_url_its_host_and_the_default_port():
     assert markup_live.markup_secrets(MARKUP_ENV) == (
         "https://fluxer.invalid", "fluxer.invalid", "fluxer.invalid:443", "[fluxer.invalid]:443")

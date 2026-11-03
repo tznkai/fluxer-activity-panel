@@ -14,19 +14,19 @@ import fluxer_panel.db as dbmod
 from fluxer_panel.db import Database
 
 
-async def test_fresh_database_reaches_version_two(tmp_path: Path) -> None:
+async def test_fresh_database_reaches_the_latest_version(tmp_path: Path) -> None:
     database = Database.open(tmp_path / "panel.db")
     try:
         version = await database.run(lambda c: c.execute("PRAGMA user_version").fetchone()[0])
     finally:
         database.close()
-    assert version == 2
+    assert version == dbmod.LATEST_VERSION
 
 
 async def test_v1_database_with_rows_migrates_and_keeps_them(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "panel.db"
     real_migrations = dbmod.load_migrations()
-    assert [version for version, _ in real_migrations] == [1, 2]
+    assert [version for version, _ in real_migrations] == [1, 2, 3]
 
     # Build a genuine v1 database: only the first migration exists at this point.
     monkeypatch.setattr(dbmod, "load_migrations", lambda: real_migrations[:1])
@@ -59,7 +59,7 @@ async def test_v1_database_with_rows_migrates_and_keeps_them(tmp_path: Path, mon
     finally:
         database.close()
 
-    assert version == 2
+    assert version == dbmod.LATEST_VERSION
     assert session == [(1, 1, "2001", 10, 20, None, None)]
     assert rsvps == [(1, "1002", "yes")]
     assert requests == [(1, "wake", 1, "1002", "open")]

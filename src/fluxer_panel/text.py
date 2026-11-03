@@ -24,14 +24,17 @@ FIELD_JOIN = "How to join"
 FIELD_FIRST_TIME = "First time?"
 FIELD_ADDRESS = "Address"
 FIELD_VOICE = "Voice"
+FIELD_CHANNELS = "Channels"
 FIELD_LOCATION = "Location"
 FIELD_MAP = "Map"
 FIELD_VERSION = "Version"
 FIELD_GAME_MODE = "Game mode"
 VOICE_UNNAMED = "Voice channel"
+TEXT_UNNAMED = "Text channel"
 
-OUTSIDE_VOICE_NAMED = "Fluxer: #{name}"
+OUTSIDE_CHANNEL_NAMED = "Fluxer: #{name}"
 OUTSIDE_VOICE = "Fluxer voice channel"
+OUTSIDE_TEXT = "Fluxer text channel"
 OUTSIDE_ADDRESS_HIDDEN = "Address in Fluxer"
 OUTSIDE_LOCATION = "In person — location in Fluxer"
 
@@ -50,7 +53,7 @@ RULES = {
     "range": "is out of range",
     "yes_no": "must be yes or no",
     "show_item": "must be none or a list of map, version, game_mode",
-    "voice": "must be <community id> <channel id> or a channel link",
+    "channel_target": "must be <community id> <channel id> or a channel link",
     "manager_format": "must be <kind> <ref>",
     "probe_format": "must be <kind> <host> <port>",
     "unknown_kind": "is not a known kind",
@@ -73,8 +76,8 @@ HELP_COMMANDS = (
     "!card publish <slug>: make the card live\n"
     "!card archive <slug>: remove the posted message and keep the card\n"
     "!card help fields: each field, its format and its limits\n"
-    "Fields: title, description, join, first_time, sort, seats, location, voice, address, address_public, "
-    "manager, probe, show"
+    "Fields: title, description, join, first_time, sort, seats, location, voice, text_channel1, text_channel2, "
+    "text_channel3, address, address_public, manager, probe, show"
 )
 # `!card help fields`: one line per field. The placeholders are filled from the code's limits and kinds.
 HELP_FIELDS = (
@@ -86,6 +89,9 @@ HELP_FIELDS = (
     "seats: a whole number from {seats_min} to {seats_max}.\n"
     "location: text, 1 to {location} characters. Outside Fluxer it shows only a fixed line.\n"
     "voice: <community id> <channel id>, or a pasted channel link. Verified when the bot is in that community.\n"
+    "text_channel1: a text channel, as voice: <community id> <channel id> or a pasted channel link.\n"
+    "text_channel2: a text channel, as voice: <community id> <channel id> or a pasted channel link.\n"
+    "text_channel3: a text channel, as voice: <community id> <channel id> or a pasted channel link.\n"
     "address: <host>:<port>, the server address. An IPv6 host goes in brackets: [host]:port.\n"
     "address_public: yes or no (default no). Shows the address outside Fluxer. Needs an address first.\n"
     "manager: pterodactyl <8-character server id>.\n"
@@ -106,10 +112,13 @@ ARCHIVE_RETRY = "I couldn't remove the posted message, so nothing changed. Try a
 NO_CARDS = "No cards yet."
 SHOW_OUTSIDE_LABEL = "Outside Fluxer:"
 SHOW_NOTE = "Preview: live status appears once the card is published."
-VOICE_UNVERIFIED = "I can't check this channel: the bot isn't in that community."
-VOICE_VERIFIED = "Voice channel saved and checked."
-VOICE_MISSING = "I can't find that channel."
-VOICE_NOT_VOICE = "That channel isn't a voice channel."
-VOICE_OTHER_COMMUNITY = "That channel is in a different community."
-VOICE_RETRY = "I couldn't reach Fluxer to check that channel. Try again in a minute."
+# Channel replies, for the voice slot and the text channel slots. CHANNEL_WRONG_TYPE takes a CHANNEL_KIND_* phrase.
+CHANNEL_UNVERIFIED = "I can't check this channel: the bot isn't in that community."
+CHANNEL_VERIFIED = "Channel saved and checked."
+CHANNEL_MISSING = "I can't find that channel."
+CHANNEL_WRONG_TYPE = "That channel isn't {kind}."
+CHANNEL_KIND_VOICE = "a voice channel"
+CHANNEL_KIND_TEXT = "a text channel"
+CHANNEL_OTHER_COMMUNITY = "That channel is in a different community."
+CHANNEL_RETRY = "I couldn't reach Fluxer to check that channel. Try again in a minute."
 PROBE_ALERT = "Heads up: card {slug} reports its server running, but the game isn't answering queries."

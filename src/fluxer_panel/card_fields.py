@@ -21,7 +21,8 @@ SORT_RANGE = (0, 9999)
 SEATS_RANGE = (1, 999)
 # Every field name a validator may name in a refusal. A refusal for any other name uses a fixed label instead.
 FIELD_NAMES = frozenset({"title", "description", "join", "first_time", "sort", "seats", "location", "voice",
-                         "address", "address_public", "manager", "probe", "show", "slug"})
+                         "text_channel1", "text_channel2", "text_channel3", "address", "address_public", "manager",
+                         "probe", "show", "slug"})
 _SLUG = re.compile(r"[a-z0-9-]{1,32}")
 _SNOWFLAKE = re.compile(r"[1-9][0-9]{0,24}")          # same shape as config._ADMIN_ID
 _LABEL = re.compile(r"(?!-)[A-Za-z0-9-]{1,63}(?<!-)")
@@ -119,7 +120,8 @@ def show(value: str) -> tuple[str, ...]:
     return tuple(item for item in SHOW_ITEMS if item in items)
 
 
-def voice_target(value: str) -> tuple[str, str]:
+def voice_target(field: str, value: str) -> tuple[str, str]:
+    """A channel target for `field`: `<community id> <channel id>`, or a pasted channel link. A refusal names `field`."""
     stripped = value.strip()
     link = CHANNEL_LINK_RE.fullmatch(stripped)
     if link is not None:
@@ -127,9 +129,9 @@ def voice_target(value: str) -> tuple[str, str]:
     else:
         parts = stripped.split()
         if len(parts) != 2:
-            raise CardFieldError("voice", "voice")
+            raise CardFieldError(field, "channel_target")
         guild_id, channel_id = parts
-    return snowflake("voice", guild_id), snowflake("voice", channel_id)
+    return snowflake(field, guild_id), snowflake(field, channel_id)
 
 
 def manager(value: str, sources: Sources) -> tuple[str, str]:

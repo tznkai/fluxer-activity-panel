@@ -56,6 +56,7 @@ AUTHOR = "1001"
 GUILD = "1001"
 GAMES = "3001"
 VOICE = "2001"
+TEXT = "2002"                                  # a text channel in the same community
 SERVER = "abcd1234"
 HOST = "127.0.0.1"
 PORT = 25565
@@ -188,6 +189,7 @@ def root_logging():
 
 _SLOTS: dict[str, Callable[..., None]] = {
     "voice": cards.set_voice,
+    "text_channel": lambda c, card_id, value: cards.set_text_channel(c, card_id, value[0], value[1]),
     "address": cards.set_address,
     "location": cards.set_location,
     "seats": cards.set_seats,
@@ -278,6 +280,24 @@ def assert_card_writes_safe(state: FakeFluxerState) -> None:
 
 def voice_channel(*, name: str = "New", kind: int = 2, guild: str = GUILD) -> dict[str, Any]:
     return {"id": VOICE, "name": name, "type": kind, "guild_id": guild}
+
+
+def text_channel(*, name: str = "general", kind: int = 0, guild: str = GUILD) -> dict[str, Any]:
+    """A text channel as Fluxer reports it: type 0 is a text channel."""
+    return {"id": TEXT, "name": name, "type": kind, "guild_id": guild}
+
+
+async def track_text_channel_writes(db: Database) -> None:
+    def tx(conn: Any) -> None:
+        conn.execute("CREATE TABLE text_writes (n INTEGER)")
+        conn.execute("CREATE TRIGGER count_text_writes AFTER UPDATE ON card_text_channel "
+                     "BEGIN INSERT INTO text_writes VALUES (1); END")
+
+    await db.run(tx)
+
+
+async def text_writes(db: Database) -> int:
+    return await db.run(lambda c: c.execute("SELECT COUNT(*) FROM text_writes").fetchone()[0])
 
 
 async def track_voice_writes(db: Database) -> None:
@@ -958,12 +978,14 @@ async def test_the_poller_logs_no_card_text_or_probe_detail(
     stream = io.StringIO()
     setup_logging("DEBUG", [TOKEN], stream)
     sentinels = ["SENTINEL-TITLE-5d1e", "SENTINEL-LOC-5d1e", "sentinel-host.invalid", "SENTINEL-VOICE-5d1e",
-                 "SENTINEL-MAP-5d1e"]
+                 "SENTINEL-MAP-5d1e", "SENTINEL-TEXT-5d1e"]
     world.fluxer.channels[VOICE] = voice_channel(name="SENTINEL-VOICE-5d1e")
+    world.fluxer.channels[TEXT] = text_channel(name="SENTINEL-TEXT-5d1e")
     world.probe.reply = ProbeResult(PlayerCounts(1, 4), ProbeDetails(map="SENTINEL-MAP-5d1e"))
     card_id = await seed(db, "alpha", title="SENTINEL-TITLE-5d1e",
                          location=cards.Location("SENTINEL-LOC-5d1e"),
                          voice=cards.Voice(GUILD, VOICE, "SENTINEL-VOICE-5d1e", True),
+                         text_channel=(1, cards.Voice(GUILD, TEXT, "SENTINEL-TEXT-5d1e", True)),
                          probe=cards.ProbeRef("stub", "sentinel-host.invalid", PORT))
     await db.run(lambda c: cards.update_fields(c, card_id, 0, show_details=("map",)))
     await seed(db, "beta", probe=cards.ProbeRef("boom", "sentinel-host.invalid", PORT))
@@ -1079,3 +1101,121 @@ async def test_a_failed_voice_check_is_logged_and_the_card_still_posts(
 
 def _iso(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, UTC).isoformat()
+
+
+# Text channel names: refreshed on the same schedule and with the same checks as the voice name ------------
+
+async def test_a_changed_text_channel_name_is_refreshed_and_shown(world: World, poller: Poller, db: Database):
+    await track_text_channel_writes(db)
+    card_id = await seed(db, "alpha", text_channel=(1, cards.Voice(GUILD, TEXT, "Old", True)))
+    world.fluxer.channels[TEXT] = text_channel(name="New")
+
+    await poller.tick()
+
+    assert (await load(db, card_id)).text_channels[0].channel_name == "New"
+    assert await text_writes(db) == 1
+    [sent] = posts(world.fluxer)
+    assert "#New" in fields_of(sent.payload["embeds"][0])[text.FIELD_CHANNELS]
+
+
+async def test_an_unchanged_text_channel_name_is_not_written(world: World, poller: Poller, db: Database):
+    await track_text_channel_writes(db)
+    await seed(db, "alpha", text_channel=(2, cards.Voice(GUILD, TEXT, "general", True)))
+    world.fluxer.channels[TEXT] = text_channel(name="general")
+
+    await poller.tick()
+
+    assert await text_writes(db) == 0
+
+
+async def test_each_verified_channel_link_is_refreshed_in_its_own_slot(world: World, poller: Poller, db: Database):
+    card_id = await seed(db, "alpha", voice=cards.Voice(GUILD, VOICE, "Old", True),
+                         text_channel=(1, cards.Voice(GUILD, TEXT, "Old", True)))
+    await db.run(lambda c: cards.set_text_channel(c, card_id, 3, cards.Voice(GUILD, "2003", "Third", True)))
+    world.fluxer.channels[VOICE] = voice_channel(name="NewVoice")
+    world.fluxer.channels[TEXT] = text_channel(name="NewText")
+    world.fluxer.channels["2003"] = {"id": "2003", "name": "Third", "type": 0, "guild_id": GUILD}
+
+    await poller.tick()
+
+    card = await load(db, card_id)
+    assert card.voice.channel_name == "NewVoice"
+    assert card.text_channels == (cards.Voice(GUILD, TEXT, "NewText", True), None,
+                                  cards.Voice(GUILD, "2003", "Third", True))
+
+
+@pytest.mark.parametrize("change", [{"kind": 2}, {"guild": "9999"}], ids=["not-text", "other-community"])
+async def test_a_text_channel_refresh_keeps_the_stored_name_when_fluxer_does_not_confirm_it(
+        world: World, poller: Poller, db: Database, change: dict[str, Any]):
+    await track_text_channel_writes(db)
+    card_id = await seed(db, "alpha", text_channel=(1, cards.Voice(GUILD, TEXT, "Old", True)))
+    world.fluxer.channels[TEXT] = text_channel(**{"name": "New", **change})
+
+    await poller.tick()
+
+    assert await text_writes(db) == 0
+    assert (await load(db, card_id)).text_channels[0].channel_name == "Old"
+
+
+async def test_a_text_channel_name_is_checked_once_per_refresh_interval(world: World, poller: Poller, db: Database):
+    await seed(db, "alpha", text_channel=(1, cards.Voice(GUILD, TEXT, "general", True)))
+    world.fluxer.channels[TEXT] = text_channel(name="general")
+
+    for now in (0, 10, 599, 600):
+        world.clock.now = now
+        await poller.tick()
+
+    assert len(requests_for(world.fluxer, "GET", f"/api/v1/channels/{TEXT}")) == 2
+
+
+async def test_an_unverified_text_channel_is_never_checked(world: World, poller: Poller, db: Database):
+    await seed(db, "alpha", text_channel=(1, cards.Voice(GUILD, TEXT, None, False)))
+    world.fluxer.channels[TEXT] = text_channel(name="general")
+
+    await poller.tick()
+
+    assert requests_for(world.fluxer, "GET", f"/api/v1/channels/{TEXT}") == []
+
+
+async def test_a_failed_text_channel_check_is_logged_by_card_and_reason_and_the_card_still_posts(
+        world: World, poller: Poller, db: Database, caplog: pytest.LogCaptureFixture):
+    caplog.set_level(logging.WARNING, logger="fluxer_panel.poller")
+    card_id = await seed(db, "alpha", text_channel=(1, cards.Voice(GUILD, TEXT, "Old", True)))
+    world.fluxer.overrides[f"GET /api/v1/channels/{TEXT}"] = Override(500, b'{"code": "X", "message": "no"}')
+
+    await poller.tick()
+
+    [failed] = records(caplog, "text_channel_refresh_failed")
+    assert failed.panel_fields == {"card_id": card_id, "reason": "FluxerHTTPError"}
+    assert len(posts(world.fluxer)) == 1
+
+
+async def test_a_text_channel_cleared_during_a_name_refresh_stays_cleared(world: World, poller: Poller, db: Database):
+    card_id = await seed(db, "alpha", text_channel=(1, cards.Voice(GUILD, TEXT, "Old", True)))
+    world.fluxer.channels[TEXT] = text_channel(name="New")
+    world.fluxer.delays[f"GET /api/v1/channels/{TEXT}"] = 0.3
+    tick = asyncio.create_task(poller.tick())
+    await asyncio.sleep(0.1)
+    await db.run(lambda c: cards.clear_text_channel(c, card_id, 1))
+    await tick
+
+    assert (await load(db, card_id)).text_channels == (None, None, None)
+    [sent] = posts(world.fluxer)
+    assert text.FIELD_CHANNELS not in fields_of(sent.payload["embeds"][0])
+    assert_card_writes_safe(world.fluxer)
+
+
+async def test_a_text_channel_set_during_a_name_refresh_stays_set(world: World, poller: Poller, db: Database):
+    card_id = await seed(db, "alpha", text_channel=(1, cards.Voice(GUILD, TEXT, "Old", True)))
+    world.fluxer.channels[TEXT] = text_channel(name="New")
+    world.fluxer.delays[f"GET /api/v1/channels/{TEXT}"] = 0.3
+    tick = asyncio.create_task(poller.tick())
+    await asyncio.sleep(0.1)
+    admin_choice = cards.Voice(GUILD, "2004", "Admin", True)
+    await db.run(lambda c: cards.set_text_channel(c, card_id, 1, admin_choice))
+    await tick
+
+    assert (await load(db, card_id)).text_channels[0] == admin_choice
+    [sent] = posts(world.fluxer)
+    assert "#Admin" in fields_of(sent.payload["embeds"][0])[text.FIELD_CHANNELS]
+    assert_card_writes_safe(world.fluxer)

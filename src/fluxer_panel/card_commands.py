@@ -16,7 +16,7 @@ import aiohttp
 from fluxer_client.events import MessageCreate
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
 from fluxer_panel import card_fields, cards, render, text
-from fluxer_panel.cards import SHOW_ITEMS, CardFieldError, Voice
+from fluxer_panel.cards import SHOW_ITEMS, CardFieldError, ChannelLink
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.logs import log_event
@@ -25,14 +25,20 @@ from fluxer_panel.sources.registry import PROBES, Sources
 log = logging.getLogger(__name__)
 
 VOICE_CHANNEL_TYPE = 2
+# Discord's text channel type. Not yet confirmed against Fluxer: `markup_live.py` prints the live type of the
+# posting channel, so the operator can check this value on a real instance.
+TEXT_CHANNEL_TYPE = 0
+_CHANNEL_KINDS = {VOICE_CHANNEL_TYPE: text.CHANNEL_KIND_VOICE, TEXT_CHANNEL_TYPE: text.CHANNEL_KIND_TEXT}
 VOICE_NAME_MAX = 100
 LIST_CHUNK = 1900
 PREVIEW_LIMIT = 2000  # Fluxer's message content limit
 SUBCOMMANDS = ("new", "set", "clear", "show", "list", "publish", "archive", "help")
-SETTABLE = ("title", "description", "join", "first_time", "sort", "seats", "location", "voice", "address",
-            "address_public", "manager", "probe", "show")
-CLEARABLE = ("description", "join", "first_time", "sort", "seats", "location", "voice", "address",
-             "manager", "probe", "show")
+SETTABLE = ("title", "description", "join", "first_time", "sort", "seats", "location", "voice",
+            "text_channel1", "text_channel2", "text_channel3", "address", "address_public", "manager", "probe", "show")
+CLEARABLE = ("description", "join", "first_time", "sort", "seats", "location", "voice",
+             "text_channel1", "text_channel2", "text_channel3", "address", "manager", "probe", "show")
+# Text channel fields and the slot each one writes. The slots are the store's, so no input picks a table or a slot.
+TEXT_CHANNEL_SLOTS = {"text_channel1": 1, "text_channel2": 2, "text_channel3": 3}
 # Settable fields that are stored as base columns, and the column each one writes.
 BASE_COLUMNS = {"title": "title", "description": "description", "join": "how_to_join", "first_time": "first_time",
                 "sort": "sort_order", "show": "show_details"}
@@ -196,8 +202,15 @@ async def _prepare_set(ctx: CardContext, card: cards.Card, field_name: str,
         kind, host, port = card_fields.probe(value, ctx.sources)
         probe = cards.ProbeRef(kind, host, port)
         return (lambda c: cards.set_probe(c, card_id, probe)), text.CARD_UPDATED
-    guild_id, channel_id = card_fields.voice_target(value)
-    voice, reply = await _check_voice(ctx.rest, guild_id, channel_id)
+    if field_name in TEXT_CHANNEL_SLOTS:
+        slot = TEXT_CHANNEL_SLOTS[field_name]
+        guild_id, channel_id = card_fields.voice_target(field_name, value)
+        link, reply = await _check_channel(ctx.rest, guild_id, channel_id, TEXT_CHANNEL_TYPE)
+        if link is None:
+            return None, reply
+        return (lambda c: cards.set_text_channel(c, card_id, slot, link)), reply
+    guild_id, channel_id = card_fields.voice_target("voice", value)
+    voice, reply = await _check_channel(ctx.rest, guild_id, channel_id, VOICE_CHANNEL_TYPE)
     if voice is None:
         return None, reply
     return (lambda c: cards.set_voice(c, card_id, voice)), reply
@@ -211,29 +224,31 @@ def _base_value(field_name: str, value: str) -> Any:
     return card_fields.text_value(field_name, value)
 
 
-async def _check_voice(rest: FluxerREST, guild_id: str, channel_id: str) -> tuple[Voice | None, str]:
-    """Returns the voice to store (None when nothing should be stored) and the reply."""
+async def _check_channel(rest: FluxerREST, guild_id: str, channel_id: str,
+                         channel_type: int) -> tuple[ChannelLink | None, str]:
+    """Checks a channel link for a slot that takes `channel_type`. Returns the link to store (None when nothing should
+    be stored) and the reply. The community is checked first, so a community the bot is not in is stored unverified."""
     try:
         await rest.get_guild(guild_id)
     except FluxerHTTPError as exc:
         if exc.status in (403, 404):
-            return Voice(guild_id, channel_id, None, False), text.VOICE_UNVERIFIED
-        return None, text.VOICE_RETRY
+            return ChannelLink(guild_id, channel_id, None, False), text.CHANNEL_UNVERIFIED
+        return None, text.CHANNEL_RETRY
     except (aiohttp.ClientError, TimeoutError):
-        return None, text.VOICE_RETRY
+        return None, text.CHANNEL_RETRY
     try:
         channel = await rest.get_channel(channel_id)
     except FluxerHTTPError as exc:
         if exc.status in (403, 404):
-            return None, text.VOICE_MISSING
-        return None, text.VOICE_RETRY
+            return None, text.CHANNEL_MISSING
+        return None, text.CHANNEL_RETRY
     except (aiohttp.ClientError, TimeoutError):
-        return None, text.VOICE_RETRY
-    if channel.get("type") != VOICE_CHANNEL_TYPE:
-        return None, text.VOICE_NOT_VOICE
+        return None, text.CHANNEL_RETRY
+    if channel.get("type") != channel_type:
+        return None, text.CHANNEL_WRONG_TYPE.format(kind=_CHANNEL_KINDS[channel_type])
     if str(channel.get("guild_id")) != guild_id:
-        return None, text.VOICE_OTHER_COMMUNITY
-    return Voice(guild_id, channel_id, channel_name(channel.get("name")), True), text.VOICE_VERIFIED
+        return None, text.CHANNEL_OTHER_COMMUNITY
+    return ChannelLink(guild_id, channel_id, channel_name(channel.get("name")), True), text.CHANNEL_VERIFIED
 
 
 def channel_name(value: object) -> str | None:
@@ -263,7 +278,10 @@ async def _clear(event: MessageCreate, ctx: CardContext, rest: str) -> _Result:
         return _Result(card.id, logged)
     now = int(ctx.clock())
     card_id = card.id
-    if field_name in SLOT_CLEARS:
+    if field_name in TEXT_CHANNEL_SLOTS:
+        slot = TEXT_CHANNEL_SLOTS[field_name]
+        await ctx.db.run(lambda c: cards.clear_text_channel(c, card_id, slot))
+    elif field_name in SLOT_CLEARS:
         await ctx.db.run(lambda c: cards.clear_slot(c, card_id, field_name))
     else:
         column, empty = BASE_CLEARS[field_name]

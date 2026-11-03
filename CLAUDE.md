@@ -85,9 +85,10 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   before `asyncio.run`, so a refused DB exits before any network connection.
 - Logging: panel code logs only through `log_event(logger, name, level=..., **fields)`. It never logs message content,
   card text, locations, addresses, hosts, probe details, user names, channel names or URLs. The database stores a
-  verified voice channel's display name (`card_voice.channel_name`). That is a channel's name, not a person's, and
-  it is never logged. `clean_fields` allowlists fields: id keys must be snowflakes, other keys must be
-  numbers, bools or identifier-like strings. Known exception: `__main__.main` calls `log.exception("fatal_error")`,
+  verified voice channel's display name (`card_voice.channel_name`) and a verified text channel's display name
+  (`card_text_channel.channel_name`). Those are channel names, not people's, and they are never logged.
+  `clean_fields` allowlists fields: id keys must be snowflakes, other keys must be numbers, bools or
+  identifier-like strings. Known exception: `__main__.main` calls `log.exception("fatal_error")`,
   and no code enforces the no-URL rule for traceback text there. `fluxer_client` records are plain text that only
   get token redaction and may contain URLs.
 - `setup_logging` installs one JSON stdout handler with `TokenRedactionFilter`, which replaces the token (raw and
@@ -128,8 +129,10 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   and the write probe in `_connect` stays authoritative.
 - Primary codes READONLY, CANTOPEN, BUSY and PERM map to `DatabaseRefused("unavailable")` and leave the file alone.
   Only corruption codes quarantine. Quarantine moves files aside under new names and never overwrites.
-- Schema: every table is `STRICT`. Ids are `TEXT` with CHECKs that they are digits only and at most 25 long; names are not stored,
-  except a verified voice channel's display name (`card_voice.channel_name`). The snowflake bound is 25 in code and schema; Fluxer documents at most 19, so do not tighten without a new migration.
+- Schema: every table is `STRICT`. Ids are `TEXT` with CHECKs that they are digits only and at most 25 long; names are
+  not stored, except a verified voice or text channel's display name (`card_voice.channel_name`,
+  `card_text_channel.channel_name`). The snowflake bound is 25 in code and schema; Fluxer documents at most 19, so do
+  not tighten without a new migration.
 - Migrations: `src/fluxer_panel/migrations/NNNN_name.sql`, numbered and contiguous from `0001`. Never edit a migration
   after release; add a new file instead. Do not put `BEGIN`, `COMMIT` or `PRAGMA user_version` in a file: the runner adds them.
 - `secure_delete = ON` is set, so purged rows do not survive in free pages. `.pre-v<N>` backups are not covered by that
@@ -171,8 +174,8 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
     since map names are operator-chosen. Version and game mode are printed as given. It does not connect to Fluxer.
   - `markup_live.py` (needs `LIVE_VOICE_CHANNEL_ID` and `LIVE_OTHER_GUILD_ID`, a community the bot is not in): posts
     test messages to `LIVE_CHANNEL_ID` for the timestamp, channel-link, masked-link, mention, edit-burst and escaping
-    checks, reads the voice channel type and the other community's status, then deletes its messages. The channel-link
-    check builds its bare link, masked link and `<#...>` mention for `LIVE_VOICE_CHANNEL_ID`, the channel the card's
+    checks, reads the voice channel type, the posting text channel's type and the other community's status, then
+    deletes its messages. The channel-link check builds its bare link, masked link and `<#...>` mention for `LIVE_VOICE_CHANNEL_ID`, the channel the card's
     Voice field links to, because a link to the posting channel does nothing when clicked. The instance URL's forms
     (the URL as given and as normalised, each host in its decoded and punycode spellings, with host:port and
     [host]:port, from `endpoint_secrets`) are redacted from every printed line, the operator's typed NOTE included,

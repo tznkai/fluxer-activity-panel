@@ -197,24 +197,34 @@ def test_show_refuses_unknown_items(value: str) -> None:
 
 # AC7.3: voice target ---------------------------------------------------------------------------------------
 
-def test_voice_target_accepts_two_ids() -> None:
-    assert card_fields.voice_target("1001 2001") == ("1001", "2001")
+@pytest.mark.parametrize("field_name", ["voice", "text_channel1", "text_channel2", "text_channel3"])
+def test_channel_target_accepts_two_ids_for_any_channel_field(field_name: str) -> None:
+    assert card_fields.voice_target(field_name, "1001 2001") == ("1001", "2001")
 
 
-def test_voice_target_accepts_a_pasted_channel_link() -> None:
-    assert card_fields.voice_target("https://fluxer.invalid/channels/1001/2001") == ("1001", "2001")
+def test_channel_target_accepts_a_pasted_channel_link() -> None:
+    link = "https://fluxer.invalid/channels/1001/2001"
+    assert card_fields.voice_target("text_channel3", link) == ("1001", "2001")
 
 
+@pytest.mark.parametrize("field_name", ["voice", "text_channel2"])
 @pytest.mark.parametrize(("template", "rule"), [
-    ("1001{s}", "voice"),                          # one id only
-    ("https://fluxer.invalid/x/1/2{s}", "voice"),  # not a channel link
-    ("1001 2001 3001{s}", "voice"),                # three ids
-    ("12a{s} 2001", "snowflake"),                  # a non-numeric id
+    ("1001{s}", "channel_target"),                          # one id only
+    ("https://fluxer.invalid/x/1/2{s}", "channel_target"),  # not a channel link
+    ("1001 2001 3001{s}", "channel_target"),                # three ids
+    ("12a{s} 2001", "snowflake"),                           # a non-numeric id
 ])
-def test_voice_target_refuses_other_shapes(template: str, rule: str) -> None:
-    err = refused(lambda: card_fields.voice_target(template.format(s=SENTINEL)))
-    assert (err.field, err.rule) == ("voice", rule)
+def test_channel_target_refuses_other_shapes_and_names_its_field(field_name: str, template: str, rule: str) -> None:
+    err = refused(lambda: card_fields.voice_target(field_name, template.format(s=SENTINEL)))
+    assert (err.field, err.rule) == (field_name, rule)
     assert SENTINEL not in card_fields.refusal_reply(err)
+
+
+def test_text_channel_fields_are_named_in_refusals() -> None:
+    for field_name in ("text_channel1", "text_channel2", "text_channel3"):
+        assert field_name in card_fields.FIELD_NAMES
+        reply = card_fields.refusal_reply(CardFieldError(field_name, "channel_target"))
+        assert reply == f"Can't set {field_name}: it must be <community id> <channel id> or a channel link."
 
 
 # AC7.3: manager and probe ----------------------------------------------------------------------------------

@@ -15,7 +15,7 @@ from typing import Any
 
 from fluxer_client.ids import require_snowflake
 from fluxer_panel import text
-from fluxer_panel.cards import Address, Card, Voice
+from fluxer_panel.cards import Address, Card, ChannelLink
 from fluxer_panel.resolver import CardStatus, StatusKind, status_label
 
 ZWJ = "\u200d"  # zero-width joiner, written as an escape so no invisible character sits in the source
@@ -46,7 +46,10 @@ LIMITS = {
     # render whole at 500 and 120.
     "location": 500,
     "detail": 120,
-    "voice_name": 100,
+    # A channel name (voice or text), fitted after escaping. An entry is "[#" + name + "](" + link + ")", at most
+    # 166 + the instance URL's length. Three entries and two newlines fit the 1024-character field when the instance
+    # URL is at most 174 characters. The link is not fitted, so a longer URL would be too long for Fluxer.
+    "channel_name": 100,
 }
 
 
@@ -115,7 +118,10 @@ def render_embed(card: Card, status: CardStatus | None, next_text: str | None, *
     if card.address is not None:
         add(text.FIELD_ADDRESS, code(host_port(card.address.host, card.address.port)))
     if card.voice is not None:
-        add(text.FIELD_VOICE, _voice_value(card.voice, instance_url))
+        add(text.FIELD_VOICE, _channel_value(card.voice, text.VOICE_UNNAMED, instance_url))
+    linked = [link for link in card.text_channels if link is not None]
+    if linked:
+        add(text.FIELD_CHANNELS, "\n".join(_channel_value(link, text.TEXT_UNNAMED, instance_url) for link in linked))
     if card.location is not None:
         add(text.FIELD_LOCATION, fit(escape(card.location.text), LIMITS["location"]))
     if status is not None and status.details is not None:
@@ -132,13 +138,14 @@ def render_embed(card: Card, status: CardStatus | None, next_text: str | None, *
     return embed
 
 
-def _voice_value(voice: Voice, instance_url: str | None) -> str:
-    named = voice.verified and voice.channel_name is not None
-    label = "#" + fit(escape(voice.channel_name), LIMITS["voice_name"]) if named else text.VOICE_UNNAMED
+def _channel_value(channel: ChannelLink, unnamed: str, instance_url: str | None) -> str:
+    """A channel's field entry: its escaped name when verified, else `unnamed`, as a link when the instance URL is known."""
+    named = channel.verified and channel.channel_name is not None
+    label = "#" + fit(escape(channel.channel_name), LIMITS["channel_name"]) if named else unnamed
     if instance_url is None:
         return label
     # The link is built here, and the label is escaped above, so no card text forms a link.
-    return f"[{label}]({channel_link(instance_url, voice.guild_id, voice.channel_id)})"
+    return f"[{label}]({channel_link(instance_url, channel.guild_id, channel.channel_id)})"
 
 
 def card_message(embed: dict[str, Any]) -> dict[str, Any]:
@@ -152,8 +159,16 @@ def rendered_hash(embed: dict[str, Any]) -> str:
 
 # Outside Fluxer: plain text for a DM. It is mention-neutralised, not markdown-escaped.
 
+def _outside_channel(name: str | None, unnamed: str) -> str:
+    return text.OUTSIDE_CHANNEL_NAMED.format(name=neutralise(name)) if name else unnamed
+
+
 def outside_voice(name: str | None) -> str:
-    return text.OUTSIDE_VOICE_NAMED.format(name=neutralise(name)) if name else text.OUTSIDE_VOICE
+    return _outside_channel(name, text.OUTSIDE_VOICE)
+
+
+def outside_text_channel(name: str | None) -> str:
+    return _outside_channel(name, text.OUTSIDE_TEXT)
 
 
 def outside_address(address: Address, public: bool) -> str:
@@ -177,6 +192,9 @@ def outside_text(card: Card, status: CardStatus | None, next_text: str | None) -
         lines.append(outside_address(card.address, card.address.public))
     if card.voice is not None:
         lines.append(outside_voice(card.voice.channel_name if card.voice.verified else None))
+    for link in card.text_channels:
+        if link is not None:
+            lines.append(outside_text_channel(link.channel_name if link.verified else None))
     location_line = outside_location(card.location is not None)
     if location_line is not None:
         lines.append(location_line)

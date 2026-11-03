@@ -20,6 +20,7 @@ ALLOWED_COLUMNS: dict[str, set[str]] = {
     "card_location": {"card_id", "location_text"},
     "card_seats": {"card_id", "seats"},
     "card_voice": {"card_id", "guild_id", "channel_id", "channel_name", "verified"},
+    "card_text_channel": {"card_id", "slot", "guild_id", "channel_id", "channel_name", "verified"},
     "card_address": {"card_id", "host", "port", "public"},
     "card_manager": {"card_id", "kind", "ref"},
     "card_probe": {"card_id", "kind", "host", "port"},
@@ -32,7 +33,8 @@ ALLOWED_COLUMNS: dict[str, set[str]] = {
     "requests": {"id", "kind", "card_id", "requester_id", "status", "created_at"},
 }
 
-STRICT_TABLES = {"card_location", "card_voice", "card_address", "card_manager", "card_probe", "card_runtime"}
+STRICT_TABLES = {"card_location", "card_voice", "card_text_channel", "card_address", "card_manager", "card_probe",
+                 "card_runtime"}
 
 FORBIDDEN_TOKENS = {"nick", "nickname", "age", "birth", "birthday", "dob", "gender",
                     "member", "membership", "group"}
@@ -120,6 +122,14 @@ REJECTED: list[tuple[str, str, tuple[object, ...]]] = [
                                       "VALUES (1,'1001','12a',1)", ()),
     ("voice is unverified but named", "INSERT INTO card_voice (card_id,guild_id,channel_id,channel_name,verified) "
                                       "VALUES (1,'1001','1002','SENTINEL-VOICE',0)", ()),
+    ("text channel slot is zero", "INSERT INTO card_text_channel (card_id,slot,guild_id,channel_id,verified) "
+                                  "VALUES (1,0,'1001','1002',1)", ()),
+    ("text channel slot is four", "INSERT INTO card_text_channel (card_id,slot,guild_id,channel_id,verified) "
+                                  "VALUES (1,4,'1001','1002',1)", ()),
+    ("text channel guild id has a letter", "INSERT INTO card_text_channel (card_id,slot,guild_id,channel_id,verified) "
+                                           "VALUES (1,1,'12a','1002',1)", ()),
+    ("text channel is unverified but named", "INSERT INTO card_text_channel (card_id,slot,guild_id,channel_id,channel_name,verified) "
+                                             "VALUES (1,1,'1001','1002','SENTINEL-TEXT',0)", ()),
     ("address port is zero", "INSERT INTO card_address (card_id,host,port) VALUES (1,'h.invalid',0)", ()),
     ("address port is 65536", "INSERT INTO card_address (card_id,host,port) VALUES (1,'h.invalid',65536)", ()),
     ("address public is two", "INSERT INTO card_address (card_id,host,port,public) VALUES (1,'h.invalid',1,2)", ()),
@@ -138,6 +148,26 @@ REJECTED: list[tuple[str, str, tuple[object, ...]]] = [
 async def test_schema_rejects_invalid_row(seeded: Database, label: str, sql: str, params: tuple[object, ...]) -> None:
     with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
         await _exec(seeded, sql, params)
+
+
+async def test_text_channel_slots_are_unique_per_card_and_all_three_fit(seeded: Database) -> None:
+    for slot in (1, 2, 3):
+        await _exec(seeded, "INSERT INTO card_text_channel (card_id,slot,guild_id,channel_id,verified) "
+                            "VALUES (1,?,'1001','1002',1)", (slot,))
+    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
+        await _exec(seeded, "INSERT INTO card_text_channel (card_id,slot,guild_id,channel_id,verified) "
+                            "VALUES (1,2,'1001','1003',1)")
+    count = await seeded.run(lambda c: c.execute("SELECT COUNT(*) FROM card_text_channel").fetchone()[0])
+    assert count == 3
+
+
+async def test_deleting_a_card_removes_its_text_channels(seeded: Database) -> None:
+    await _exec(seeded, "INSERT INTO cards (title,created_by,created_at,updated_at) VALUES ('t2','1001',1,1)")
+    await _exec(seeded, "INSERT INTO card_text_channel (card_id,slot,guild_id,channel_id,verified) "
+                        "VALUES (2,1,'1001','1002',1)")
+    await _exec(seeded, "DELETE FROM cards WHERE id = 2")
+    count = await seeded.run(lambda c: c.execute("SELECT COUNT(*) FROM card_text_channel").fetchone()[0])
+    assert count == 0
 
 
 async def test_duplicate_slug_is_rejected(seeded: Database) -> None:
