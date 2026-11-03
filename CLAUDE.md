@@ -107,6 +107,8 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   neither, and setting one refuses to start with exit 2. `POLL_INTERVAL_SECONDS`, `SCHEDULE_REFRESH_SECONDS`,
   `POLL_CONCURRENCY`, `PROBE_TIMEOUT_SECONDS` and `PROBE_GRACE_SECONDS` are positive integers with defaults 60, 600,
   8, 3 and 600. `README.md` lists every variable.
+  `FLUXER_INSTANCE_URL` is at most 128 characters (`config.INSTANCE_URL_MAX`), which keeps the card's Channels
+  field inside Fluxer's 1024-character field limit. `FLUXER_API_URL` has no cap.
 
 ## Cards and sources rules
 

@@ -47,8 +47,8 @@ LIMITS = {
     "location": 500,
     "detail": 120,
     # A channel name (voice or text), fitted after escaping. An entry is "[#" + name + "](" + link + ")", at most
-    # 166 + the instance URL's length. Three entries and two newlines fit the 1024-character field when the instance
-    # URL is at most 174 characters. The link is not fitted, so a longer URL would be too long for Fluxer.
+    # 166 + the instance URL's length. Three entries and two newlines fit the 1024-character field at 174 characters.
+    # The link is not fitted, so config caps FLUXER_INSTANCE_URL at 128 (config.INSTANCE_URL_MAX), well under 174.
     "channel_name": 100,
 }
 

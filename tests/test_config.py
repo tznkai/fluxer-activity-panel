@@ -6,11 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from fluxer_panel.config import Config, ConfigError
+from fluxer_panel.config import INSTANCE_URL_MAX, Config, ConfigError
+from tests.fakes import instance_url_of_length
 
 TOKEN = "SENTINEL-TOKEN-7f3a9c"
 PTERO_KEY = "SENTINEL-PTERO-KEY-91c2"
 TOO_LONG_ID = "9" * 26
+TOO_LONG_INSTANCE_URL = instance_url_of_length(INSTANCE_URL_MAX + 1)
 
 
 def env(**overrides: str | None) -> dict[str, str]:
@@ -69,6 +71,17 @@ def test_api_url_alone_is_enough():
 def test_blank_prefix_defaults_and_custom_prefix_is_kept():
     assert Config.from_env(env(COMMAND_PREFIX="   ")).prefix == "!"
     assert Config.from_env(env(COMMAND_PREFIX="?")).prefix == "?"
+
+
+def test_instance_url_at_the_cap_is_accepted():
+    capped = instance_url_of_length(INSTANCE_URL_MAX)
+    assert len(capped) == INSTANCE_URL_MAX
+    assert Config.from_env(env(FLUXER_INSTANCE_URL=capped)).instance_url == capped
+
+
+def test_api_url_has_no_length_cap():
+    long_api = instance_url_of_length(INSTANCE_URL_MAX + 40)
+    assert Config.from_env(env(FLUXER_INSTANCE_URL=None, FLUXER_API_URL=long_api)).api_url == long_api
 
 
 def test_repr_never_shows_the_token():
@@ -131,6 +144,7 @@ def test_repr_hides_the_pterodactyl_key_and_the_token():
         ("FLUXER_INSTANCE_URL", {"FLUXER_INSTANCE_URL": None}, None),
         ("FLUXER_INSTANCE_URL", {"FLUXER_INSTANCE_URL": "ftp://sentinel.invalid"}, "ftp://sentinel.invalid"),
         ("FLUXER_INSTANCE_URL", {"FLUXER_INSTANCE_URL": "http://[::1"}, "http://[::1"),
+        ("FLUXER_INSTANCE_URL", {"FLUXER_INSTANCE_URL": TOO_LONG_INSTANCE_URL}, TOO_LONG_INSTANCE_URL),
         ("FLUXER_API_URL", {"FLUXER_INSTANCE_URL": None, "FLUXER_API_URL": "not a url"}, "not a url"),
         ("FLUXER_GATEWAY_URL", {"FLUXER_GATEWAY_URL": "https://sentinel.invalid"}, "https://sentinel.invalid"),
         ("ADMIN_USER_IDS", {"ADMIN_USER_IDS": None}, None),

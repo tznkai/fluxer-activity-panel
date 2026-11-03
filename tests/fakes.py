@@ -373,3 +373,10 @@ def make_gateway_app(script: GatewayScript) -> web.Application:
     app.router.add_get("/", gateway_ws)
     app.router.add_get("/gateway", gateway_ws)
     return app
+
+
+def instance_url_of_length(length: int) -> str:
+    """An https URL of exactly `length` characters, built from .invalid parts with every label under 64 characters."""
+    body = length - len("https://") - len(".invalid")
+    first = body // 2
+    return "https://" + "a" * first + "." + "a" * (body - first - 1) + ".invalid"

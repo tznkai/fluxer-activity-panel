@@ -15,6 +15,7 @@ LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 _ADMIN_ID = re.compile(r"[1-9][0-9]{0,24}")        # snowflake without leading zeros
 _POSITIVE_INT = re.compile(r"[1-9][0-9]{0,9}")
 _TOKEN = re.compile(r"[\x21-\x7e]{1,512}")          # printable ASCII, no spaces: it goes in a header
+INSTANCE_URL_MAX = 128   # longest FLUXER_INSTANCE_URL: a longer one pushes a card's Channels field past Fluxer's limit
 
 
 class ConfigError(ValueError):
@@ -82,6 +83,8 @@ class Config:
         if not _TOKEN.fullmatch(token):
             raise ConfigError("FLUXER_TOKEN must be printable ASCII without spaces")
         instance_url = _url(env, "FLUXER_INSTANCE_URL", ("http", "https"))
+        if instance_url is not None and len(instance_url) > INSTANCE_URL_MAX:
+            raise ConfigError(f"FLUXER_INSTANCE_URL must be at most {INSTANCE_URL_MAX} characters")
         api_url = _url(env, "FLUXER_API_URL", ("http", "https"))
         if instance_url is None and api_url is None:
             raise ConfigError("set FLUXER_INSTANCE_URL (or FLUXER_API_URL)")

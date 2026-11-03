@@ -18,6 +18,7 @@ from typing import get_type_hints
 import pytest
 
 from fluxer_panel import render, resolver, text
+from fluxer_panel.config import INSTANCE_URL_MAX
 from fluxer_panel.cards import Address, Card, Location, ManagerRef, ProbeRef, Voice
 from fluxer_panel.render import CHANNEL_LINK_RE, ZWJ, channel_link
 from fluxer_panel.resolver import CardStatus, StatusKind, next_action_text, resolve
@@ -25,8 +26,10 @@ from fluxer_panel.sources.base import PlayerCounts, PowerAction, ProbeDetails, P
 from fluxer_panel.sources.minecraft import JavaProbe
 from fluxer_panel.sources.pterodactyl import parse_schedules, select_next
 from tests.fake_probes import java_server
+from tests.fakes import instance_url_of_length
 
 INSTANCE = "https://fluxer.invalid"
+CAP_INSTANCE = instance_url_of_length(INSTANCE_URL_MAX)   # the longest instance URL the config accepts
 NOW = datetime(2026, 11, 2, 12, 0, tzinfo=UTC)
 SENTINEL_LOCATION = "SENTINEL-LOCATION-77"
 ALL_DETAILS = ("map", "version", "game_mode")
@@ -439,6 +442,7 @@ def test_maximum_length_card_stays_within_embed_limits(unit: str) -> None:
         first_time=repeated(unit, 1000),
         location=Location(repeated(unit, 200)),
         voice=Voice(guild_id="1001", channel_id="2001", channel_name=repeated(unit, 100), verified=True),
+        text_channels=tuple(_text("2" * 25, repeated(unit, 100)) for _ in range(3)),
         address=Address(host="mc.example.invalid", port=19132, public=True),
         show_details=ALL_DETAILS,
     )
@@ -448,8 +452,9 @@ def test_maximum_length_card_stays_within_embed_limits(unit: str) -> None:
             map=repeated(unit, 48), version=repeated(unit, 48), game_mode=repeated(unit, 48),
         ),
     )
-    embed = render.render_embed(card, status, "Restarts in 30 min", instance_url=INSTANCE)
+    embed = render.render_embed(card, status, "Restarts in 30 min", instance_url=CAP_INSTANCE)
     assert render.LIMITS["description"] == 1024
+    assert text.FIELD_CHANNELS in fields_of(embed)
     assert len(embed["title"]) <= 256
     assert len(embed["description"]) <= render.LIMITS["description"]
     assert embed["description"].endswith("…")
@@ -840,8 +845,7 @@ def test_outside_text_channel_name_is_neutralised_and_only_shown_when_verified()
     assert "Fluxer: #general" not in render.outside_text(unverified, None, None)
 
 
-def test_three_maximum_text_channels_fit_one_field_with_a_long_instance_url() -> None:
-    instance = "https://" + "a" * 120 + ".invalid"
+def test_three_maximum_text_channels_fit_one_field_at_the_instance_url_cap() -> None:
     card = make_card(text_channels=tuple(_text("2" * 25, repeated("<#", 100)) for _ in range(3)))
-    value = fields_of(render.render_embed(card, None, None, instance_url=instance))[text.FIELD_CHANNELS]
+    value = fields_of(render.render_embed(card, None, None, instance_url=CAP_INSTANCE))[text.FIELD_CHANNELS]
     assert len(value) <= 1024
