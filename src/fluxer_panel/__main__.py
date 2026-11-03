@@ -25,6 +25,7 @@ from fluxer_panel.card_commands import CardContext
 from fluxer_panel.config import Config, ConfigError
 from fluxer_panel.db import Database, DatabaseRefused
 from fluxer_panel.logs import log_event, setup_logging
+from fluxer_panel.poller import Poller
 from fluxer_panel.purge import purge_loop, run_purge
 from fluxer_panel.sources.registry import build_sources
 
@@ -64,12 +65,17 @@ async def run(config: Config, db: Database) -> None:
             rest = FluxerREST(session, api, config.token)
             sources = build_sources(session, config)
             card_ctx = CardContext(db=db, rest=rest, config=config, sources=sources)
-            bot = Bot(rest=rest, config=config, roles=RoleCache(rest), card_ctx=card_ctx)
+            # One lock registry for the commands and the poller, so an archive never interleaves with a post.
+            poller = Poller(db=db, rest=rest, sources=sources, config=config, locks=card_ctx.locks)
+            card_ctx.kick = poller.kick
+            bot = Bot(rest=rest, config=config, roles=RoleCache(rest), card_ctx=card_ctx,
+                      on_message_delete=poller.on_message_delete)
             gateway = Gateway(session, gateway_url, config.token, bot.on_dispatch, properties=IDENTIFY_PROPERTIES)
             gw_task = asyncio.create_task(gateway.run())
-            # Started only now: a stop that won discovery above never starts a purge. The loop purges at once,
-            # then every interval, and never ends by itself.
+            # Started only now: a stop that won discovery above never starts a purge or the poller. The purge loop
+            # purges at once, then every interval, and never ends by itself.
             purge_task = asyncio.create_task(purge_loop(db, config.purge_status_path, config.purge_interval_seconds))
+            poller_task = asyncio.create_task(poller.run())
             try:
                 done, _ = await asyncio.wait({gw_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
                 if gw_task in done:
@@ -80,16 +86,22 @@ async def run(config: Config, db: Database) -> None:
             finally:
                 # every exit (fatal gateway, stop, a failing stop, external cancel). The gateway task goes first, so
                 # the session never closes under a live reconnect. On a fatal exit it already finished, so cancel()
-                # is a no-op and awaiting it re-raises the same FatalGatewayError. A transaction already on the DB
-                # thread runs to commit or rollback; main's db.close() waits for it.
+                # is a no-op and awaiting it re-raises the same FatalGatewayError. The poller goes next, so no card
+                # write is in flight when the session closes. A transaction already on the DB thread runs to commit
+                # or rollback; main's db.close() waits for it.
                 try:
                     gw_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
                         await gw_task
                 finally:
-                    purge_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await purge_task
+                    try:
+                        poller_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await poller_task
+                    finally:
+                        purge_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await purge_task
     finally:
         stop_task.cancel()
 

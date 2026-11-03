@@ -26,6 +26,7 @@ from aiohttp import web
 
 import fluxer_panel.__main__ as panel_main
 from fluxer_client.gateway import FatalGatewayError
+from fluxer_panel import cards
 from fluxer_panel.__main__ import IDENTIFY_PROPERTIES, purge_once, run
 from fluxer_panel.config import Config
 from fluxer_panel.db import LATEST_VERSION, Database
@@ -36,12 +37,15 @@ from tests.fakes import (
     hold,
     make_gateway_app,
     make_rest_app,
+    message_delete,
     send,
 )
 
 TOKEN = "SENTINEL-TOKEN-7f3a9c"
 BOUND = 30  # seconds: generous for a cold interpreter, still a hard stop
 ADMIN_DEFAULT = "1001"
+GAMES_CHANNEL = "3001"
+GAMES_POSTS = f"/api/v1/channels/{GAMES_CHANNEL}/messages"
 
 
 def child_env(tmp_path: Path, **overrides: str | None) -> dict[str, str]:
@@ -104,22 +108,23 @@ async def test_sigterm_after_ready_exits_zero(aiohttp_server, tmp_path):
     rest = await aiohttp_server(make_rest_app(FakeFluxerState(gateway_url=gateway_url)))
     env = child_env(tmp_path, FLUXER_INSTANCE_URL=None,
                     FLUXER_API_URL=str(rest.make_url("/api")).rstrip("/"),
-                    FLUXER_GATEWAY_URL=gateway_url)
+                    FLUXER_GATEWAY_URL=gateway_url, GAMES_CHANNEL_ID=GAMES_CHANNEL)
 
     proc = await asyncio.create_subprocess_exec(
         sys.executable, "-m", "fluxer_panel", env=env, cwd=str(tmp_path),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
     seen: list[str] = []
+    started: set[str] = set()
     try:
         assert proc.stdout is not None
-        while True:
+        # ready and poller_started arrive in either order; both must be out before stopping
+        while not {"ready", "poller_started"} <= started:
             line = await asyncio.wait_for(proc.stdout.readline(), BOUND)
             if not line:
                 raise AssertionError(f"exited before ready: {seen}")
             seen.append(line.decode())
-            if json.loads(seen[-1]).get("event") == "ready":
-                break
+            started.add(json.loads(seen[-1]).get("event"))
         # the startup purge runs right after the gateway task starts: wait for its status before stopping
         await asyncio.wait_for(wait_for_ok_status(tmp_path / "data" / "purge-status.json"), BOUND)
         proc.send_signal(signal.SIGTERM)
@@ -134,8 +139,11 @@ async def test_sigterm_after_ready_exits_zero(aiohttp_server, tmp_path):
     assert ready == [{"ts": ready[0]["ts"], "level": "INFO", "logger": "fluxer_panel.bot",
                       "event": "ready", "user_id": "5000"}]
     assert proc.returncode == 0
-    assert "shutting_down" in [e["event"] for e in json_lines(out)]
-    assert "purge_done" in [e["event"] for e in json_lines(out)]
+    events = [e["event"] for e in json_lines(out)]
+    assert "shutting_down" in events
+    assert "purge_done" in events
+    assert "poller_started" in events
+    assert "poller_tick_failed" not in events
     assert TOKEN not in out
     assert TOKEN not in err.decode()
     assert "Traceback" not in err.decode()
@@ -145,6 +153,183 @@ async def test_sigterm_after_ready_exits_zero(aiohttp_server, tmp_path):
     assert gateway_state.errors == []
     [identify] = [f for f in gateway_state.connections[0] if f.get("op") == 2]
     assert identify["d"]["properties"] == IDENTIFY_PROPERTIES
+
+
+def _seed_live_card(conn: sqlite3.Connection) -> None:
+    card_id = cards.create_card(conn, slug="alpha", title="Alpha", author_id=ADMIN_DEFAULT, now=0)
+    cards.set_state(conn, card_id, "live", 0)
+
+
+def _stored_message_id(path: Path) -> str | None:
+    with contextlib.closing(sqlite3.connect(path)) as conn:
+        row = conn.execute("SELECT message_id FROM cards WHERE slug = 'alpha'").fetchone()
+    return None if row is None else row[0]
+
+
+async def test_a_live_card_is_posted_by_the_running_process_and_sigterm_exits_zero(aiohttp_server, tmp_path):
+    db_path = tmp_path / "data" / "panel.db"
+    db = Database.open(db_path)
+    try:
+        await db.run(_seed_live_card)
+    finally:
+        db.close()
+
+    async def gateway_script(ws, index, state):
+        await send(ws, 10, {"heartbeat_interval": 30000})
+        await expect(ws, 2)
+        await send(ws, 0, {"session_id": "S1", "user": {"id": "5000"}}, t="READY", s=1)
+        await hold(ws)
+
+    gateway_server = await aiohttp_server(make_gateway_app(gateway_script))
+    gateway_url = str(gateway_server.make_url("/gateway").with_scheme("ws"))
+    rest_state = FakeFluxerState(gateway_url=gateway_url)
+    rest = await aiohttp_server(make_rest_app(rest_state))
+    env = child_env(tmp_path, FLUXER_INSTANCE_URL=None,
+                    FLUXER_API_URL=str(rest.make_url("/api")).rstrip("/"),
+                    FLUXER_GATEWAY_URL=gateway_url, GAMES_CHANNEL_ID=GAMES_CHANNEL)
+
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, "-m", "fluxer_panel", env=env, cwd=str(tmp_path),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        async def posted_and_stored() -> dict[str, Any]:
+            while not _games_posts(rest_state):
+                await asyncio.sleep(0.05)
+            # The id is stored after the POST returns, so wait for the store before stopping the process.
+            while _stored_message_id(db_path) is None:
+                await asyncio.sleep(0.05)
+            return _games_posts(rest_state)[0].payload
+
+        payload = await asyncio.wait_for(posted_and_stored(), BOUND)
+        proc.send_signal(signal.SIGTERM)
+        out, err = await asyncio.wait_for(proc.communicate(), BOUND)
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+
+    assert payload["allowed_mentions"] == {"parse": []}
+    assert payload["embeds"][0]["title"] == "Alpha"
+    assert "content" not in payload
+    assert proc.returncode == 0
+    events = [e["event"] for e in json_lines(out.decode())]
+    assert "poller_started" in events
+    assert "shutting_down" in events
+    assert "poller_tick_failed" not in events
+    assert "Traceback" not in err.decode()
+    assert _stored_message_id(db_path) == "5001"
+
+
+def _seed_draft_card(conn: sqlite3.Connection) -> None:
+    cards.create_card(conn, slug="alpha", title="Alpha", author_id=ADMIN_DEFAULT, now=0)
+
+
+async def test_a_publish_by_direct_message_kicks_the_poller_before_the_poll_interval(aiohttp_server, tmp_path):
+    db_path = tmp_path / "data" / "panel.db"
+    db = Database.open(db_path)
+    try:
+        await db.run(_seed_draft_card)
+    finally:
+        db.close()
+
+    async def gateway_script(ws, index, state):
+        await send(ws, 10, {"heartbeat_interval": 30000})
+        await expect(ws, 2)
+        await send(ws, 0, {"session_id": "S1", "user": {"id": "5000"}}, t="READY", s=1)
+        await send(ws, 0, {"id": "8001", "channel_id": "9100", "author": {"id": ADMIN_DEFAULT, "bot": False},
+                           "content": "!card publish alpha"}, t="MESSAGE_CREATE", s=2)
+        await hold(ws)
+
+    gateway_server = await aiohttp_server(make_gateway_app(gateway_script))
+    gateway_url = str(gateway_server.make_url("/gateway").with_scheme("ws"))
+    rest_state = FakeFluxerState(gateway_url=gateway_url)
+    rest = await aiohttp_server(make_rest_app(rest_state))
+    # The poll interval is an hour: a post inside BOUND can only come from the kick that !card publish sends.
+    env = child_env(tmp_path, FLUXER_INSTANCE_URL=None,
+                    FLUXER_API_URL=str(rest.make_url("/api")).rstrip("/"),
+                    FLUXER_GATEWAY_URL=gateway_url, GAMES_CHANNEL_ID=GAMES_CHANNEL, POLL_INTERVAL_SECONDS="3600")
+
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, "-m", "fluxer_panel", env=env, cwd=str(tmp_path),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        async def posted_and_stored() -> None:
+            while not _games_posts(rest_state):
+                await asyncio.sleep(0.05)
+            while _stored_message_id(db_path) is None:
+                await asyncio.sleep(0.05)
+
+        await asyncio.wait_for(posted_and_stored(), BOUND)
+        proc.send_signal(signal.SIGTERM)
+        out, err = await asyncio.wait_for(proc.communicate(), BOUND)
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+
+    assert _games_posts(rest_state)[0].payload["embeds"][0]["title"] == "Alpha"
+    assert proc.returncode == 0
+    assert "poller_tick_failed" not in [e["event"] for e in json_lines(out.decode())]
+    assert "Traceback" not in err.decode()
+
+
+async def test_a_message_delete_in_the_running_process_reposts_the_card(aiohttp_server, tmp_path):
+    db_path = tmp_path / "data" / "panel.db"
+    db = Database.open(db_path)
+    try:
+        await db.run(_seed_live_card)
+    finally:
+        db.close()
+    rest_state = FakeFluxerState()
+
+    async def gateway_script(ws, index, state):
+        await send(ws, 10, {"heartbeat_interval": 30000})
+        await expect(ws, 2)
+        await send(ws, 0, {"session_id": "S1", "user": {"id": "5000"}}, t="READY", s=1)
+        # Delete only once the id is stored, so the compare-and-clear sees the message the poller posted.
+        while not _games_posts(rest_state) or _stored_message_id(db_path) is None:
+            await asyncio.sleep(0.05)
+        await send(ws, 0, message_delete("5001", GAMES_CHANNEL), t="MESSAGE_DELETE", s=2)
+        await hold(ws)
+
+    gateway_server = await aiohttp_server(make_gateway_app(gateway_script))
+    gateway_url = str(gateway_server.make_url("/gateway").with_scheme("ws"))
+    rest_state.gateway_url = gateway_url
+    rest = await aiohttp_server(make_rest_app(rest_state))
+    # The poll interval is an hour: the second post can only come from the kick that MESSAGE_DELETE sends.
+    env = child_env(tmp_path, FLUXER_INSTANCE_URL=None,
+                    FLUXER_API_URL=str(rest.make_url("/api")).rstrip("/"),
+                    FLUXER_GATEWAY_URL=gateway_url, GAMES_CHANNEL_ID=GAMES_CHANNEL, POLL_INTERVAL_SECONDS="3600")
+
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, "-m", "fluxer_panel", env=env, cwd=str(tmp_path),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        async def reposted() -> None:
+            while len(_games_posts(rest_state)) < 2:
+                await asyncio.sleep(0.05)
+            while _stored_message_id(db_path) != "5002":
+                await asyncio.sleep(0.05)
+
+        await asyncio.wait_for(reposted(), BOUND)
+        proc.send_signal(signal.SIGTERM)
+        out, err = await asyncio.wait_for(proc.communicate(), BOUND)
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+
+    assert len(_games_posts(rest_state)) == 2
+    assert proc.returncode == 0
+    assert "poller_tick_failed" not in [e["event"] for e in json_lines(out.decode())]
+    assert "Traceback" not in err.decode()
+
+
+def _games_posts(state: FakeFluxerState) -> list[Any]:
+    return [r for r in state.requests if r.method == "POST" and r.path == GAMES_POSTS]
 
 
 @pytest.mark.parametrize(("name", "overrides"), [
@@ -360,6 +545,73 @@ async def test_purge_task_is_cancelled_when_the_gateway_fails_fatally(aiohttp_se
         db.close()
     assert probe.started.is_set()
     assert probe.cancelled
+
+
+class _PollerProbe:
+    """Stands in for Poller: records that run started and whether it was cancelled."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.cancelled = False
+
+
+def _probe_poller(monkeypatch: pytest.MonkeyPatch) -> _PollerProbe:
+    probe = _PollerProbe()
+
+    class ProbePoller:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        def kick(self) -> None:
+            pass
+
+        async def on_message_delete(self, event: Any) -> None:
+            pass
+
+        async def run(self) -> None:
+            probe.started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                probe.cancelled = True
+                raise
+
+    monkeypatch.setattr(panel_main, "Poller", ProbePoller)
+    return probe
+
+
+async def test_poller_task_is_cancelled_when_the_gateway_fails_fatally(aiohttp_server, tmp_path, monkeypatch):
+    probe = _probe_poller(monkeypatch)
+
+    async def gateway_script(ws, index, state):
+        await send(ws, 10, {"heartbeat_interval": 30000})
+        await expect(ws, 2)
+        await ws.close(code=4004)
+
+    config, db = await _in_process_panel(aiohttp_server, tmp_path, gateway_script)
+    try:
+        with pytest.raises(FatalGatewayError):
+            await run(config, db)
+    finally:
+        db.close()
+    assert probe.started.is_set()
+    assert probe.cancelled
+
+
+async def test_poller_task_is_cancelled_when_run_is_cancelled_from_outside(
+        aiohttp_server, tmp_path, monkeypatch):
+    probe = _probe_poller(monkeypatch)
+    config, db = await _in_process_panel(aiohttp_server, tmp_path, _ready_gateway_script)
+    try:
+        task = asyncio.create_task(run(config, db))
+        await asyncio.wait_for(probe.started.wait(), BOUND)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, BOUND)
+    finally:
+        db.close()
+    assert probe.cancelled
+    assert _pending_gateway_tasks() == []
 
 
 def _pending_gateway_tasks() -> list[asyncio.Task]:
