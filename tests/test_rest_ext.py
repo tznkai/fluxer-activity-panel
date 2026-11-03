@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 
 import aiohttp
@@ -348,8 +349,9 @@ async def test_get_guild_403_and_500_surface_their_status(fake, session):
 @pytest.mark.parametrize("path, call", [
     ("GET /api/v1/channels/3001", lambda r: r.get_channel("3001")),
     ("GET /api/v1/guilds/2001", lambda r: r.get_guild("2001")),
+    ("GET /api/v1/channels/3001/messages/5001", lambda r: r.get_message("3001", "5001")),
 ])
-async def test_get_channel_and_guild_non_object_body_raises_shape_error(fake, session, path, call):
+async def test_get_reads_non_object_body_raises_shape_error(fake, session, path, call):
     state, base = fake
     state.overrides[path] = Override(200, b"[]")
     with pytest.raises(FluxerHTTPError, match="unexpected response shape") as info:
@@ -406,3 +408,96 @@ async def test_add_reaction_retries_429_with_same_encoding(fake, session):
     assert len(state.requests) == 2
     assert [rec.status for rec in state.requests] == [429, 204]
     assert all(THUMB in rec.raw_path for rec in state.requests)
+
+
+# Phase 2 review: the fake changes stored state only when the request succeeds. An injected
+# failure (an override or a rate_limit count) must leave the stored messages as a real server would.
+
+
+async def test_delete_with_500_override_keeps_message_readable(fake, session):
+    state, base = fake
+    rest = make_rest(session, base)
+    mid = (await rest.send_message("1", content="x"))["id"]
+    state.overrides[f"DELETE /api/v1/channels/1/messages/{mid}"] = Override(
+        500, b'{"code":"INTERNAL","message":"x"}'
+    )
+    with pytest.raises(FluxerHTTPError) as info:
+        await rest.delete_message("1", mid)
+    assert info.value.status == 500
+    assert await rest.get_message("1", mid) == {"id": mid, "channel_id": "1", "content": "x"}
+
+
+async def test_patch_with_500_override_leaves_stored_message_unchanged(fake, session):
+    state, base = fake
+    rest = make_rest(session, base)
+    mid = (await rest.send_message("1", content="original"))["id"]
+    state.overrides[f"PATCH /api/v1/channels/1/messages/{mid}"] = Override(
+        500, b'{"code":"INTERNAL","message":"x"}'
+    )
+    with pytest.raises(FluxerHTTPError) as info:
+        await rest.edit_message("1", mid, content="changed")
+    assert info.value.status == 500
+    assert await rest.get_message("1", mid) == {"id": mid, "channel_id": "1", "content": "original"}
+
+
+async def test_post_with_500_override_stores_nothing_and_keeps_the_id(fake, session):
+    state, base = fake
+    rest = make_rest(session, base)
+    state.overrides["POST /api/v1/channels/1/messages"] = Override(500, b'{"code":"INTERNAL","message":"x"}')
+    with pytest.raises(FluxerHTTPError) as info:
+        await rest.send_message("1", content="x")
+    assert info.value.status == 500
+    assert state.messages == {}
+    del state.overrides["POST /api/v1/channels/1/messages"]
+    sent = await rest.send_message("1", content="y")
+    assert sent["id"] == "5001"
+    assert state.messages == {("1", "5001"): {"content": "y"}}
+
+
+async def test_rate_limited_post_then_retry_stores_exactly_one_message(fake, session):
+    state, base = fake
+    state.rate_limit["POST /api/v1/channels/1/messages"] = 1
+    sleeps: list[float] = []
+    sent = await make_rest(session, base, sleeps=sleeps).send_message("1", content="x")
+    assert [rec.status for rec in state.requests] == [429, 200]
+    assert len(sleeps) == 1
+    assert state.messages == {("1", sent["id"]): {"content": "x"}}
+    assert state.next_message_id == 5002
+
+
+# Minor 3: a PATCH to a never-created id echoes but does not create the message.
+
+
+async def test_patch_to_never_created_message_echoes_without_creating_it(fake, session):
+    state, base = fake
+    rest = make_rest(session, base)
+    assert await rest.edit_message("1", "9999", content="x") == {"id": "9999", "content": "x"}
+    assert state.messages == {}
+    with pytest.raises(FluxerHTTPError) as got:
+        await rest.get_message("1", "9999")
+    assert got.value.status == 404
+    with pytest.raises(FluxerHTTPError) as gone:
+        await rest.delete_message("1", "9999")
+    assert gone.value.status == 404
+
+
+# Minor 1: behaviour Phase 5 and Phase 6 rely on.
+
+
+async def test_edit_after_delete_raises_404_unknown_message(fake, session):
+    _, base = fake
+    rest = make_rest(session, base)
+    mid = (await rest.send_message("1", content="x"))["id"]
+    await rest.delete_message("1", mid)
+    with pytest.raises(FluxerHTTPError) as info:
+        await rest.edit_message("1", mid, content="y")
+    assert info.value.status == 404
+    assert info.value.code == "UNKNOWN_MESSAGE"
+
+
+async def test_delay_entry_makes_call_time_out(fake, session):
+    state, base = fake
+    state.delays["PATCH /api/v1/channels/1/messages/2"] = 0.5
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.02):
+            await make_rest(session, base).edit_message("1", "2", content="x")

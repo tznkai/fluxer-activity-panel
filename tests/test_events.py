@@ -473,7 +473,6 @@ def test_observed_dm_message_create_has_no_guild_member_or_bot_key() -> None:
     )
 
 
-
 # MESSAGE_DELETE: only id, channel_id and guild_id are read
 
 

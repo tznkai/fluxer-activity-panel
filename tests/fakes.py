@@ -94,7 +94,10 @@ def _send(
     *,
     payload: Any = None,
     files: list[tuple[str, bytes]] | None = None,
+    commit: Callable[[], None] | None = None,
 ) -> web.Response:
+    """Answer one request. `commit` applies the request's state change and runs only when the request
+    succeeds: an override or a rate_limit count answers instead, and the stored state stays as it was."""
     key = f"{request.method} {request.path}"
     override = state.overrides.get(key)
     if override is not None:
@@ -109,6 +112,8 @@ def _send(
         state.rate_limit[key] -= 1
         state.requests.append(_record(request, 429, payload, files))
         return web.json_response(RATE_LIMIT_BODY, status=429)
+    if commit is not None:
+        commit()
     state.requests.append(_record(request, status, payload, files))
     if status == 204:
         return web.Response(status=204)
@@ -161,9 +166,13 @@ def make_rest_app(state: FakeFluxerState) -> web.Application:
             return _send(state, request, 429, RATE_LIMIT_BODY, payload=payload, files=files)
         cid = request.match_info["cid"]
         mid = str(state.next_message_id)
-        state.next_message_id += 1
-        state.messages[(cid, mid)] = payload
-        return _send(state, request, 200, {"id": mid, "channel_id": cid}, payload=payload, files=files)
+
+        def commit() -> None:
+            state.next_message_id += 1
+            state.messages[(cid, mid)] = payload
+
+        return _send(state, request, 200, {"id": mid, "channel_id": cid}, payload=payload, files=files,
+                     commit=commit)
 
     async def channel(request: web.Request) -> web.Response:
         cid = request.match_info["cid"]
@@ -203,8 +212,12 @@ def make_rest_app(state: FakeFluxerState) -> web.Application:
         if key in state.deleted:
             return _send(state, request, 404, {"code": "UNKNOWN_MESSAGE", "message": "Unknown Message"},
                          payload=payload)
-        state.messages[key] = {**state.messages.get(key, {}), **payload}
-        return _send(state, request, 200, {"id": mid, **payload}, payload=payload)
+        def commit() -> None:
+            # Only messages the fake created are updated; an unknown id echoes without being stored.
+            if key in state.messages:
+                state.messages[key] = {**state.messages[key], **payload}
+
+        return _send(state, request, 200, {"id": mid, **payload}, payload=payload, commit=commit)
 
     async def get_message(request: web.Request) -> web.Response:
         key = _key(request)
@@ -217,8 +230,7 @@ def make_rest_app(state: FakeFluxerState) -> web.Application:
         key = _key(request)
         if key not in state.messages or key in state.deleted:
             return _send(state, request, 404, {"code": "UNKNOWN_MESSAGE", "message": "Unknown Message"})
-        state.deleted.add(key)
-        return _send(state, request, 204, None)
+        return _send(state, request, 204, None, commit=lambda: state.deleted.add(key))
 
     async def role(request: web.Request) -> web.Response:
         return _send(state, request, 204, None)
