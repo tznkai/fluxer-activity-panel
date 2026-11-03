@@ -259,8 +259,8 @@ async def test_bad_snowflake_raises_before_any_request(fake, session, label, cal
     assert state.requests == []
 
 
-# Phase 2 (AC5.1): allowed_mentions on send and edit. Every card send and edit carries an
-# empty parse list, so Phase 6 can rely on it. It is never counted as content.
+# AC5.1: allowed_mentions on send and edit. Every card send and edit carries an empty parse list.
+# It is never counted as content.
 
 ALLOWED_NONE = {"parse": []}
 
@@ -309,7 +309,7 @@ async def test_edit_message_allowed_mentions_alone_raises_without_request(fake, 
     assert state.requests == []
 
 
-# Phase 2: channel, guild and message reads and message delete
+# Channel, guild and message reads and message delete
 
 
 async def test_get_channel_and_get_guild_return_seeded_objects(fake, session):
