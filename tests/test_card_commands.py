@@ -263,6 +263,7 @@ async def test_set_voice_with_two_ids_stores_the_verified_channel(world: World) 
 
     assert (await world.card("mc")).voice == Voice("1001", "2001", "lobby", True)
     assert world.last_reply() == text.CHANNEL_VERIFIED
+    assert world.last_reply() == "Channel saved and checked."
     assert world.kicks == [1]
 
 
@@ -515,17 +516,21 @@ async def test_transient_failure_on_a_text_channel_refuses_with_retry_and_stores
     assert world.kicks == []
 
 
-async def test_clear_text_channel_removes_only_its_slot(world: World) -> None:
-    seed_text(world.state)
+@pytest.mark.parametrize("cleared", [1, 2, 3])
+async def test_clear_text_channel_removes_only_the_slot_named(world: World, cleared: int) -> None:
+    channels = {1: "2002", 2: "2003", 3: "2004"}
     await make_mc(world)
-    await world.run("!card set mc text_channel1 1001 2002")
-    await world.run("!card set mc text_channel2 1001 2002")
+    for slot, channel in channels.items():
+        seed_text(world.state, name=f"room{slot}", channel=channel)
+        await world.run(f"!card set mc text_channel{slot} 1001 {channel}")
     world.kicks.clear()
-    await world.run("!card clear mc text_channel1")
+    await world.run(f"!card clear mc text_channel{cleared}")
 
     card = await world.card("mc")
     assert card is not None
-    assert card.text_channels == (None, Voice("1001", "2002", "general", True), None)
+    expected = [Voice("1001", channel, f"room{slot}", True) for slot, channel in channels.items()]
+    expected[cleared - 1] = None
+    assert card.text_channels == tuple(expected)
     assert world.last_reply() == text.CARD_CLEARED
     assert world.kicks == [1]
 
