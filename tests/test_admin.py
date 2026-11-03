@@ -11,7 +11,7 @@ import pytest
 
 from fluxer_client.events import MessageCreate
 from fluxer_client.rest import FluxerREST
-from fluxer_panel.admin import authorize, handle, parse_command
+from fluxer_panel.admin import authorize, handle, parse_command, parse_head
 from fluxer_panel.config import Config
 from tests.fakes import FakeFluxerState, make_rest_app
 
@@ -149,3 +149,24 @@ async def test_non_command_dm_is_silent(fake, session, caplog) -> None:
     await handle(make_message("hello"), make_config(), make_rest(session, base))
     assert state.requests == []
     assert admin_records(caplog) == []
+
+
+# --- parse_head and the !card head -----------------------------------------------------
+
+@pytest.mark.parametrize(("content", "expected"), [
+    ("!card list", ("card", "list")),
+    ("  !card   set mc title  Hi ", ("card", "set mc title  Hi")),
+    ("!card", ("card", "")),
+    ("!admin ping", ("admin", "ping")),
+    ("!cards list", None),
+    ("!card\nlist", None),
+    ("hello", None),
+])
+def test_parse_head(content: str, expected: tuple[str, str] | None) -> None:
+    assert parse_head(content, "!") == expected
+
+
+async def test_card_head_without_a_card_context_is_ignored(fake, session) -> None:
+    state, base = fake
+    await handle(make_message("!card list"), make_config(), make_rest(session, base))
+    assert state.requests == []

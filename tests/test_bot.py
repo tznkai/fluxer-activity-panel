@@ -363,3 +363,22 @@ async def test_invalid_session_reidentifies_then_answers_admin_dm(aiohttp_server
     assert [f["op"] for f in gw_state.connections[1][:2]] == [6, 2]
     assert gw_state.errors == []
     assert rest_state.requests_to(DM_MESSAGES)[0].payload == {"content": "pong"}
+
+
+
+async def test_dm_card_command_is_routed_to_the_card_context(fake, session, monkeypatch) -> None:
+    import fluxer_panel.card_commands as card_commands
+
+    state, base = fake
+    rest = make_rest(session, base)
+    card_ctx = object()
+    seen: list[tuple[str, object]] = []
+
+    async def record(args: str, event: object, ctx: object) -> None:
+        seen.append((args, ctx))
+
+    monkeypatch.setattr(card_commands, "handle", record)
+    bot = Bot(rest=rest, config=make_config("1001"), roles=RoleCache(rest), card_ctx=card_ctx)  # type: ignore[arg-type]
+    await bot.on_dispatch("READY", READY)
+    await bot.on_dispatch("MESSAGE_CREATE", dm_message("!card list"))
+    assert seen == [("list", card_ctx)]

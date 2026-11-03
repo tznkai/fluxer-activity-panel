@@ -17,10 +17,10 @@ Paths are relative to this directory.
 - `src/fluxer_client/rest.py:102` `self._headers = {"Authorization": f"Bot {token}"}` — the only place REST sends the token. It goes in a header, never in a URL or a log line.
 - `src/fluxer_client/gateway.py:135` `"token": self.token, "session_id"` — the resume frame (op 6) carries the token.
 - `src/fluxer_client/gateway.py:173` `"token": self.token,` — the identify frame (op 2) carries the token.
-- `src/fluxer_panel/__main__.py:108` `print(f"Configuration error: {exc}"` — one of the two panel prints (the other is the usage line below). It writes to stderr a configuration message, which names variables and never values.
-- `src/fluxer_panel/__main__.py:103` `print(USAGE, file=sys.stderr)` — the second panel print, for a bad command line. It writes the fixed `USAGE` text to stderr, which names no values.
-- `src/fluxer_panel/__main__.py:110` `setup_logging(config.log_level, [s for s in (config.token, config.pterodactyl_api_key) if s])` — the token and the Pterodactyl key are handed to the redaction filter before anything can log.
-- `src/fluxer_panel/__main__.py:125` `last resort: log (redacted) and exit 1` — the last-resort catch-all logs through the redacting handler and returns 1. No raw traceback reaches stderr.
+- `src/fluxer_panel/__main__.py:112` `print(f"Configuration error: {exc}"` — one of the two panel prints (the other is the usage line below). It writes to stderr a configuration message, which names variables and never values.
+- `src/fluxer_panel/__main__.py:107` `print(USAGE, file=sys.stderr)` — the second panel print, for a bad command line. It writes the fixed `USAGE` text to stderr, which names no values.
+- `src/fluxer_panel/__main__.py:114` `setup_logging(config.log_level, [s for s in (config.token, config.pterodactyl_api_key) if s])` — the token and the Pterodactyl key are handed to the redaction filter before anything can log.
+- `src/fluxer_panel/__main__.py:129` `last resort: log (redacted) and exit 1` — the last-resort catch-all logs through the redacting handler and returns 1. No raw traceback reaches stderr.
 
 ## Logging
 
@@ -42,14 +42,14 @@ Paths are relative to this directory.
 
 ## Admin authorization
 
-- `src/fluxer_panel/admin.py:19` `def authorize(` — the single authorization check. Four conditions follow.
-- `src/fluxer_panel/admin.py:22` `event.guild_id is None` — admin commands work in DMs only. A command in a guild channel is refused.
-- `src/fluxer_panel/admin.py:23` `not event.author_is_bot` — bot authors are refused.
-- `src/fluxer_panel/admin.py:24` `is_snowflake(event.author_id)` — the author id must be a valid snowflake before it is compared.
-- `src/fluxer_panel/admin.py:25` `event.author_id in config.admin_user_ids` — exact membership in the configured admin list.
-- `src/fluxer_panel/admin.py:43` `if not authorize(event, config):` — every admin subcommand passes through this check in `handle`.
-- `src/fluxer_panel/admin.py:44` `log_event(log, "admin_denied"` — a refusal is logged with the user and channel ids only.
-- `src/fluxer_panel/bot.py:47` `if msg.author_is_bot or msg.author_id == self.user_id:` — the bot ignores its own messages and other bots' messages before routing. This prevents loops.
+- `src/fluxer_panel/admin.py:22` `def authorize(` — the single authorization check. Four conditions follow.
+- `src/fluxer_panel/admin.py:25` `event.guild_id is None` — admin commands work in DMs only. A command in a guild channel is refused.
+- `src/fluxer_panel/admin.py:26` `not event.author_is_bot` — bot authors are refused.
+- `src/fluxer_panel/admin.py:27` `is_snowflake(event.author_id)` — the author id must be a valid snowflake before it is compared.
+- `src/fluxer_panel/admin.py:28` `event.author_id in config.admin_user_ids` — exact membership in the configured admin list.
+- `src/fluxer_panel/admin.py:56` `if not authorize(event, config):` — every admin subcommand passes through this check in `handle`.
+- `src/fluxer_panel/admin.py:57` `log_event(log, "admin_denied"` — a refusal is logged with the user and channel ids only.
+- `src/fluxer_panel/bot.py:50` `if msg.author_is_bot or msg.author_id == self.user_id:` — the bot ignores its own messages and other bots' messages before routing. This prevents loops.
 
 ## Role assignment
 
@@ -80,9 +80,9 @@ No code in `src/fluxer_panel` calls `add_member_role` or `remove_member_role` in
 - `src/fluxer_panel/purge.py:64` `def write_status(` — the status file is written atomically and holds only timestamps and counts.
 - `src/fluxer_panel/purge.py:80` `await db.checkpoint()` — a WAL checkpoint after each run. A checkpoint failure after the commit is reported as `ok: false`, though the rows may already be gone.
 - `src/fluxer_panel/purge.py:107` `log.exception("purge_loop_error")` — the per-iteration catch-all. A failing iteration is logged, and the loop goes on.
-- `src/fluxer_panel/__main__.py:68` `purge_task = asyncio.create_task(purge_loop(` — the purge task starts only once the gateway task exists, so a stop that wins discovery never starts a purge.
-- `src/fluxer_panel/__main__.py:82` `gw_task.cancel()` — `run()`'s finally cancels the gateway task first, so the session never closes under a live reconnect.
-- `src/fluxer_panel/__main__.py:86` `purge_task.cancel()` — the purge task is cancelled and awaited on every exit, after the gateway task.
+- `src/fluxer_panel/__main__.py:72` `purge_task = asyncio.create_task(purge_loop(` — the purge task starts only once the gateway task exists, so a stop that wins discovery never starts a purge.
+- `src/fluxer_panel/__main__.py:86` `gw_task.cancel()` — `run()`'s finally cancels the gateway task first, so the session never closes under a live reconnect.
+- `src/fluxer_panel/__main__.py:90` `purge_task.cancel()` — the purge task is cancelled and awaited on every exit, after the gateway task.
 - `src/fluxer_panel/migrations/0001_init.sql:53` `REFERENCES cards(id) ON DELETE RESTRICT` — a card that still has sessions cannot be deleted.
 - `src/fluxer_panel/migrations/0001_init.sql:69` `REFERENCES sessions(id) ON DELETE CASCADE` — RSVPs are removed with their session.
 

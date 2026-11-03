@@ -12,6 +12,7 @@ from fluxer_client import events
 from fluxer_client.rest import FluxerREST
 from fluxer_client.roles import RoleCache
 from fluxer_panel import admin
+from fluxer_panel.card_commands import CardContext
 from fluxer_panel.config import Config
 from fluxer_panel.logs import log_event
 
@@ -26,11 +27,13 @@ class Bot:
         config: Config,
         roles: RoleCache,
         on_message_delete: Callable[[events.MessageDelete], Awaitable[None]] | None = None,
+        card_ctx: CardContext | None = None,
     ) -> None:
         self.rest = rest
         self.config = config
         self.roles = roles
         self.on_message_delete = on_message_delete
+        self.card_ctx = card_ctx
         self.user_id: str | None = None
 
     async def on_dispatch(self, t: str, d: dict[str, Any]) -> None:
@@ -47,7 +50,7 @@ class Bot:
                 if msg.author_is_bot or msg.author_id == self.user_id:
                     return
                 if msg.guild_id is None:
-                    await admin.handle(msg, self.config, self.rest)
+                    await admin.handle(msg, self.config, self.rest, self.card_ctx)
                 # guild messages: nothing in phase 1
             case events.ReactionAdd() | events.ReactionRemove() as r:
                 log_event(log, "reaction", event_type=t, user_id=r.user_id, channel_id=r.channel_id,

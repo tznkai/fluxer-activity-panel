@@ -21,10 +21,12 @@ from fluxer_client.gateway import FatalGatewayError, Gateway
 from fluxer_client.rest import FluxerREST, resolve_endpoints
 from fluxer_client.roles import RoleCache
 from fluxer_panel.bot import Bot
+from fluxer_panel.card_commands import CardContext
 from fluxer_panel.config import Config, ConfigError
 from fluxer_panel.db import Database, DatabaseRefused
 from fluxer_panel.logs import log_event, setup_logging
 from fluxer_panel.purge import purge_loop, run_purge
+from fluxer_panel.sources.registry import build_sources
 
 log = logging.getLogger("fluxer_panel")
 
@@ -60,7 +62,9 @@ async def run(config: Config, db: Database) -> None:
             api, gateway_url = resolve_task.result()      # re-raises a discovery error
             log_event(log, "endpoints_resolved")             # URLs are instance details: not logged
             rest = FluxerREST(session, api, config.token)
-            bot = Bot(rest=rest, config=config, roles=RoleCache(rest))
+            sources = build_sources(session, config)
+            card_ctx = CardContext(db=db, rest=rest, config=config, sources=sources)
+            bot = Bot(rest=rest, config=config, roles=RoleCache(rest), card_ctx=card_ctx)
             gateway = Gateway(session, gateway_url, config.token, bot.on_dispatch, properties=IDENTIFY_PROPERTIES)
             gw_task = asyncio.create_task(gateway.run())
             # Started only now: a stop that won discovery above never starts a purge. The loop purges at once,
