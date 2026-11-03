@@ -115,8 +115,9 @@ class Poller:
         await asyncio.gather(*(self._guarded(card, sem) for card in live))
 
     def _forget_cards_not_in(self, live_ids: set[int]) -> None:
-        """Drops the cached schedule and voice check of a card that is no longer live, so a republished card fetches
-        them again rather than reusing a cache from before it was archived."""
+        """Drops the cached schedule and voice check of every card not in `live_ids`, the live set of this tick. A card
+        republished after such a tick fetches them again. A card republished before any tick saw it as non-live keeps
+        its cache. A manager change is handled by the ManagerRef comparison in `_next_action`, not by this drop."""
         for entries in (self._schedules, self._voice_checked):
             for card_id in [card_id for card_id in entries if card_id not in live_ids]:
                 del entries[card_id]
