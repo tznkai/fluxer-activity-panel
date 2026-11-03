@@ -987,6 +987,8 @@ async def test_a_voice_cleared_during_a_name_refresh_stays_cleared(world: World,
     await tick
 
     assert (await load(db, card_id)).voice is None
+    [sent] = posts(world.fluxer)
+    assert text.FIELD_VOICE not in fields_of(sent.payload["embeds"][0])
     assert_card_writes_safe(world.fluxer)
 
 
@@ -1001,6 +1003,8 @@ async def test_a_voice_set_during_a_name_refresh_stays_set(world: World, poller:
     await tick
 
     assert (await load(db, card_id)).voice == admin_choice
+    [sent] = posts(world.fluxer)
+    assert "#Admin" in fields_of(sent.payload["embeds"][0])[text.FIELD_VOICE]
     assert_card_writes_safe(world.fluxer)
 
 

@@ -180,10 +180,9 @@ class Poller:
         if channel.get("type") != VOICE_CHANNEL_TYPE or str(channel.get("guild_id")) != voice.guild_id:
             return card
         # Only the name is written, and only while the voice still matches the one read: an admin's clear or set
-        # that landed during the channel lookup stands, and the card is then rendered as it was read.
-        changed = await self._db.run(lambda c: cards.set_voice_name_if(c, card.id, voice, name))
-        if not changed:
-            return card
+        # that landed during the channel lookup stands. The card is reloaded either way, so this tick renders
+        # what the store holds now, not the voice as it was read.
+        await self._db.run(lambda c: cards.set_voice_name_if(c, card.id, voice, name))
         return await self._db.run(lambda c: cards.get_by_id(c, card.id)) or card
 
     async def _manager_state(self, card_id: int, ref: cards.ManagerRef,
