@@ -19,13 +19,24 @@ from typing import Any
 import aiohttp
 import pytest
 
+from fluxer_client.events import MessageDelete
 from fluxer_client.gateway import Gateway
 from fluxer_client.rest import FluxerREST
 from fluxer_client.roles import RoleCache
 from fluxer_panel.bot import Bot
 from fluxer_panel.config import Config
 from fluxer_panel.logs import setup_logging
-from tests.fakes import GATEWAY_STATE, FakeFluxerState, Override, expect, hold, make_gateway_app, make_rest_app, send
+from tests.fakes import (
+    GATEWAY_STATE,
+    FakeFluxerState,
+    Override,
+    expect,
+    hold,
+    make_gateway_app,
+    make_rest_app,
+    message_delete,
+    send,
+)
 
 TOKEN = "SENTINEL-TOKEN-7f3a9c"
 CONTENT = "SENTINEL-CONTENT-b41e"
@@ -51,8 +62,8 @@ def make_rest(session: aiohttp.ClientSession, base: str) -> FluxerREST:
     return FluxerREST(session, f"{base}/api", TOKEN)
 
 
-def make_bot(rest: FluxerREST, admins: str = "1001") -> Bot:
-    return Bot(rest=rest, config=make_config(admins), roles=RoleCache(rest))
+def make_bot(rest: FluxerREST, admins: str = "1001", on_message_delete=None) -> Bot:
+    return Bot(rest=rest, config=make_config(admins), roles=RoleCache(rest), on_message_delete=on_message_delete)
 
 
 def dm_message(content: str, author: str = "1001", *, bot: bool = False) -> dict[str, Any]:
@@ -256,6 +267,40 @@ async def test_rest_error_in_gateway_dispatch_logs_redacted_traceback(captured, 
     assert_clean(text)
     [failed] = [json.loads(line) for line in text.splitlines() if "dispatch handler failed" in line]
     assert "FluxerHTTPError" in failed["exc"]
+
+
+# --- AC6.6 (parsing and routing): MESSAGE_DELETE reaches the hook, and no hook is harmless ---
+
+async def test_message_delete_from_gateway_reaches_hook_once(aiohttp_server, fake, session) -> None:
+    rest_state, base = fake
+    seen: list[MessageDelete] = []
+
+    async def hook(deleted: MessageDelete) -> None:
+        seen.append(deleted)
+
+    async def script(ws, index, state):
+        await send(ws, 10, HELLO)
+        await expect(ws, 2)
+        await send(ws, 0, READY, t="READY", s=1)
+        await send(ws, 0, message_delete("8001", "3001", "2001"), t="MESSAGE_DELETE", s=2)
+        await hold(ws)
+
+    gw_app = make_gateway_app(script)
+    gw_state = gw_app[GATEWAY_STATE]
+    gw_server = await aiohttp_server(gw_app)
+    bot = make_bot(make_rest(session, base), on_message_delete=hook)
+    gateway = make_gateway(session, gw_server, bot.on_dispatch)
+    async with running(gateway):
+        await until(lambda: len(seen) == 1, gw_state)
+    assert seen == [MessageDelete("8001", "3001", "2001")]
+    assert rest_state.requests == []
+
+
+async def test_message_delete_without_hook_is_ignored(fake, session) -> None:
+    state, base = fake
+    bot = make_bot(make_rest(session, base))
+    await bot.on_dispatch("MESSAGE_DELETE", {"id": "8001", "channel_id": "3001", "guild_id": "2001"})
+    assert state.requests == []
 
 
 # --- AC3.3 at bot level: the gateway resumes or re-identifies, the process keeps running ---

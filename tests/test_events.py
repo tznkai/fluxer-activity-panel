@@ -13,6 +13,7 @@ from fluxer_client.events import (
     Emoji,
     GuildRolesChanged,
     MessageCreate,
+    MessageDelete,
     Ready,
     ReactionAdd,
     ReactionRemove,
@@ -471,3 +472,33 @@ def test_observed_dm_message_create_has_no_guild_member_or_bot_key() -> None:
         content="reply 1",
     )
 
+
+
+# MESSAGE_DELETE: only id, channel_id and guild_id are read
+
+
+def test_message_delete_with_guild_gives_ids() -> None:
+    assert parse("MESSAGE_DELETE", {"id": "3001", "channel_id": "2001", "guild_id": "1001"}) == \
+        MessageDelete("3001", "2001", "1001")
+
+
+def test_message_delete_without_guild_has_no_guild() -> None:
+    event = parse("MESSAGE_DELETE", {"id": "3001", "channel_id": "2001"})
+    assert event == MessageDelete("3001", "2001", None)
+    assert event.guild_id is None
+
+
+def test_message_delete_ignores_content_and_author() -> None:
+    event = parse("MESSAGE_DELETE", {
+        "id": "3001", "channel_id": "2001", "guild_id": "1001",
+        "content": "SENTINEL-CONTENT", "author_id": "1002",
+    })
+    assert event == MessageDelete("3001", "2001", "1001")
+    assert "SENTINEL" not in repr(event)
+
+
+def test_message_delete_bad_id_names_field_not_value(caplog) -> None:
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        assert parse("MESSAGE_DELETE", {"id": "x", "channel_id": "2001"}) is None
+    [record] = warnings_for(caplog)
+    assert record.getMessage() == "malformed MESSAGE_DELETE payload: field id"

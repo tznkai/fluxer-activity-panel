@@ -82,8 +82,15 @@ class GuildRolesChanged:
     guild_id: str
 
 
+@dataclass(frozen=True)
+class MessageDelete:
+    message_id: str
+    channel_id: str
+    guild_id: str | None
+
+
 Event = (Ready | Resumed | MessageCreate | ReactionAdd | ReactionRemove | ReactionRemoveAll
-         | ReactionRemoveEmoji | GuildRolesChanged)
+         | ReactionRemoveEmoji | GuildRolesChanged | MessageDelete)
 
 
 class _Malformed(Exception):
@@ -202,6 +209,12 @@ def _parse_reaction_remove_emoji(raw: Any) -> ReactionRemoveEmoji:
     )
 
 
+def _parse_message_delete(raw: Any) -> MessageDelete:
+    # Only these three ids are read. Any content or author fields in the payload are never touched.
+    d = _obj(raw, "payload")
+    return MessageDelete(message_id=_id(d, "id"), channel_id=_id(d, "channel_id"), guild_id=_opt_id(d, "guild_id"))
+
+
 def _parse_guild_roles(raw: Any) -> GuildRolesChanged:
     d = _obj(raw, "payload")
     return GuildRolesChanged(guild_id=_id(d, "guild_id"))
@@ -211,6 +224,7 @@ _PARSERS: dict[str, Callable[[Any], Event]] = {
     "READY": _parse_ready,
     "RESUMED": _parse_resumed,
     "MESSAGE_CREATE": _parse_message_create,
+    "MESSAGE_DELETE": _parse_message_delete,
     "MESSAGE_REACTION_ADD": _parse_reaction_add,
     "MESSAGE_REACTION_REMOVE": _parse_reaction_remove,
     "MESSAGE_REACTION_REMOVE_ALL": _parse_reaction_remove_all,

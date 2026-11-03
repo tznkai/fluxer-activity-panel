@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fluxer_client import events
@@ -18,10 +19,18 @@ log = logging.getLogger(__name__)
 
 
 class Bot:
-    def __init__(self, *, rest: FluxerREST, config: Config, roles: RoleCache) -> None:
+    def __init__(
+        self,
+        *,
+        rest: FluxerREST,
+        config: Config,
+        roles: RoleCache,
+        on_message_delete: Callable[[events.MessageDelete], Awaitable[None]] | None = None,
+    ) -> None:
         self.rest = rest
         self.config = config
         self.roles = roles
+        self.on_message_delete = on_message_delete
         self.user_id: str | None = None
 
     async def on_dispatch(self, t: str, d: dict[str, Any]) -> None:
@@ -46,5 +55,8 @@ class Bot:
             case events.ReactionRemoveAll() | events.ReactionRemoveEmoji() as r:
                 log_event(log, "reaction", event_type=t, channel_id=r.channel_id,
                           message_id=r.message_id, guild_id=r.guild_id)
+            case events.MessageDelete() as deleted:
+                if self.on_message_delete is not None:
+                    await self.on_message_delete(deleted)
             case _:
                 log_event(log, "dispatch_ignored", level=logging.DEBUG, event_type=t)
