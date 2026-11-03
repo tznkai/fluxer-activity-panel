@@ -11,13 +11,18 @@ from dataclasses import dataclass
 import aiohttp
 
 from fluxer_panel.config import Config
-from fluxer_panel.sources import pterodactyl
+from fluxer_panel.sources import a2s as a2s_probe
+from fluxer_panel.sources import minecraft, pterodactyl
 from fluxer_panel.sources.base import HostManager, Probe
 
 MANAGER_FACTORIES: dict[str, Callable[[aiohttp.ClientSession, Config], HostManager | None]] = {
     "pterodactyl": pterodactyl.create,  # returns None when not configured
 }
-PROBES: dict[str, Probe] = {}
+PROBES: dict[str, Probe] = {
+    "a2s": a2s_probe.A2SProbe(),
+    "minecraft_bedrock": minecraft.BedrockProbe(),
+    "minecraft_java": minecraft.JavaProbe(),
+}
 
 
 @dataclass(frozen=True)
