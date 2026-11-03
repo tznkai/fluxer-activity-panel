@@ -39,6 +39,7 @@ Paths are relative to this directory.
 - `src/fluxer_client/events.py:250` `log.warning("malformed %s payload: field %s", t, exc.field_name)` — a malformed payload is logged with the field name only.
 - `src/fluxer_client/events.py:254` `field "?"` — the catch-all logs a placeholder, not the exception text, which may carry the value.
 - `src/fluxer_client/gateway.py:76` `log.warning("gateway connection failed: %r", exc)` — a plain-text `fluxer_client` record. Its repr can include the instance host in stdout logs. That is acceptable because logs are not tracked, but reviewers should know it is there. Token redaction still applies.
+- `src/fluxer_panel/poller.py:566` `log_event(log, "subscription_failed", level=logging.WARNING, card_id=card_id, channel_id=channel_id,` — a failed copy is logged with its card id, channel id and exception type only. No title, slug, channel name or message text is logged.
 
 ## Admin authorization
 
@@ -209,6 +210,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/render.py:195` `fit(escape(card.title), LIMITS["board_title"])` — a board cell's title is escaped before it is fitted, so a title cannot ping anyone or form a link.
 - `src/fluxer_panel/render.py:218` `card.channel_id == games_channel_id` — a board status is a jump link only for a card whose message is in the board's channel, so the link's community is the one looked up for that channel, and no link leaves it.
 - `src/fluxer_panel/render.py:211` `return {"embeds": embeds, "allowed_mentions": {"parse": []}}` — the summary board message carries empty `allowed_mentions`.
+- `src/fluxer_panel/poller.py:432` `payload = render.card_message(embed)` — a subscription copy is sent with the card's own payload, whose `allowed_mentions` is `{"parse": []}`. A copy mentions nobody, the same as the card.
 
 ## Card commands
 
@@ -219,6 +221,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/card_commands.py:30` `TEXT_CHANNEL_TYPE = 0` — the text channel type. It is Discord's value and is not yet confirmed on a live instance; `tools/live/markup_live.py` prints the posting channel's type so the operator can check it.
 - `src/fluxer_panel/card_commands.py:249` `str(channel.get("guild_id")) != guild_id` — the channel must belong to the community the admin named.
 - `src/fluxer_panel/card_commands.py:424` `cards.set_state(conn, card_id, "archived", now)` — archive keeps the card row and its slots. It clears the message and sets the state, so the card can be read again.
+- `src/fluxer_panel/card_commands.py:491` `return text.SUBSCRIPTION_NOT_IN_COMMUNITY` — a subscription is refused unless the bot is in the community. `_check_channel` answers a 403 or 404 on the community lookup with an unverified link, and a subscription never stores one.
 
 ## Card poller
 
@@ -240,6 +243,9 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/poller.py:413` `await self._dm_admins(text.BOARD_PIN_ALERT` — each admin gets the pin request once per new board message. A board message deleted before its id is stored sends none.
 - `src/fluxer_panel/poller.py:367` `channel_id = state.channel_id if state.channel_id is not None else games_channel_id` — a stored board is edited in the channel it was posted in, so a change of `GAMES_CHANNEL_ID` never moves it. Its community is looked up for that channel.
 - `src/fluxer_panel/poller.py:362` `if state.message_id is None and not may_post:` — when this tick's first read of the stored board failed, no new board is posted in that tick, so a board is never posted while the stored state is unknown.
+- `src/fluxer_panel/poller.py:453` `await self._sync(card_id, post_channel=sub.channel_id, edit_channel=sub.channel_id,` — a copy's post and edit run the card's own sync path, so each send carries the card's `allowed_mentions`. One copy's failure is caught here and does not stop the others.
+- `src/fluxer_panel/poller.py:470` `await self._dm_admins(text.SUBSCRIPTION_PAUSED_ALERT.format(channel_id=channel_id),` — the pause DM takes only a fixed text and a channel id. No title, slug or other card text reaches it, and the channel is shown as a mention.
+- `src/fluxer_panel/text.py:143` `SUBSCRIPTION_PAUSED_ALERT = (` — the pause DM's text. It holds no placeholder except the channel id.
 
 ## Private denylist
 

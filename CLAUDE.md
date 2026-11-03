@@ -24,7 +24,8 @@ user-facing description, the purge status file format and the "Exit 3" recovery 
   Cards: `cards.py` (store and dataclasses), `card_fields.py` (field validators), `card_commands.py` (`!card`
   subcommands), `resolver.py` (status from manager and probe results), `render.py` (embed, outside text and the
   summary board's payload), `text.py` (user-facing strings), `poller.py` (the single card poller, which also keeps
-  the board). The summary board's single-row store is `board.py`.
+  the board and each card's subscription copies). The summary board's single-row store is `board.py`. Card
+  subscriptions (copies of a card in other text channels) are stored by `subscriptions.py`.
 - `src/fluxer_panel/sources/`: `base.py` (result types and the `HostManager`/`Probe` protocols), `registry.py`
   (the kind-to-plugin map), `pterodactyl.py` (host manager), `minecraft.py` (Bedrock and Java probes), `a2s.py`
   (A2S probe), `_probe_util.py` (the shared guard and limits).
@@ -123,6 +124,15 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
 - `!card list` sends its lines in messages under `card_commands.LIST_CHUNK` UTF-16 units each (`render.units`), so a
   message stays under Fluxer's 2000-unit limit. `!card show`'s outside preview is fitted to the same limit in units.
 - Adding a plugin is one module plus one line in `sources/registry.py`.
+- Card subscriptions (`subscriptions.py`, migration 0005): a copy of the full card message in another text channel.
+  Its payload is the card's own, from `render.card_message`, with `allowed_mentions={"parse": []}`. The poller posts,
+  edits and reposts a copy through the card's `_sync` path, under the card's lock, after the card's own message. A
+  copy is never on the board, and a board link never points at one. `subscriptions.MAX_SUBSCRIPTIONS` (5) is checked
+  in `subscriptions.add`, in the insert's transaction. A 403 on a copy's post or edit pauses it and DMs the admins
+  once: the pause changes a row only while it is active, and the DM takes `text.SUBSCRIPTION_PAUSED_ALERT` with the
+  channel id as its only input. `!card subscribe` on a paused channel resumes it. `!card archive` deletes every copy,
+  and a delete that fails other than with 404 stops the archive with nothing changed. `!card unsubscribe` removes the
+  row whatever the delete outcome, and says so when the copy is left. Copies log ids and exception types only.
 - Summary board (`render.board_message`, `board.py`, `poller.py`): one message, always on when `GAMES_CHANNEL_ID` is
   set. It is posted to that channel when none is stored, and then it stays in the channel it was posted in: a changed
   `GAMES_CHANNEL_ID` never moves it, as with cards. Its payload comes only from `render.board_message`, which escapes
@@ -147,6 +157,10 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   and the write probe in `_connect` stays authoritative.
 - Primary codes READONLY, CANTOPEN, BUSY and PERM map to `DatabaseRefused("unavailable")` and leave the file alone.
   Only corruption codes quarantine. Quarantine moves files aside under new names and never overwrites.
+- `card_subscription` (migration 0005) holds one row per card and channel, keyed by `(card_id, channel_id)`, and cascades
+  with its card. `message_id` and `content_hash` are set together or not at all, and a hash only with a message.
+  `paused` is 0 or 1. Its writes are keyed by card and channel: `set_hash_if` and `clear_message_if` are compare-and-set,
+  and `pause` and `resume` change a row only in the state they expect. The cap of five is app-level, not a CHECK.
 - `board` (migration 0004) holds one row, `id = 1`, seeded by the migration. Its `channel_id` and `message_id` are set
   together or not at all, and `content_hash` is set only with a message. The board's writes are compare-and-set, as
   the cards' are: `clear_message_if`, and `set_hash_if` for the hash.

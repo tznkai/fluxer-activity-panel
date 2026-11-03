@@ -126,6 +126,40 @@ server can also show a status line, such as Asleep, Waking up or Ready with a pl
 A card message that is deleted by hand is posted again. The delete kicks the poller, so the
 repost does not wait for the next poll interval.
 
+### Subscriptions
+
+An admin can subscribe a card to other text channels. Each subscription is a copy of the full card
+message, rendered exactly as the games-channel card, with the same embed and status and no mentions.
+Copies are posted, edited on change and posted again after a hand delete, the same way the card is.
+Subscriptions never appear on the board. A board link still points only at the card's message in the
+games channel.
+
+- **Channel:** `<channel>` is a pasted channel link or `<community id> <channel id>`, as for a text
+  channel field. The bot must be in that community, and the channel must be a text channel there. A
+  channel the bot cannot check gets the retry reply, and `GAMES_CHANNEL_ID` is refused, since the card
+  is already posted there.
+- **Limit:** a card has at most five subscribed channels. A paused channel counts toward the five.
+- **Already subscribed:** subscribing an active channel again changes nothing and says so.
+- **Pause:** when Fluxer refuses a post or an edit in a subscribed channel with 403, that copy is paused.
+  The bot stops posting and editing there, and each admin gets one direct message that names the
+  channel with a mention. The message carries no card text, so use `!card show` to find the card.
+- **Resume:** `!card subscribe` on a paused channel resumes it. The next check posts the copy, or edits
+  it if the card changed.
+- **Failures:** a copy whose edit returns 404 is posted again, as the card is. Any other failure is
+  logged with the ids and the exception type, and retried on the next check. A failing copy never stops
+  the card or the other copies.
+- **Unsubscribe:** deletes the copy and removes the subscription. A copy that is already gone counts as
+  removed. If the bot cannot delete it for another reason, the subscription is still removed, and the
+  reply says the copy is still there, to delete by hand.
+- **Archive:** deletes every copy as well as the card's message. If a copy cannot be deleted (anything
+  other than already gone), the archive stops and changes nothing, so running it again is safe. The
+  subscriptions are kept. Publishing again posts every subscription that is not paused.
+- **Show:** `!card show` lists the subscribed channels, with "(paused)" after each paused one.
+- **Rate:** each copy costs one send, or one edit, each time the card's content changes, and nothing
+  when it does not. Each poll compares every copy's stored hash, but sends nothing for an unchanged copy.
+  A card with five copies sends six messages in one burst. The poller does not throttle copies. Fluxer's
+  rate limits apply, and the REST client retries a 429.
+
 ### Summary board
 
 When `GAMES_CHANNEL_ID` is set, the bot keeps one more message in the games channel: the summary
@@ -169,7 +203,9 @@ message. The board is laid out for the desktop and web clients. Phones show the 
 !card list                                 slug, state and title, by sort order; a long list is sent in several
                                            messages, each under 1900 UTF-16 code units
 !card publish <slug>                       draft or archived -> live
-!card archive <slug>                       deletes the message, keeps the card
+!card archive <slug>                       deletes the message and every subscription copy, keeps the card
+!card subscribe <slug> <channel>           posts a copy of the card in another text channel
+!card unsubscribe <slug> <channel>         deletes that copy and stops posting there
 !card help                                 the subcommands and the field names
 !card help fields                          each field, its format and its limits
 ```
