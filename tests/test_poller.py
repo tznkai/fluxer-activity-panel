@@ -468,6 +468,46 @@ async def test_a_message_delete_over_the_gateway_recreates_the_card(
     assert_card_writes_safe(world.fluxer)
 
 
+async def test_a_message_delete_during_an_edit_is_not_written_back_and_the_card_is_reposted(
+        world: World, poller: Poller, db: Database):
+    card_id = await seed(db, "alpha", title="Alpha")
+    run_task = asyncio.create_task(poller.run())
+    try:
+        await _wait_until(lambda: len(posts(world.fluxer)) == 1)
+        await wait_for_card(db, card_id, lambda c: c.message_id == "5001")
+        await set_title(db, card_id, "Beta")
+        world.fluxer.delays[f"PATCH {POSTED}"] = 0.3
+        poller.kick()
+        await asyncio.sleep(0.1)     # the edit is delayed 0.3 s, so it is still in flight here
+        await poller.on_message_delete(MessageDelete("5001", GAMES, None))
+        await _wait_until(lambda: len(posts(world.fluxer)) == 2, timeout=2.0)
+        card = await wait_for_card(db, card_id, lambda c: c.message_id == "5002")
+    finally:
+        run_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await run_task
+    assert card.runtime.rendered_hash is not None
+    assert len(patches(world.fluxer)) == 1
+    assert_card_writes_safe(world.fluxer)
+
+
+async def test_a_message_delete_for_a_message_still_being_posted_causes_a_repost(
+        world: World, poller: Poller, db: Database):
+    card_id = await seed(db, "alpha")
+    world.fluxer.delays[f"POST {GAMES_MESSAGES}"] = 0.3
+    run_task = asyncio.create_task(poller.run())
+    try:
+        await asyncio.sleep(0.1)     # the first post is delayed 0.3 s, so it is still in flight here
+        await poller.on_message_delete(MessageDelete("5001", GAMES, None))   # the id the fake hands out first
+        await _wait_until(lambda: len(posts(world.fluxer)) == 2, timeout=2.0)
+        await wait_for_card(db, card_id, lambda c: c.message_id == "5002")
+    finally:
+        run_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await run_task
+    assert_card_writes_safe(world.fluxer)
+
+
 # AC6.11: a kick shows a change without waiting for the poll --------------------------------------
 
 async def test_a_kick_publishes_a_change_without_waiting_for_the_poll(

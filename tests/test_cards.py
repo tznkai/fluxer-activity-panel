@@ -276,6 +276,36 @@ async def test_set_voice_name_if_never_inserts_a_cleared_voice(db: Database) -> 
     assert card.voice is None
 
 
+async def test_set_hash_if_stores_the_hash_for_the_message_the_card_holds(db: Database) -> None:
+    card_id = await _create(db)
+    await db.run(lambda c: cards.set_message(c, card_id, "1002", "1003", None))
+
+    stored = await db.run(lambda c: cards.set_hash_if(c, card_id, "1002", "1003", HASH))
+
+    assert stored is True
+    card = await _get(db, "alpha")
+    assert card is not None
+    assert (card.message_id, card.runtime.rendered_hash) == ("1003", HASH)
+
+
+@pytest.mark.parametrize("held", [
+    (None, None),          # cleared by a delete
+    ("1002", "1004"),      # moved to another message
+    ("1005", "1003"),      # the same id in another channel
+], ids=["cleared", "other-message", "other-channel"])
+async def test_set_hash_if_leaves_a_message_the_card_no_longer_holds_alone(
+        db: Database, held: tuple[str | None, str | None]) -> None:
+    card_id = await _create(db)
+    await db.run(lambda c: cards.set_message(c, card_id, held[0], held[1], None))
+
+    stored = await db.run(lambda c: cards.set_hash_if(c, card_id, "1002", "1003", HASH))
+
+    assert stored is False
+    card = await _get(db, "alpha")
+    assert card is not None
+    assert (card.channel_id, card.message_id, card.runtime.rendered_hash) == (held[0], held[1], None)
+
+
 async def test_set_probe_tracking_round_trips(db: Database) -> None:
     card_id = await _create(db)
 

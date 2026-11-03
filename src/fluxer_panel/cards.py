@@ -324,6 +324,17 @@ def set_message(conn: sqlite3.Connection, card_id: int, channel_id: str | None, 
     conn.execute("UPDATE card_runtime SET rendered_hash = ? WHERE card_id = ?", (rendered_hash, card_id))
 
 
+def set_hash_if(conn: sqlite3.Connection, card_id: int, channel_id: str, message_id: str,
+                rendered_hash: str) -> bool:
+    """Stores the rendered hash only while the card still holds this message. A cleared or moved message is left
+    alone. Returns whether a row changed."""
+    cur = conn.execute(
+        "UPDATE card_runtime SET rendered_hash = ? WHERE card_id = ? AND EXISTS "
+        "(SELECT 1 FROM cards WHERE cards.id = ? AND cards.channel_id = ? AND cards.message_id = ?)",
+        (rendered_hash, card_id, card_id, channel_id, message_id))
+    return cur.rowcount == 1
+
+
 def clear_message_if(conn: sqlite3.Connection, channel_id: str, message_id: str) -> int | None:
     """Clear the posted message only if it is still this one. Returns the card id, or None when it moved on."""
     rows = conn.execute(

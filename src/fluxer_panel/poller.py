@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -37,6 +38,11 @@ class _ScheduleCache:
     action: PowerAction | None  # None also when the fetch failed: the Next line is then hidden
 
 
+# How many recent MESSAGE_DELETE ids are remembered for a store that is still in flight. Deletions of a message
+# that is not yet stored are rare, so a few hundred covers any realistic window.
+_DELETED_CAP = 256
+
+
 class Poller:
     def __init__(self, *, db: Database, rest: FluxerREST, sources: Sources, config: Config, locks: CardLocks,
                  clock: Callable[[], float] = time.time) -> None:
@@ -49,12 +55,15 @@ class Poller:
         self._kick = asyncio.Event()
         self._schedules: dict[int, _ScheduleCache] = {}
         self._voice_checked: dict[int, float] = {}
+        self._deleted: OrderedDict[tuple[str, str], None] = OrderedDict()
         self._warned_no_channel = False
 
     def kick(self) -> None:
         self._kick.set()
 
     async def on_message_delete(self, event: MessageDelete) -> None:
+        # Remembered before the transaction, so a store that commits after this point still sees the deletion.
+        self._remember_deleted(event.channel_id, event.message_id)
         # One compare-and-clear transaction: a message the poller has just recreated is never wiped.
         card_id = await self._db.run(lambda c: cards.clear_message_if(c, event.channel_id, event.message_id))
         if card_id is not None:
@@ -230,6 +239,7 @@ class Poller:
                                              allowed_mentions=payload["allowed_mentions"])
         message_id = sent["id"]
         await self._db.run(lambda c: cards.set_message(c, card_id, channel_id, message_id, rendered))
+        await self._undo_if_deleted(channel_id, message_id)
 
     async def _edit(self, card_id: int, channel_id: str, message_id: str, rendered: str,
                     payload: dict[str, Any]) -> None:
@@ -242,7 +252,24 @@ class Poller:
             log_event(log, "card_message_recreated", card_id=card_id)
             await self._post(card_id, channel_id, rendered, payload)
             return
-        await self._db.run(lambda c: cards.set_message(c, card_id, channel_id, message_id, rendered))
+        # Conditional: a message deleted while the edit was in flight is not written back.
+        stored = await self._db.run(lambda c: cards.set_hash_if(c, card_id, channel_id, message_id, rendered))
+        if stored:
+            await self._undo_if_deleted(channel_id, message_id)
+
+    async def _undo_if_deleted(self, channel_id: str, message_id: str) -> None:
+        """A message that was deleted before its id was stored is forgotten, and the card is posted again."""
+        if (channel_id, message_id) not in self._deleted:
+            return
+        if await self._db.run(lambda c: cards.clear_message_if(c, channel_id, message_id)) is not None:
+            self.kick()
+
+    def _remember_deleted(self, channel_id: str, message_id: str) -> None:
+        key = (channel_id, message_id)
+        self._deleted[key] = None
+        self._deleted.move_to_end(key)
+        while len(self._deleted) > _DELETED_CAP:
+            self._deleted.popitem(last=False)
 
     async def _forget_message(self, channel_id: str, message_id: str) -> None:
         await self._db.run(lambda c: cards.clear_message_if(c, channel_id, message_id))
