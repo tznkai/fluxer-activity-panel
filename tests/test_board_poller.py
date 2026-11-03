@@ -351,7 +351,10 @@ async def test_a_deleted_board_message_is_forgotten_and_reposted_without_waiting
     await poller.tick()
     task = asyncio.create_task(poller.run())
     try:
-        await _wait_until(lambda: len(board_posts(world.fluxer)) == 1)
+        # The run loop's first tick is the second probe call. Its kick is cleared at the top of the loop, so the
+        # delete must come once the loop is waiting, or the repost would come from that tick and not from the kick.
+        await _wait_until(lambda: len(world.probe.calls) == 2)
+        await asyncio.sleep(0.1)
         await poller.on_message_delete(MessageDelete(BOARD, GAMES, None))
         await _wait_until(lambda: len(board_posts(world.fluxer)) == 2)
     finally:

@@ -60,9 +60,11 @@ def test_jump_link_drops_a_trailing_slash_from_the_instance_url() -> None:
     assert render.jump_link("Ready", INSTANCE + "/", GUILD, GAMES, MESSAGE) == link("Ready")
 
 
-def test_jump_link_refuses_an_id_that_is_not_a_snowflake() -> None:
+@pytest.mark.parametrize("ids", [("10a1", GAMES, MESSAGE), (GUILD, "3 01", MESSAGE), (GUILD, GAMES, "5-001")],
+                         ids=["community", "channel", "message"])
+def test_jump_link_refuses_an_id_that_is_not_a_snowflake(ids: tuple[str, str, str]) -> None:
     with pytest.raises(ValueError):
-        render.jump_link("Ready", INSTANCE, "10a1", GAMES, MESSAGE)
+        render.jump_link("Ready", INSTANCE, *ids)
 
 
 def test_every_status_label_is_safe_inside_a_masked_link() -> None:
