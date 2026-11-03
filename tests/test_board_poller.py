@@ -32,6 +32,7 @@ INSTANCE = "https://fluxer.invalid"
 GUILD = "1001"
 GAMES = "3001"
 OTHER_GAMES = "3002"
+OTHER_GUILD = "1002"                  # the community of OTHER_GAMES, which is not GUILD
 AUTHOR = "1001"
 GAMES_MESSAGES = f"/api/v1/channels/{GAMES}/messages"
 OTHER_MESSAGES = f"/api/v1/channels/{OTHER_GAMES}/messages"
@@ -453,6 +454,23 @@ async def test_a_board_deleted_by_hand_is_posted_to_the_new_games_channel(world:
     # The card is in the old channel and the board is in the new one, so the status is plain text. The new board's
     # community is looked up for the new channel only.
     assert cells(first.payload) == [("Alpha", "Ready \u00b7 1 / 4")]
+    assert len(world.fluxer.requests_to(f"/api/v1/channels/{OTHER_GAMES}")) == 1
+    assert world.fluxer.requests_to(f"/api/v1/channels/{GAMES}") == []
+    assert (await board_row(db)).channel_id == OTHER_GAMES
+
+
+async def test_a_board_reposted_in_another_channel_looks_up_that_channels_community(world: World, db: Database) -> None:
+    await seed(db, "alpha", title="Alpha", probe=True)
+    await world.poller().tick()
+    world.fluxer.channels[OTHER_GAMES] = {"id": OTHER_GAMES, "name": "other", "type": 0, "guild_id": OTHER_GUILD}
+    poller = world.poller(GAMES_CHANNEL_ID=OTHER_GAMES)
+    await poller.tick()
+    # Deleted by hand, so the next tick posts a new board to the new games channel with that channel's community.
+    await poller.on_message_delete(MessageDelete(BOARD, GAMES, None))
+    world.fluxer.requests.clear()
+
+    await poller.tick()
+
     assert len(world.fluxer.requests_to(f"/api/v1/channels/{OTHER_GAMES}")) == 1
     assert world.fluxer.requests_to(f"/api/v1/channels/{GAMES}") == []
     assert (await board_row(db)).channel_id == OTHER_GAMES
