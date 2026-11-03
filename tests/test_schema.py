@@ -25,6 +25,7 @@ ALLOWED_COLUMNS: dict[str, set[str]] = {
     "card_manager": {"card_id", "kind", "ref"},
     "card_probe": {"card_id", "kind", "host", "port"},
     "card_runtime": {"card_id", "rendered_hash", "probe_failing_since", "probe_alert_sent"},
+    "board": {"id", "channel_id", "message_id", "content_hash"},
     "families": {"id", "created_at"},
     "family_members": {"family_id", "user_id", "relation"},
     "sessions": {"id", "card_id", "group_role_id", "starts_at", "ends_at", "location_text", "seats",
@@ -34,7 +35,7 @@ ALLOWED_COLUMNS: dict[str, set[str]] = {
 }
 
 STRICT_TABLES = {"card_location", "card_voice", "card_text_channel", "card_address", "card_manager", "card_probe",
-                 "card_runtime"}
+                 "card_runtime", "board"}
 
 FORBIDDEN_TOKENS = {"nick", "nickname", "age", "birth", "birthday", "dob", "gender",
                     "member", "membership", "group"}

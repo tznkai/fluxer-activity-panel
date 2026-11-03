@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Sequence
 from typing import Any
 
 from fluxer_client.ids import require_snowflake
@@ -50,7 +51,17 @@ LIMITS = {
     # 166 + the instance URL's length. Three entries and two newlines fit the 1024-character field at 174 characters.
     # The link is not fitted, so config caps FLUXER_INSTANCE_URL at 128 (config.INSTANCE_URL_MAX), well under 174.
     "channel_name": 100,
+    # A board cell's name: the card's title, escaped and fitted. A cell's value is a status, at most about 250 characters.
+    "board_title": 50,
 }
+
+# The summary board. Fields come in rows of three, so a full embed holds a multiple of three. Fluxer caps a message
+# at ten embeds, and the text of every embed in one message together at 6000 characters (BOARD_CHAR_LIMIT). The
+# character budget is applied to the whole message, which is the stricter reading.
+BOARD_FIELDS_PER_EMBED = 24
+BOARD_MAX_EMBEDS = 10
+BOARD_MAX_CARDS = BOARD_FIELDS_PER_EMBED * BOARD_MAX_EMBEDS
+BOARD_CHAR_LIMIT = 6000
 
 
 def neutralise(s: str) -> str:
@@ -90,6 +101,17 @@ def channel_link(instance_url: str, guild_id: str, channel_id: str) -> str:
 
 
 CHANNEL_LINK_RE = re.compile(r"https?://[^/\s]+/channels/([0-9]+)/([0-9]+)/?")  # parses what channel_link builds
+
+
+def jump_link(label: str, instance_url: str, guild_id: str, channel_id: str, message_id: str) -> str:
+    """A masked link to one message. The only place a jump link is built. `label` is our own wording, never card text.
+    JUMP_LINK_RE parses the URL it builds."""
+    url = (f"{instance_url.rstrip('/')}/channels/{require_snowflake(guild_id)}/{require_snowflake(channel_id)}"
+           f"/{require_snowflake(message_id)}")
+    return f"[{label}]({url})"
+
+
+JUMP_LINK_RE = re.compile(r"\[([^\]]*)\]\(https?://[^/\s]+/channels/([0-9]+)/([0-9]+)/([0-9]+)\)")  # parses jump_link
 
 
 def render_embed(card: Card, status: CardStatus | None, next_text: str | None, *,
@@ -146,6 +168,62 @@ def _channel_value(channel: ChannelLink, unnamed: str, instance_url: str | None)
         return label
     # The link is built here, and the label is escaped above, so no card text forms a link.
     return f"[{label}]({channel_link(instance_url, channel.guild_id, channel.channel_id)})"
+
+
+def board_message(entries: Sequence[tuple[Card, CardStatus | None]], *, games_channel_id: str | None,
+                  games_guild_id: str | None, instance_url: str | None) -> dict[str, Any]:
+    """The whole summary board, as a message payload. One cell per card, in the order given: the title as the name and
+    the status line as the value. A status is a jump link when the card has a message in the games channel and the
+    games community, the games channel and the instance URL are all known. A card with no live status shows a dash."""
+    cells = [(fit(escape(card.title), LIMITS["board_title"]),
+              _board_value(card, status, games_channel_id, games_guild_id, instance_url))
+             for card, status in entries]
+    shown = _fit_cells(cells)
+    chunks = [shown[i:i + BOARD_FIELDS_PER_EMBED] for i in range(0, len(shown), BOARD_FIELDS_PER_EMBED)] or [[]]
+    embeds: list[dict[str, Any]] = []
+    for index, chunk in enumerate(chunks):
+        embed: dict[str, Any] = {"color": NEUTRAL}
+        if index == 0:
+            embed["title"] = text.BOARD_TITLE
+        embed["fields"] = [{"name": name, "value": value, "inline": True} for name, value in chunk]
+        embeds.append(embed)
+    if not cells:
+        embeds[0]["description"] = text.BOARD_EMPTY
+    elif len(shown) < len(cells):
+        embeds[-1]["description"] = text.BOARD_TRUNCATED
+    return {"embeds": embeds, "allowed_mentions": {"parse": []}}
+
+
+def _board_value(card: Card, status: CardStatus | None, games_channel_id: str | None,
+                 games_guild_id: str | None, instance_url: str | None) -> str:
+    label = text.BOARD_NO_STATUS if status is None else status_label(status)
+    linkable = (instance_url is not None and games_guild_id is not None and games_channel_id is not None
+                and card.message_id is not None and card.channel_id == games_channel_id)
+    if not linkable:
+        return label
+    assert card.message_id is not None and games_channel_id is not None and games_guild_id is not None
+    return jump_link(label, instance_url, games_guild_id, games_channel_id, card.message_id)
+
+
+def _fit_cells(cells: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The leading cells that fit the card cap and the message character budget. When any cell is dropped, the
+    budget also reserves room for the truncation note."""
+    count = _count_within(cells, BOARD_CHAR_LIMIT)
+    if count < len(cells):
+        count = _count_within(cells, BOARD_CHAR_LIMIT - len(text.BOARD_TRUNCATED))
+    return cells[:count]
+
+
+def _count_within(cells: list[tuple[str, str]], budget: int) -> int:
+    used = len(text.BOARD_TITLE)
+    count = 0
+    for name, value in cells:
+        cost = len(name) + len(value)
+        if count == BOARD_MAX_CARDS or used + cost > budget:
+            break
+        used += cost
+        count += 1
+    return count
 
 
 def card_message(embed: dict[str, Any]) -> dict[str, Any]:

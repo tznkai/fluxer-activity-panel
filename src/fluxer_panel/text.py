@@ -122,3 +122,9 @@ CHANNEL_KIND_TEXT = "a text channel"
 CHANNEL_OTHER_COMMUNITY = "That channel is in a different community."
 CHANNEL_RETRY = "I couldn't reach Fluxer to check that channel. Try again in a minute."
 PROBE_ALERT = "Heads up: card {slug} reports its server running, but the game isn't answering queries."
+# The summary board: one message in the games channel. None of these strings contains user input.
+BOARD_TITLE = "Games"
+BOARD_EMPTY = "No games are live."
+BOARD_NO_STATUS = "—"    # a card with no manager and no probe has no live status
+BOARD_TRUNCATED = "Some games are not shown. Ask an admin for the full list."
+BOARD_PIN_ALERT = "I posted the summary board in the games channel. Pin it so it stays at the top."

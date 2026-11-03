@@ -192,18 +192,22 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 
 ## Card rendering
 
-- `src/fluxer_panel/render.py:56` `def neutralise(` — breaks the mention forms (`@everyone`, `<@id>`, `<#id>`) with a zero-width joiner, so card text cannot ping anyone or form a mention.
-- `src/fluxer_panel/render.py:26` `_MD = re.compile(` — the markdown control characters that `escape` backslashes.
-- `src/fluxer_panel/render.py:61` `def escape(` — the escape for all card text: neutralise first, then escape markdown. Every user text passes through it before it enters an embed.
-- `src/fluxer_panel/render.py:77` `def code(` — a code span. Backticks are removed, because they cannot be escaped inside one.
-- `src/fluxer_panel/render.py:66` `def fit(` — cuts escaped text without leaving a dangling backslash that would escape the ellipsis.
-- `src/fluxer_panel/render.py:152` `"allowed_mentions": {"parse": []}` — every card send and edit carries empty `allowed_mentions`.
-- `src/fluxer_panel/render.py:178` `def outside_location(has_location: bool)` — takes a bool, so the location text cannot reach the outside line.
-- `src/fluxer_panel/render.py:144` `fit(escape(channel.channel_name)` — a voice or text channel's name is escaped before it enters the field, so a name cannot form a link or a mention.
-- `src/fluxer_panel/render.py:162` `def _outside_channel(` — a channel name on the outside line is mention-neutralised, and the line shows it only when the link is verified.
+- `src/fluxer_panel/render.py:67` `def neutralise(` — breaks the mention forms (`@everyone`, `<@id>`, `<#id>`) with a zero-width joiner, so card text cannot ping anyone or form a mention.
+- `src/fluxer_panel/render.py:27` `_MD = re.compile(` — the markdown control characters that `escape` backslashes.
+- `src/fluxer_panel/render.py:72` `def escape(` — the escape for all card text: neutralise first, then escape markdown. Every user text passes through it before it enters an embed.
+- `src/fluxer_panel/render.py:88` `def code(` — a code span. Backticks are removed, because they cannot be escaped inside one.
+- `src/fluxer_panel/render.py:77` `def fit(` — cuts escaped text without leaving a dangling backslash that would escape the ellipsis.
+- `src/fluxer_panel/render.py:230` `"allowed_mentions": {"parse": []}` — every card send and edit carries empty `allowed_mentions`.
+- `src/fluxer_panel/render.py:256` `def outside_location(has_location: bool)` — takes a bool, so the location text cannot reach the outside line.
+- `src/fluxer_panel/render.py:166` `fit(escape(channel.channel_name)` — a voice or text channel's name is escaped before it enters the field, so a name cannot form a link or a mention.
+- `src/fluxer_panel/render.py:240` `def _outside_channel(` — a channel name on the outside line is mention-neutralised, and the line shows it only when the link is verified.
 - `tests/test_render.py:673` `SENTINEL_LOCATION not in outside` — the test that the location text never appears in the outside rendering.
-- `src/fluxer_panel/render.py:87` `def channel_link(` — the only place a channel link is built. Both ids pass the snowflake check first.
+- `src/fluxer_panel/render.py:98` `def channel_link(` — the only place a channel link is built. Both ids pass the snowflake check first.
 - `tests/test_text.py:27` `"guild" in node.value.lower()` — the scan that fails on any user-facing string that mentions a guild.
+
+- `src/fluxer_panel/render.py:106` `def jump_link(` — the only place a masked jump link is built. Its ids pass the snowflake check first.
+- `src/fluxer_panel/render.py:178` `fit(escape(card.title), LIMITS["board_title"])` — a board cell's title is escaped before it is fitted, so a title cannot ping anyone or form a link.
+- `src/fluxer_panel/render.py:194` `return {"embeds": embeds, "allowed_mentions": {"parse": []}}` — the summary board message carries empty `allowed_mentions`.
 
 ## Card commands
 
