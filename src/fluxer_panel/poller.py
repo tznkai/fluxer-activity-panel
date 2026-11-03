@@ -34,6 +34,7 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class _ScheduleCache:
+    ref: cards.ManagerRef       # the manager the action was fetched for: a changed manager is a cache miss
     fetched_at: float
     action: PowerAction | None  # None also when the fetch failed: the Next line is then hidden
 
@@ -184,17 +185,19 @@ class Poller:
             # A kind that is no longer configured: no request, and no schedule is cached for it.
             return PowerState.UNKNOWN, None
         power = await manager.power_state(ref.ref)
-        return power, await self._next_action(card_id, manager, ref.ref, now_dt)
+        return power, await self._next_action(card_id, manager, ref, now_dt)
 
-    async def _next_action(self, card_id: int, manager: HostManager, server_ref: str,
+    async def _next_action(self, card_id: int, manager: HostManager, ref: cards.ManagerRef,
                            now_dt: datetime) -> PowerAction | None:
         cached = self._schedules.get(card_id)
-        if cached is None or self._clock() - cached.fetched_at >= self._config.schedule_refresh_seconds:
+        stale = (cached is None or cached.ref != ref
+                 or self._clock() - cached.fetched_at >= self._config.schedule_refresh_seconds)
+        if stale:
             try:
-                action = await manager.next_power_action(server_ref, now=now_dt)
+                action = await manager.next_power_action(ref.ref, now=now_dt)
             except Exception:  # noqa: BLE001 - the Next line is optional: a failed fetch only hides it
                 action = None
-            cached = _ScheduleCache(self._clock(), action)
+            cached = _ScheduleCache(ref, self._clock(), action)
             self._schedules[card_id] = cached
         if cached.action is not None and cached.action.at < now_dt:
             return None  # a cached action that has already passed is hidden until the next refresh

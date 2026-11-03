@@ -684,6 +684,33 @@ async def test_a_cached_action_that_has_passed_is_not_shown_until_the_next_refre
     assert len(schedule_requests(world.panel)) == 1
 
 
+async def test_a_changed_manager_server_is_asked_for_its_own_schedule_at_once(
+        world: World, poller: Poller, db: Database):
+    card_id = await seed(db, "alpha", manager=cards.ManagerRef("pterodactyl", SERVER))
+    other_server = "ef012345"
+    world.panel.servers[SERVER].current_state = "running"
+    world.panel.servers[SERVER].schedules = [
+        panel_schedule("restart", next_run_at=_iso(3600), tasks=(panel_task(1, "power", "restart"),)),
+    ]
+    world.panel.servers[other_server] = FakeServer(current_state="running", schedules=[
+        panel_schedule("stop", next_run_at=_iso(1800), tasks=(panel_task(1, "power", "stop"),)),
+    ])
+
+    await poller.tick()
+    [first] = posts(world.fluxer)
+    assert fields_of(first.payload["embeds"][0])[text.FIELD_NEXT].startswith(text.NEXT_RESTART)
+
+    await db.run(lambda c: cards.set_manager(c, card_id, cards.ManagerRef("pterodactyl", other_server)))
+    world.clock.now = 10       # well inside the refresh interval: only the changed manager can cause a request
+    await poller.tick()
+
+    schedule_paths = [r.path for r in world.panel.requests if r.path.endswith("/schedules")]
+    assert schedule_paths == [SCHEDULES, f"/api/client/servers/{other_server}/schedules"]
+    [edit] = patches(world.fluxer)
+    assert fields_of(edit.payload["embeds"][0])[text.FIELD_NEXT].startswith(text.NEXT_SLEEP)
+    assert_card_writes_safe(world.fluxer)
+
+
 async def test_an_unconfigured_manager_kind_shows_unknown_without_a_panel_request(
         world: World, db: Database):
     await seed(db, "alpha", manager=cards.ManagerRef("pterodactyl", SERVER))
