@@ -122,6 +122,14 @@ REJECTED: list[tuple[str, str, tuple[object, ...]]] = [
                                       "VALUES (1,'1001','12a',1)", ()),
     ("voice is unverified but named", "INSERT INTO card_voice (card_id,guild_id,channel_id,channel_name,verified) "
                                       "VALUES (1,'1001','1002','SENTINEL-VOICE',0)", ()),
+    ("voice name is 101 characters", "INSERT INTO card_voice (card_id,guild_id,channel_id,channel_name,verified) "
+                                     "VALUES (1,'1001','1002',?,1)", ("n" * 101,)),
+    ("voice name is empty", "INSERT INTO card_voice (card_id,guild_id,channel_id,channel_name,verified) "
+                            "VALUES (1,'1001','1002','',1)", ()),
+    ("voice channel id is 26 digits", "INSERT INTO card_voice (card_id,guild_id,channel_id,verified) "
+                                      "VALUES (1,'1001',?,1)", ("2" * 26,)),
+    ("voice verified is two", "INSERT INTO card_voice (card_id,guild_id,channel_id,verified) "
+                              "VALUES (1,'1001','1002',2)", ()),
     ("text channel slot is zero", "INSERT INTO card_text_channel (card_id,slot,guild_id,channel_id,verified) "
                                   "VALUES (1,0,'1001','1002',1)", ()),
     ("text channel slot is four", "INSERT INTO card_text_channel (card_id,slot,guild_id,channel_id,verified) "
@@ -130,6 +138,14 @@ REJECTED: list[tuple[str, str, tuple[object, ...]]] = [
                                            "VALUES (1,1,'12a','1002',1)", ()),
     ("text channel is unverified but named", "INSERT INTO card_text_channel (card_id,slot,guild_id,channel_id,channel_name,verified) "
                                              "VALUES (1,1,'1001','1002','SENTINEL-TEXT',0)", ()),
+    ("text channel name is 101 characters", "INSERT INTO card_text_channel (card_id,slot,guild_id,channel_id,channel_name,verified) "
+                                            "VALUES (1,1,'1001','1002',?,1)", ("n" * 101,)),
+    ("text channel name is empty", "INSERT INTO card_text_channel (card_id,slot,guild_id,channel_id,channel_name,verified) "
+                                   "VALUES (1,1,'1001','1002','',1)", ()),
+    ("text channel id is 26 digits", "INSERT INTO card_text_channel (card_id,slot,guild_id,channel_id,verified) "
+                                     "VALUES (1,1,'1001',?,1)", ("2" * 26,)),
+    ("text channel verified is two", "INSERT INTO card_text_channel (card_id,slot,guild_id,channel_id,verified) "
+                                     "VALUES (1,1,'1001','1002',2)", ()),
     ("address port is zero", "INSERT INTO card_address (card_id,host,port) VALUES (1,'h.invalid',0)", ()),
     ("address port is 65536", "INSERT INTO card_address (card_id,host,port) VALUES (1,'h.invalid',65536)", ()),
     ("address public is two", "INSERT INTO card_address (card_id,host,port,public) VALUES (1,'h.invalid',1,2)", ()),
