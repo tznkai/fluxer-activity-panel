@@ -25,7 +25,7 @@ from fluxer_client.events import MessageCreate, MessageDelete
 from fluxer_client.gateway import Gateway
 from fluxer_client.rest import FluxerREST
 from fluxer_client.roles import RoleCache
-from fluxer_panel import admin, cards, render, text
+from fluxer_panel import admin, board, cards, render, text
 from fluxer_panel.bot import Bot
 from fluxer_panel.card_commands import CardContext, CardLocks
 from fluxer_panel.config import Config
@@ -62,6 +62,9 @@ HOST = "127.0.0.1"
 PORT = 25565
 GAMES_MESSAGES = f"/api/v1/channels/{GAMES}/messages"
 POSTED = f"{GAMES_MESSAGES}/5001"
+# The summary board already exists in these tests, so card message ids start at 5001 as they always did. The board's
+# own posting and sync are covered by tests/test_board_poller.py. Its edits are filtered out of `patches`.
+BOARD_MESSAGE = "4000"
 SCHEDULES = f"/api/client/servers/{SERVER}/schedules"
 OPEN_DM = "/api/v1/users/@me/channels"
 FIRST_DM = "/api/v1/channels/9000/messages"    # the first DM channel the fake opens: admin 1001
@@ -158,6 +161,8 @@ async def world(db: Database, session: aiohttp.ClientSession, aiohttp_server: An
     panel_base = str(panel_server.make_url("/")).rstrip("/")
     rest = FluxerREST(session, f"{str(fluxer_server.make_url('/')).rstrip('/')}/api", TOKEN)
     probe = StubProbe()
+    fluxer.messages[(GAMES, BOARD_MESSAGE)] = {"embeds": []}
+    await db.run(lambda c: board.set_message(c, GAMES, BOARD_MESSAGE, "0" * 64))
     sources = Sources(
         managers={"pterodactyl": PterodactylManager(session, panel_base, PANEL_KEY, sleep=no_sleep)},
         probes={"stub": probe, "boom": StubProbe(reply=RuntimeError("SENTINEL-ERR-5d1e"))},
@@ -245,7 +250,7 @@ def posts(state: FakeFluxerState) -> list[Recorded]:
 
 
 def patches(state: FakeFluxerState) -> list[Recorded]:
-    return [r for r in state.requests if r.method == "PATCH"]
+    return [r for r in state.requests if r.method == "PATCH" and r.path != f"{GAMES_MESSAGES}/{BOARD_MESSAGE}"]
 
 
 def dm_messages(state: FakeFluxerState) -> list[Recorded]:
@@ -424,7 +429,9 @@ async def test_reconcile_keeps_a_message_that_still_exists(world: World, poller:
     await poller.reconcile()
     await poller.tick()
 
-    assert [(r.method, r.status) for r in world.fluxer.requests] == [("GET", 200)]
+    # The board's own lookup is checked after the cards, and it is not a card request.
+    card_requests = [r for r in world.fluxer.requests if r.path == POSTED]
+    assert [(r.method, r.status) for r in card_requests] == [("GET", 200)]
 
 
 async def test_reconcile_leaves_the_message_alone_when_the_lookup_fails_for_another_reason(
@@ -459,7 +466,8 @@ async def test_a_transport_error_on_one_lookup_does_not_stop_the_reconcile_of_la
     assert failed.panel_fields == {"card_id": first, "reason": "ServerDisconnectedError"}
     assert (await load(db, first)).message_id == "5101"       # a failed lookup leaves the message alone
     assert (await load(db, second)).message_id is None        # the later card was still checked and forgotten
-    gets = [(r.path, r.status) for r in world.fluxer.requests if r.method == "GET"]
+    gets = [(r.path, r.status) for r in world.fluxer.requests
+            if r.method == "GET" and r.path != f"{GAMES_MESSAGES}/{BOARD_MESSAGE}"]
     assert gets[-1] == (f"{GAMES_MESSAGES}/5102", 404)     # the later card's lookup ran after the failed one
 
 

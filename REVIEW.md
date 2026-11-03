@@ -221,17 +221,22 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 
 ## Card poller
 
-- `src/fluxer_panel/poller.py:130` `log_event(log, "card_poll_failed"` — one card's failure is logged with the card id and the exception type only. The other cards still run.
-- `src/fluxer_panel/poller.py:274` `await self._rest.edit_message(channel_id, message_id, embeds=` — the edit sends embeds and `allowed_mentions` and never `content`, so an edit cannot erase the message text.
-- `src/fluxer_panel/poller.py:156` `cards.set_probe_tracking(c, card.id` — the alert state is saved before the DM goes out. A crash or a failed DM cannot send the alert a second time.
-- `src/fluxer_panel/poller.py:158` `await self._alert(card)` — the admin DM that follows that save.
-- `src/fluxer_panel/poller.py:200` `cards.set_voice_name_if(c, card_id` — a refreshed voice name is written only if the voice still matches the one that was read, so an admin's change during the lookup wins.
-- `src/fluxer_panel/poller.py:202` `cards.set_text_channel_name_if(c, card_id, slot` — the same compare-and-set for a text channel, keyed by slot: a name is written only while that slot still holds the link that was read.
-- `src/fluxer_panel/poller.py:189` `event = "voice_refresh_failed" if slot is None` — a failed name check is logged with the card id and the exception type only. No channel name reaches the log.
-- `src/fluxer_panel/poller.py:285` `cards.set_hash_if(c, card_id` — the rendered hash is stored only if the message is still the same one, so a delete during an edit is not written back.
-- `src/fluxer_panel/poller.py:45` `_DELETED_CAP = 256` — the remembered deletes are bounded. The oldest entries are evicted, which covers the window between a send and its commit.
-- `src/fluxer_panel/poller.py:296` `self._deleted[(channel_id, message_id)] = None` — a repeated delete keeps its place, so eviction is by insertion order.
+- `src/fluxer_panel/poller.py:164` `log_event(log, "card_poll_failed"` — one card's failure is logged with the card id and the exception type only. The other cards still run.
+- `src/fluxer_panel/poller.py:398` `await self._rest.edit_message(channel_id, message_id, embeds=` — the edit sends embeds and `allowed_mentions` and never `content`, so an edit cannot erase the message text.
+- `src/fluxer_panel/poller.py:199` `cards.set_probe_tracking(c, card.id` — the alert state is saved before the DM goes out. A crash or a failed DM cannot send the alert a second time.
+- `src/fluxer_panel/poller.py:201` `await self._alert(card)` — the admin DM that follows that save.
+- `src/fluxer_panel/poller.py:243` `cards.set_voice_name_if(c, card_id` — a refreshed voice name is written only if the voice still matches the one that was read, so an admin's change during the lookup wins.
+- `src/fluxer_panel/poller.py:245` `cards.set_text_channel_name_if(c, card_id, slot` — the same compare-and-set for a text channel, keyed by slot: a name is written only while that slot still holds the link that was read.
+- `src/fluxer_panel/poller.py:232` `event = "voice_refresh_failed" if slot is None` — a failed name check is logged with the card id and the exception type only. No channel name reaches the log.
+- `src/fluxer_panel/poller.py:409` `cards.set_hash_if(c, card_id` — the rendered hash is stored only if the message is still the same one, so a delete during an edit is not written back.
+- `src/fluxer_panel/poller.py:46` `_DELETED_CAP = 256` — the remembered deletes are bounded. The oldest entries are evicted, which covers the window between a send and its commit.
+- `src/fluxer_panel/poller.py:423` `self._deleted[(channel_id, message_id)] = None` — a repeated delete keeps its place, so eviction is by insertion order.
 - `src/fluxer_panel/__main__.py:98` `poller_task.cancel()` — the poller is cancelled and awaited before the purge task, so no card write is in flight when the session closes.
+
+- `src/fluxer_panel/poller.py:302` `log_event(log, "board_post_failed"` — a failed board post is logged with the games channel id and the exception type only. No title or status is logged.
+- `src/fluxer_panel/poller.py:368` `board.set_hash_if(c, channel_id` — the board hash is stored only while the board still holds that message, so a delete during an edit is not written back.
+- `src/fluxer_panel/poller.py:445` `if cards.clear_message_if(conn, channel_id, message_id) is not None:` — a MESSAGE_DELETE forgets a card message or the board message in one transaction. Message ids are unique, so only one can match.
+- `src/fluxer_panel/poller.py:355` `await self._dm_admins(text.BOARD_PIN_ALERT` — each admin gets the pin request once per new board message. A board message deleted before its id is stored sends none.
 
 ## Private denylist
 
