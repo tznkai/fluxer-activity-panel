@@ -139,6 +139,47 @@ def test_each_hit_is_attributed_to_the_commit_that_contains_it() -> None:
     assert _patch_hits(lines) == {(other, "patch:denylist")}
 
 
+# Attribution trailers. Their hosts are built from parts, as the other host literals in this file are.
+ANTHROPIC_HOST = ".".join(["anthropic", "com"])
+CLAUDE_AI_HOST = ".".join(["claude", "ai"])
+CO_AUTHORED = "Co-Authored-By: Claude Haiku 5.5 <noreply@" + ANTHROPIC_HOST + ">"
+CLAUDE_SESSION = "Claude-Session: https://" + CLAUDE_AI_HOST + "/code/session_Ab3dE5fG7hJ9kLmN"
+
+
+def test_both_attribution_trailers_are_not_hits() -> None:
+    assert _message_hits([NUL + SHA, "subject", "", CO_AUTHORED, CLAUDE_SESSION]) == set()
+
+
+@pytest.mark.parametrize(("line", "kind"), [
+    (CO_AUTHORED + " " + LITERAL, "denylist"),
+    (CO_AUTHORED + " " + SAMPLE_IP, "ipv4"),
+    (CLAUDE_SESSION + " " + LONG_RUN, "long-digits"),
+    (CO_AUTHORED + " " + SAMPLE_HOST, "host"),
+    (CLAUDE_SESSION + " https://" + SAMPLE_HOST + "/x", "url-host"),
+])
+def test_an_attribution_line_still_gets_every_other_check(line: str, kind: str) -> None:
+    assert _message_hits([NUL + SHA, line]) == {(SHA, f"message:{kind}")}
+
+
+@pytest.mark.parametrize("line", [
+    "Mention noreply@" + ANTHROPIC_HOST,
+    "note: " + CO_AUTHORED,
+    "co-authored-by: Claude <noreply@" + ANTHROPIC_HOST + ">",
+])
+def test_the_attribution_host_outside_a_trailer_line_is_a_hit(line: str) -> None:
+    assert _message_hits([NUL + SHA, line]) == {(SHA, "message:host")}
+
+
+@pytest.mark.parametrize(("line", "kinds"), [
+    ("Co-Authored-By: Claude <noreply@sub." + ANTHROPIC_HOST + ">", ("host",)),
+    ("Co-Authored-By: Claude <noreply@" + ANTHROPIC_HOST + ".lan>", ("host",)),
+    ("Claude-Session: https://" + "www." + CLAUDE_AI_HOST + "/code/x", ("url-host",)),
+    ("Claude-Session: https://" + CLAUDE_AI_HOST + "@" + SAMPLE_HOST + "/code/x", ("host", "url-host")),
+])
+def test_the_trailer_exemption_covers_only_the_exact_attribution_hosts(line: str, kinds: tuple[str, ...]) -> None:
+    assert _message_hits([NUL + SHA, line]) == {(SHA, f"message:{kind}") for kind in kinds}
+
+
 # End to end on temp repos.
 
 
@@ -205,6 +246,30 @@ def test_a_clean_subtree_exits_0(tmp_path: Path, capsys) -> None:
 
     assert code == 0
     assert "clean" in capsys.readouterr().out
+
+
+@needs_git
+def test_a_commit_with_both_attribution_trailers_exits_0(tmp_path: Path, capsys) -> None:
+    message = "add notes\n\n" + CO_AUTHORED + "\n" + CLAUDE_SESSION + "\n"
+    repo = _repo(tmp_path / "mono", [(message, {"proj/a.txt": "plain text\n"})])
+
+    code = history_scan.run(repo, "proj", _denylist(tmp_path, LITERAL + "\n"))
+
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "clean" in out
+
+
+@needs_git
+def test_an_attribution_host_in_the_body_outside_a_trailer_exits_1(tmp_path: Path, capsys) -> None:
+    message = "add notes\n\nsee mail@" + ANTHROPIC_HOST + "\n" + CO_AUTHORED + "\n"
+    repo = _repo(tmp_path / "mono", [(message, {"proj/a.txt": "plain text\n"})])
+
+    code = history_scan.run(repo, "proj", _denylist(tmp_path, LITERAL + "\n"))
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert re.search(r"^[0-9a-f]{12} message:host$", out, re.MULTILINE), out
 
 
 @needs_git

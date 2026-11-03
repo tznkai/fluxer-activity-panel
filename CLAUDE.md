@@ -63,6 +63,8 @@ user-facing description, the purge status file format and the "Exit 3" recovery 
   diff paths and every added or removed line, and prints a short commit sha and a kind per hit, never the matched
   text. Exit 0 is clean, 1 means hits, and 2 means refused (no denylist, or git cannot make the split). A hit in
   history is raised with the user before anything is rewritten. The scan never rewrites history.
+  A commit-message line that starts with `Co-Authored-By:` or `Claude-Session:` is exempt from the host check for
+  the exact assistant hosts in `ATTRIBUTION_HOSTS` only; every other check still applies to it.
 - Bidi overrides, isolates and zero-width characters are refused in tracked text
   (`test_no_bidi_or_zero_width_characters_in_tracked_files`). A finding names the path and line, never the character.
 - Every new file needs an SPDX header or a `REUSE.toml` entry, or `reuse lint` fails.

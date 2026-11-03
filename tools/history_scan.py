@@ -35,12 +35,26 @@ HUNK_START = "@@"
 LONG_DIGITS = re.compile(r"[0-9]{15,}")
 EXIT_CLEAN, EXIT_HITS, EXIT_REFUSED = 0, 1, 2
 
+# Attribution trailers that the assistant adds to commit messages name its own hosts. On a message line that starts
+# with one of these keys, only these exact hosts are exempt from the host check; every other check still applies to
+# the line, and a subdomain or a lookalike host is still a hit. The hosts are built from parts so that this file
+# carries no host literal, as the tests do.
+ATTRIBUTION_KEYS = ("Co-Authored-By:", "Claude-Session:")
+ATTRIBUTION_HOSTS = (".".join(["anthropic", "com"]), ".".join(["claude", "ai"]), ".".join(["claude", "com"]))
+ATTRIBUTION_HOST = re.compile(r"(?<![A-Za-z0-9.-])(?:" + "|".join(map(re.escape, ATTRIBUTION_HOSTS)) + r")"
+                              r"(?![A-Za-z0-9.-])", re.IGNORECASE)
+
 Hit = tuple[str, str]  # (full commit sha, kind such as "patch:denylist")
 
 
-def _kinds(text: str, literals: Sequence[str]) -> set[str]:
-    """The kinds of hit on one piece of text. The text is never returned, only the kinds."""
-    kinds = set(network_kinds(text))
+def _kinds(text: str, literals: Sequence[str], exempt_hosts: bool = False) -> set[str]:
+    """The kinds of hit on one piece of text. The text is never returned, only the kinds.
+
+    With `exempt_hosts`, each whole attribution host is removed before the network check. The removed token is
+    bounded by characters that cannot be part of a host, so nothing around it can join into a new host.
+    """
+    checked = ATTRIBUTION_HOST.sub("", text) if exempt_hosts else text
+    kinds = set(network_kinds(checked))
     if any(literal in text for literal in literals):
         kinds.add("denylist")
     if LONG_DIGITS.search(text):
@@ -49,14 +63,18 @@ def _kinds(text: str, literals: Sequence[str]) -> set[str]:
 
 
 def scan_message_lines(lines: Iterable[str], literals: Sequence[str]) -> Iterator[Hit]:
-    """Hits in commit messages, from a stream of `--format=%x00%H%n%B` lines. The sha line is not message text."""
+    """Hits in commit messages, from a stream of `--format=%x00%H%n%B` lines. The sha line is not message text.
+
+    A line that starts with an attribution key (see ATTRIBUTION_KEYS) is exempt from the host check for the
+    attribution hosts only.
+    """
     sha = ""
     for raw in lines:
         line = raw.rstrip("\n")
         if line.startswith(COMMIT_MARK):
             sha = line[len(COMMIT_MARK):]
             continue
-        for kind in _kinds(line, literals):
+        for kind in _kinds(line, literals, exempt_hosts=line.startswith(ATTRIBUTION_KEYS)):
             yield sha, f"message:{kind}"
 
 
