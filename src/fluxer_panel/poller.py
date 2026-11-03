@@ -21,7 +21,7 @@ from typing import Any
 from fluxer_client.events import MessageDelete
 from fluxer_client.ids import is_snowflake
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
-from fluxer_panel import board, cards, render, text
+from fluxer_panel import board, cards, render, subscriptions, text
 from fluxer_panel.card_commands import TEXT_CHANNEL_TYPE, VOICE_CHANNEL_TYPE, CardLocks, channel_name
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
@@ -117,7 +117,26 @@ class Poller:
                     _reconcile_failed(card.id, exc)
             except Exception as exc:  # noqa: BLE001 - a failed lookup leaves this card alone; the others still run
                 _reconcile_failed(card.id, exc)
+        for card in live:
+            for sub in await self._subscriptions_of(card.id):
+                if sub.message_id is not None:
+                    await self._reconcile_copy(card.id, sub.channel_id, sub.message_id)
         await self._reconcile_board()
+
+    async def _reconcile_copy(self, card_id: int, channel_id: str, message_id: str) -> None:
+        """Checks one stored copy, the way the card's message is checked. A copy that is gone is forgotten."""
+        try:
+            await self._rest.get_message(channel_id, message_id)
+        except FluxerHTTPError as exc:
+            if exc.status == 404:
+                await self._forget_message(channel_id, message_id)
+            else:
+                _reconcile_copy_failed(card_id, channel_id, exc)
+        except Exception as exc:  # noqa: BLE001 - a failed lookup keeps the stored copy
+            _reconcile_copy_failed(card_id, channel_id, exc)
+
+    async def _subscriptions_of(self, card_id: int) -> list[subscriptions.Subscription]:
+        return await self._db.run(lambda c: subscriptions.list_for_card(c, card_id))
 
     async def _reconcile_board(self) -> None:
         """Checks the stored board message once, the way cards are checked. A message that is gone is forgotten."""
@@ -407,45 +426,91 @@ class Poller:
         await self._db.run(lambda c: board.set_hash_if(c, channel_id, message_id, rendered))
 
     async def _publish(self, card_id: int, embed: dict[str, Any]) -> None:
-        channel_id = self._config.games_channel_id
-        if channel_id is None:
-            if not self._warned_no_channel:
-                self._warned_no_channel = True
-                log_event(log, "games_channel_unset", level=logging.WARNING)
-            return
+        """Brings the card's own message up to date, then each active copy, all under the card's lock. A copy runs
+        after the card's message, so a failure in one copy never stops the card or the copies after it."""
         rendered = render.rendered_hash(embed)
         payload = render.card_message(embed)
         async with self._locks.get(card_id):
             fresh = await self._db.run(lambda c: cards.get_by_id(c, card_id))
             if fresh is None or fresh.state != "live":
                 return
-            if fresh.message_id is None or fresh.channel_id is None:
-                await self._post(card_id, channel_id, rendered, payload)
-            elif rendered != fresh.runtime.rendered_hash:
-                await self._edit(card_id, fresh.channel_id, fresh.message_id, rendered, payload)
+            channel_id = self._config.games_channel_id
+            if channel_id is None:
+                if not self._warned_no_channel:
+                    self._warned_no_channel = True
+                    log_event(log, "games_channel_unset", level=logging.WARNING)
+            else:
+                await self._sync(card_id, post_channel=channel_id, edit_channel=fresh.channel_id,
+                                 message_id=fresh.message_id, stored_hash=fresh.runtime.rendered_hash,
+                                 rendered=rendered, payload=payload, subscription=False)
+            await self._publish_subscriptions(card_id, rendered, payload)
 
-    async def _post(self, card_id: int, channel_id: str, rendered: str, payload: dict[str, Any]) -> None:
+    async def _publish_subscriptions(self, card_id: int, rendered: str, payload: dict[str, Any]) -> None:
+        """Brings each active copy up to date, in the order the channels were added. A copy that fails is logged by ids
+        and exception type and retried on the next tick. A 403 pauses the copy instead, and its admins are told once."""
+        for sub in await self._db.run(lambda c: subscriptions.list_active(c, card_id)):
+            try:
+                await self._sync(card_id, post_channel=sub.channel_id, edit_channel=sub.channel_id,
+                                 message_id=sub.message_id, stored_hash=sub.content_hash, rendered=rendered,
+                                 payload=payload, subscription=True)
+            except FluxerHTTPError as exc:
+                if exc.status == 403:
+                    await self._pause_subscription(card_id, sub.channel_id)
+                else:
+                    _subscription_failed(card_id, sub.channel_id, exc)
+            except Exception as exc:  # noqa: BLE001 - one copy's failure must not stop the other copies
+                _subscription_failed(card_id, sub.channel_id, exc)
+
+    async def _pause_subscription(self, card_id: int, channel_id: str) -> None:
+        """Pauses a copy the bot was refused in. The DM goes out only when this call changed the row, so each pause
+        alerts the admins once, and the DM names the channel by its mention and no card text."""
+        if not await self._db.run(lambda c: subscriptions.pause(c, card_id, channel_id)):
+            return
+        log_event(log, "subscription_paused", level=logging.WARNING, card_id=card_id, channel_id=channel_id)
+        await self._dm_admins(text.SUBSCRIPTION_PAUSED_ALERT.format(channel_id=channel_id),
+                              failed_event="subscription_alert_failed")
+
+    async def _sync(self, card_id: int, *, post_channel: str, edit_channel: str | None, message_id: str | None,
+                    stored_hash: str | None, rendered: str, payload: dict[str, Any], subscription: bool) -> None:
+        """Posts the message when none is stored, and edits it when its rendering changed. The card's own message and each
+        copy both go through here, so they share the post, the edit, the repost after a 404 and the conditional store."""
+        if message_id is None or edit_channel is None:
+            await self._post(card_id, post_channel, rendered, payload, subscription=subscription)
+        elif rendered != stored_hash:
+            await self._edit(card_id, edit_channel, message_id, rendered, payload, subscription=subscription)
+
+    async def _post(self, card_id: int, channel_id: str, rendered: str, payload: dict[str, Any], *,
+                    subscription: bool = False) -> None:
         sent = await self._rest.send_message(channel_id, embeds=payload["embeds"],
                                              allowed_mentions=payload["allowed_mentions"])
         message_id = sent["id"]
-        await self._db.run(lambda c: cards.set_message(c, card_id, channel_id, message_id, rendered))
+        if subscription:
+            await self._db.run(lambda c: subscriptions.set_message(c, card_id, channel_id, message_id, rendered))
+        else:
+            await self._db.run(lambda c: cards.set_message(c, card_id, channel_id, message_id, rendered))
         await self._undo_if_deleted(channel_id, message_id)
 
     async def _edit(self, card_id: int, channel_id: str, message_id: str, rendered: str,
-                    payload: dict[str, Any]) -> None:
+                    payload: dict[str, Any], *, subscription: bool = False) -> None:
         try:
             await self._rest.edit_message(channel_id, message_id, embeds=payload["embeds"],
                                           allowed_mentions=payload["allowed_mentions"])
         except FluxerHTTPError as exc:
             if exc.status != 404:
                 raise
-            log_event(log, "card_message_recreated", card_id=card_id)
-            await self._post(card_id, channel_id, rendered, payload)
+            if subscription:
+                log_event(log, "subscription_message_recreated", card_id=card_id, channel_id=channel_id)
+            else:
+                log_event(log, "card_message_recreated", card_id=card_id)
+            await self._post(card_id, channel_id, rendered, payload, subscription=subscription)
             return
         # Conditional: a message deleted while the edit was in flight is not written back. A delete that commits
         # before this write leaves the card without the message, and one that commits after it clears the message,
         # so no undo is needed here.
-        await self._db.run(lambda c: cards.set_hash_if(c, card_id, channel_id, message_id, rendered))
+        if subscription:
+            await self._db.run(lambda c: subscriptions.set_hash_if(c, card_id, channel_id, message_id, rendered))
+        else:
+            await self._db.run(lambda c: cards.set_hash_if(c, card_id, channel_id, message_id, rendered))
 
     async def _undo_if_deleted(self, channel_id: str, message_id: str) -> bool:
         """A message that was deleted before its id was stored is forgotten, and it is posted again. Returns whether it
@@ -479,12 +544,24 @@ def _verified_links(card: cards.Card) -> list[tuple[int | None, cards.ChannelLin
 
 
 def _clear_posted(conn: Any, channel_id: str, message_id: str) -> bool:
-    """Forgets a deleted or missing message wherever it is stored, as a card's message or the board's. Message ids are
-    unique, so at most one of the two matches. Returns whether one was forgotten."""
+    """Forgets a deleted or missing message wherever it is stored: a card's message, a card's copy, or the board's.
+    Message ids are unique, so at most one of them matches. Returns whether one was forgotten."""
     if cards.clear_message_if(conn, channel_id, message_id) is not None:
+        return True
+    if subscriptions.clear_message_if(conn, channel_id, message_id) is not None:
         return True
     return board.clear_message_if(conn, channel_id, message_id)
 
 
 def _reconcile_failed(card_id: int, exc: Exception) -> None:
     log_event(log, "card_reconcile_failed", level=logging.WARNING, card_id=card_id, reason=type(exc).__name__)
+
+
+def _reconcile_copy_failed(card_id: int, channel_id: str, exc: Exception) -> None:
+    log_event(log, "subscription_reconcile_failed", level=logging.WARNING, card_id=card_id, channel_id=channel_id,
+              reason=type(exc).__name__)
+
+
+def _subscription_failed(card_id: int, channel_id: str, exc: Exception) -> None:
+    log_event(log, "subscription_failed", level=logging.WARNING, card_id=card_id, channel_id=channel_id,
+              reason=type(exc).__name__)

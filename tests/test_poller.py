@@ -13,7 +13,7 @@ import logging
 import random
 import time
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -25,7 +25,7 @@ from fluxer_client.events import MessageCreate, MessageDelete
 from fluxer_client.gateway import Gateway
 from fluxer_client.rest import FluxerREST
 from fluxer_client.roles import RoleCache
-from fluxer_panel import admin, board, cards, render, text
+from fluxer_panel import admin, board, cards, render, subscriptions, text
 from fluxer_panel.bot import Bot
 from fluxer_panel.card_commands import CardContext, CardLocks
 from fluxer_panel.config import Config
@@ -1227,3 +1227,284 @@ async def test_a_text_channel_set_during_a_name_refresh_stays_set(world: World, 
     [sent] = posts(world.fluxer)
     assert "#Admin" in fields_of(sent.payload["embeds"][0])[text.FIELD_CHANNELS]
     assert_card_writes_safe(world.fluxer)
+
+
+# Card subscriptions: a copy of the card in another text channel ----------------------------------------
+
+SUB = "2003"                # a text channel the card is subscribed to
+SUB2 = "2004"               # a second subscribed channel
+SUB_MESSAGES = f"/api/v1/channels/{SUB}/messages"
+SUB_MESSAGE = "5002"        # the copy's first id: the card's own message took 5001 in the same tick
+
+
+async def subscribe(db: Database, card_id: int, channel: str, *, paused: bool = False) -> None:
+    def tx(conn: Any) -> None:
+        subscriptions.add(conn, card_id, GUILD, channel)
+        if paused:
+            subscriptions.pause(conn, card_id, channel)
+
+    await db.run(tx)
+
+
+async def subscription(db: Database, card_id: int, channel: str) -> subscriptions.Subscription:
+    sub = await db.run(lambda c: subscriptions.get(c, card_id, channel))
+    assert sub is not None
+    return sub
+
+
+async def _wait_for_subscription(db: Database, card_id: int, channel: str,
+                                 predicate: Callable[[subscriptions.Subscription], bool]) -> None:
+    deadline = time.monotonic() + 5.0
+    while True:
+        sub = await db.run(lambda c: subscriptions.get(c, card_id, channel))
+        if sub is not None and predicate(sub):
+            return
+        if time.monotonic() > deadline:
+            raise AssertionError("timed out waiting for the subscription row")
+        await asyncio.sleep(0.01)
+
+
+def copy_posts(state: FakeFluxerState, channel: str) -> list[Recorded]:
+    return [r for r in state.requests if r.method == "POST" and r.path == f"/api/v1/channels/{channel}/messages"]
+
+
+def copy_patches(state: FakeFluxerState, channel: str) -> list[Recorded]:
+    return [r for r in state.requests
+            if r.method == "PATCH" and r.path.startswith(f"/api/v1/channels/{channel}/messages/")]
+
+
+def admin_dms(state: FakeFluxerState) -> list[Recorded]:
+    return [r for r in state.requests if r.method == "POST" and r.path in (FIRST_DM, SECOND_DM)]
+
+
+async def test_a_subscription_gets_a_copy_of_the_card_with_the_same_embed_and_no_mentions(
+        world: World, poller: Poller, db: Database):
+    card_id = await seed(db, "alpha", title="Alpha")
+    await subscribe(db, card_id, SUB)
+
+    await poller.tick()
+
+    [main] = posts(world.fluxer)
+    [copy] = copy_posts(world.fluxer, SUB)
+    assert copy.payload == main.payload
+    sub = await subscription(db, card_id, SUB)
+    assert (sub.message_id, sub.content_hash) == (SUB_MESSAGE, render.rendered_hash(main.payload["embeds"][0]))
+    assert_card_writes_safe(world.fluxer)
+
+
+async def test_a_changed_card_edits_each_copy_once_and_an_unchanged_card_edits_none(
+        world: World, poller: Poller, db: Database):
+    card_id = await seed(db, "alpha", title="Alpha")
+    await subscribe(db, card_id, SUB)
+    await poller.tick()
+    await poller.tick()
+    assert copy_patches(world.fluxer, SUB) == []
+
+    await set_title(db, card_id, "Beta")
+    await poller.tick()
+
+    [edit] = copy_patches(world.fluxer, SUB)
+    assert edit.path == f"{SUB_MESSAGES}/{SUB_MESSAGE}"
+    assert edit.payload["embeds"][0]["title"] == "Beta"
+    assert "content" not in edit.payload
+    assert_card_writes_safe(world.fluxer)
+
+
+async def test_a_copy_gone_when_edited_is_posted_again_and_its_new_id_is_stored(
+        world: World, poller: Poller, db: Database, caplog: pytest.LogCaptureFixture):
+    caplog.set_level(logging.INFO, logger="fluxer_panel.poller")
+    card_id = await seed(db, "alpha", title="Alpha")
+    await subscribe(db, card_id, SUB)
+    await poller.tick()
+    world.fluxer.deleted.add((SUB, SUB_MESSAGE))
+    await set_title(db, card_id, "Beta")
+
+    await poller.tick()
+
+    assert [r.status for r in copy_patches(world.fluxer, SUB)] == [404]
+    assert len(copy_posts(world.fluxer, SUB)) == 2
+    assert (await subscription(db, card_id, SUB)).message_id == "5003"
+    [recreated] = records(caplog, "subscription_message_recreated")
+    assert recreated.panel_fields == {"card_id": card_id, "channel_id": SUB}
+    assert_card_writes_safe(world.fluxer)
+
+
+async def test_a_paused_subscription_is_neither_posted_nor_edited(world: World, poller: Poller, db: Database):
+    card_id = await seed(db, "alpha")
+    await subscribe(db, card_id, SUB, paused=True)
+
+    await poller.tick()
+
+    assert copy_posts(world.fluxer, SUB) == []
+
+
+async def test_a_forbidden_post_pauses_the_copy_and_alerts_each_admin_once(world: World, poller: Poller, db: Database):
+    card_id = await seed(db, "alpha")
+    await subscribe(db, card_id, SUB)
+    world.fluxer.overrides[f"POST {SUB_MESSAGES}"] = Override(403, b'{"code": "X", "message": "no"}')
+
+    await poller.tick()
+    await poller.tick()
+
+    assert len(copy_posts(world.fluxer, SUB)) == 1
+    sub = await subscription(db, card_id, SUB)
+    assert sub.paused is True and sub.message_id is None
+    alert = text.SUBSCRIPTION_PAUSED_ALERT.format(channel_id=SUB)
+    assert [r.payload["content"] for r in admin_dms(world.fluxer)] == [alert, alert]
+    assert len(posts(world.fluxer)) == 1          # the card's own message is still posted
+
+
+async def test_a_forbidden_edit_pauses_the_copy_and_keeps_its_message_and_hash(
+        world: World, poller: Poller, db: Database):
+    card_id = await seed(db, "alpha", title="Alpha")
+    await subscribe(db, card_id, SUB)
+    await poller.tick()
+    stored_hash = (await subscription(db, card_id, SUB)).content_hash
+    world.fluxer.overrides[f"PATCH {SUB_MESSAGES}/{SUB_MESSAGE}"] = Override(403, b'{"code": "X", "message": "no"}')
+
+    await set_title(db, card_id, "Beta")
+    await poller.tick()
+    await poller.tick()
+
+    assert [r.status for r in copy_patches(world.fluxer, SUB)] == [403]
+    sub = await subscription(db, card_id, SUB)
+    assert (sub.paused, sub.message_id, sub.content_hash) == (True, SUB_MESSAGE, stored_hash)
+    assert len(admin_dms(world.fluxer)) == 2
+
+
+async def test_a_resumed_copy_is_posted_on_the_next_tick(world: World, poller: Poller, db: Database):
+    card_id = await seed(db, "alpha")
+    await subscribe(db, card_id, SUB, paused=True)
+    await poller.tick()
+    assert copy_posts(world.fluxer, SUB) == []
+
+    await db.run(lambda c: subscriptions.resume(c, card_id, SUB))
+    await poller.tick()
+
+    assert len(copy_posts(world.fluxer, SUB)) == 1
+    assert (await subscription(db, card_id, SUB)).message_id == SUB_MESSAGE
+
+
+async def test_a_failed_copy_post_is_logged_by_ids_and_type_and_retried_on_the_next_tick(
+        world: World, poller: Poller, db: Database, caplog: pytest.LogCaptureFixture):
+    caplog.set_level(logging.WARNING, logger="fluxer_panel.poller")
+    card_id = await seed(db, "alpha")
+    await subscribe(db, card_id, SUB)
+    world.fluxer.overrides[f"POST {SUB_MESSAGES}"] = Override(500, b'{"code": "X", "message": "boom"}')
+
+    await poller.tick()
+
+    sub = await subscription(db, card_id, SUB)
+    assert (sub.message_id, sub.paused) == (None, False)
+    [failed] = records(caplog, "subscription_failed")
+    assert failed.panel_fields == {"card_id": card_id, "channel_id": SUB, "reason": "FluxerHTTPError"}
+
+    del world.fluxer.overrides[f"POST {SUB_MESSAGES}"]
+    await poller.tick()
+    assert (await subscription(db, card_id, SUB)).message_id == SUB_MESSAGE
+
+
+async def test_a_failing_copy_does_not_stop_the_card_or_the_other_copies(world: World, poller: Poller, db: Database):
+    card_id = await seed(db, "alpha")
+    await subscribe(db, card_id, SUB)
+    await subscribe(db, card_id, SUB2)
+    world.fluxer.overrides[f"POST {SUB_MESSAGES}"] = Override(500, b'{"code": "X", "message": "boom"}')
+
+    await poller.tick()
+
+    assert len(posts(world.fluxer)) == 1
+    assert len(copy_posts(world.fluxer, SUB2)) == 1
+    assert (await subscription(db, card_id, SUB2)).message_id is not None
+
+
+async def test_a_copy_deleted_by_hand_is_posted_again_at_once_through_the_kick(
+        world: World, poller: Poller, db: Database):
+    card_id = await seed(db, "alpha")
+    await subscribe(db, card_id, SUB)
+    run_task = asyncio.create_task(poller.run())
+    try:
+        await _wait_until(lambda: len(copy_posts(world.fluxer, SUB)) == 1)
+        await _wait_for_subscription(db, card_id, SUB, lambda s: s.message_id == SUB_MESSAGE)
+        await poller.on_message_delete(MessageDelete(SUB_MESSAGE, SUB, None))
+        await _wait_for_subscription(db, card_id, SUB, lambda s: s.message_id == "5003")
+    finally:
+        run_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await run_task
+    assert len(copy_posts(world.fluxer, SUB)) == 2
+
+
+async def test_a_copy_deleted_while_its_post_is_in_flight_is_not_stored_and_is_posted_again(
+        world: World, poller: Poller, db: Database):
+    card_id = await seed(db, "alpha")
+    await subscribe(db, card_id, SUB)
+    gate_key = f"POST {SUB_MESSAGES}"
+    gate = asyncio.Event()
+    world.fluxer.gates[gate_key] = gate
+    tick = asyncio.create_task(poller.tick())
+    await _wait_until(lambda: gate_key in world.fluxer.gated)
+
+    await poller.on_message_delete(MessageDelete(SUB_MESSAGE, SUB, None))
+    gate.set()
+    await tick
+
+    assert (await subscription(db, card_id, SUB)).message_id is None
+    del world.fluxer.gates[gate_key]
+    await poller.tick()
+    assert (await subscription(db, card_id, SUB)).message_id == "5003"
+
+
+async def test_publishing_again_posts_every_active_copy_and_not_a_paused_one(
+        world: World, poller: Poller, db: Database):
+    card_id = await seed(db, "alpha", state="draft")
+    await subscribe(db, card_id, SUB)
+    await subscribe(db, card_id, SUB2, paused=True)
+
+    await poller.tick()
+    assert copy_posts(world.fluxer, SUB) == [] and copy_posts(world.fluxer, SUB2) == []
+
+    await db.run(lambda c: cards.set_state(c, card_id, "live", 0))
+    await poller.tick()
+
+    assert len(copy_posts(world.fluxer, SUB)) == 1
+    assert copy_posts(world.fluxer, SUB2) == []
+
+
+async def test_startup_recreates_a_copy_that_no_longer_exists(world: World, poller: Poller, db: Database):
+    card_id = await seed(db, "alpha")
+    await subscribe(db, card_id, SUB)
+    await db.run(lambda c: subscriptions.set_message(c, card_id, SUB, "5999", "0" * 64))
+
+    run_task = asyncio.create_task(poller.run())
+    try:
+        await _wait_until(lambda: len(copy_posts(world.fluxer, SUB)) == 1)
+        await _wait_for_subscription(db, card_id, SUB, lambda s: s.message_id == SUB_MESSAGE)
+    finally:
+        run_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await run_task
+    assert [r.status for r in requests_for(world.fluxer, "GET", f"{SUB_MESSAGES}/5999")] == [404]
+
+
+async def test_subscriptions_are_posted_when_no_games_channel_is_set(world: World, db: Database):
+    card_id = await seed(db, "alpha")
+    await subscribe(db, card_id, SUB)
+    poller = world.make_poller(config=replace(config_for(), games_channel_id=None))
+
+    await poller.tick()
+
+    assert posts(world.fluxer) == []
+    assert len(copy_posts(world.fluxer, SUB)) == 1
+
+
+async def test_the_board_never_lists_a_copy(world: World, poller: Poller, db: Database):
+    card_id = await seed(db, "alpha")
+    await subscribe(db, card_id, SUB)
+
+    await poller.tick()
+
+    board_edits = requests_for(world.fluxer, "PATCH", f"{GAMES_MESSAGES}/{BOARD_MESSAGE}")
+    assert board_edits
+    for edit in board_edits:
+        assert f"channels/{GUILD}/{SUB}" not in str(edit.payload)
+    assert card_id
