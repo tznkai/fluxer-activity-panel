@@ -548,11 +548,13 @@ async def test_purge_task_is_cancelled_when_the_gateway_fails_fatally(aiohttp_se
 
 
 class _PollerProbe:
-    """Stands in for Poller: records that run started and whether it was cancelled."""
+    """Stands in for Poller: records that run started, whether it was cancelled, and whether the REST client still
+    answered from inside the cancelled run. It answers only while the HTTP session is open."""
 
     def __init__(self) -> None:
         self.started = asyncio.Event()
         self.cancelled = False
+        self.rest_answered: bool | None = None
 
 
 def _probe_poller(monkeypatch: pytest.MonkeyPatch) -> _PollerProbe:
@@ -560,7 +562,7 @@ def _probe_poller(monkeypatch: pytest.MonkeyPatch) -> _PollerProbe:
 
     class ProbePoller:
         def __init__(self, **kwargs: Any) -> None:
-            pass
+            self._rest = kwargs["rest"]
 
         def kick(self) -> None:
             pass
@@ -574,10 +576,20 @@ def _probe_poller(monkeypatch: pytest.MonkeyPatch) -> _PollerProbe:
                 await asyncio.Event().wait()
             except asyncio.CancelledError:
                 probe.cancelled = True
+                probe.rest_answered = await _rest_answers(self._rest)
                 raise
 
     monkeypatch.setattr(panel_main, "Poller", ProbePoller)
     return probe
+
+
+async def _rest_answers(rest: Any) -> bool:
+    """One cheap REST call against the fake. False when the session is already closed."""
+    try:
+        await rest.get_gateway_url()
+    except Exception:  # noqa: BLE001 - a closed session is the answer this probe records
+        return False
+    return True
 
 
 async def test_poller_task_is_cancelled_when_the_gateway_fails_fatally(aiohttp_server, tmp_path, monkeypatch):
@@ -596,6 +608,7 @@ async def test_poller_task_is_cancelled_when_the_gateway_fails_fatally(aiohttp_s
         db.close()
     assert probe.started.is_set()
     assert probe.cancelled
+    assert probe.rest_answered is True      # the poller was cancelled while the session was still open
 
 
 async def test_poller_task_is_cancelled_when_run_is_cancelled_from_outside(
@@ -611,6 +624,7 @@ async def test_poller_task_is_cancelled_when_run_is_cancelled_from_outside(
     finally:
         db.close()
     assert probe.cancelled
+    assert probe.rest_answered is True      # the poller was cancelled while the session was still open
     assert _pending_gateway_tasks() == []
 
 
