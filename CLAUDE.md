@@ -170,7 +170,9 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
     failure reason. Hosts and ports are never printed. It does not connect to Fluxer.
   - `markup_live.py` (needs `LIVE_VOICE_CHANNEL_ID` and `LIVE_OTHER_GUILD_ID`, a community the bot is not in): posts
     test messages to `LIVE_CHANNEL_ID` for the timestamp, channel-link, masked-link, mention, edit-burst and escaping
-    checks, reads the voice channel type and the other community's status, then deletes its messages. The operator
-    judges the rendering on the web and mobile clients.
+    checks, reads the voice channel type and the other community's status, then deletes its messages. The channel-link
+    check builds its bare link, masked link and `<#...>` mention for `LIVE_VOICE_CHANNEL_ID`, the channel the card's
+    Voice field links to, because a link to the posting channel does nothing when clicked. The operator judges the
+    rendering on the web and mobile clients.
 - The `LIVE_*` variables are listed in `.env.example`, with `LIVE_PTERO_SERVERS` (comma-separated 8-hex server ids),
   `LIVE_PROBES`, `LIVE_VOICE_CHANNEL_ID` and `LIVE_OTHER_GUILD_ID` commented out.

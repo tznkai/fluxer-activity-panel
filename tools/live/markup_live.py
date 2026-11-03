@@ -103,14 +103,17 @@ async def check_timestamps(ctx: Ctx) -> None:
 
 
 async def check_channel_links(ctx: Ctx) -> None:
-    link = render.channel_link(ctx.instance, ctx.guild, ctx.channel)
-    await post(ctx, content=f"Mention <#{ctx.channel}> and bare link {link}",
+    """The three link forms point at the voice channel, the one the card's Voice field links to. The message is
+    posted to the text channel, and a link to the channel you are already in does nothing when clicked."""
+    link = render.channel_link(ctx.instance, ctx.guild, ctx.voice)
+    await post(ctx, content=f"Mention <#{ctx.voice}> and bare link {link}",
                embeds=[{"description": f"Masked link [voice]({link})",
-                        "fields": [{"name": "Mention", "value": f"<#{ctx.channel}>"}]}])
+                        "fields": [{"name": "Mention", "value": f"<#{ctx.voice}>"}]}])
     await ask(ctx, "channel links",
-              "which of these open the channel, on web and on mobile: the bare link in the content, the masked "
-              "'voice' link, the <#...> mention. Then copy a channel link from the client and type its shape as a "
-              "note, with the host written as H, the guild id as G and the channel id as C.")
+              "which of these open the voice channel, on web and on mobile: the bare link in the content, the masked "
+              "'voice' link, the <#...> mention (all three point at the voice channel). Then copy a link to the voice "
+              "channel from the client and type its shape as a note, with the host written as H, the guild id as G "
+              "and the channel id as C.")
 
 
 async def check_masked_links(ctx: Ctx) -> None:

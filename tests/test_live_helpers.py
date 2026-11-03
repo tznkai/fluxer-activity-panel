@@ -25,6 +25,7 @@ from _live import (  # noqa: E402
     Live,
     LiveRefused,
     Redactor,
+    Results,
     capture_version,
     check_safety,
     load_env,
@@ -786,6 +787,41 @@ def test_parse_verdict_maps_y_n_and_notes(line, expected):
 def test_burst_line_counts_successes_rate_limits_and_other_errors():
     line = markup_live.burst_line([None, None, 429, 429, 500], 1.234)
     assert line == "edits=5 ok=2 rate_limited_429=2 other_errors=1 seconds=1.23"
+
+
+def markup_ctx(session, base: str) -> markup_live.Ctx:
+    """A markup context over the real REST client and the fake server. Only the posting channel is the text channel."""
+    redactor = Redactor(token=TOKEN)
+    lv = Live(env=dict(MARKUP_ENV), session=session, rest=rest_for(session, base), redactor=redactor,
+              version={}, events=asyncio.Queue())
+    return markup_live.Ctx(lv=lv, res=Results(redactor), instance=MARKUP_ENV["FLUXER_INSTANCE_URL"], guild=GUILD,
+                           channel=CHANNEL, user=USER, voice=VOICE, other=OTHER)
+
+
+async def test_channel_links_and_mention_point_at_the_voice_channel_not_the_posting_channel(
+        fake, session, monkeypatch, capsys):
+    state, base = fake
+    answers = iter(["y"])
+
+    async def operator_answer() -> str:
+        return next(answers)
+
+    monkeypatch.setattr(markup_live, "wait_for_enter", operator_answer)
+    ctx = markup_ctx(session, base)
+
+    await markup_live.check_channel_links(ctx)
+
+    ((posted_channel, _), payload), = state.messages.items()
+    assert posted_channel == CHANNEL   # the test message is posted to the text channel ...
+    link = f"https://fluxer.invalid/channels/{GUILD}/{VOICE}"   # ... but every link and mention names the voice one
+    embed = payload["embeds"][0]
+    assert link in payload["content"]
+    assert f"[voice]({link})" in embed["description"]
+    assert f"<#{VOICE}>" in payload["content"]
+    assert embed["fields"][0]["value"] == f"<#{VOICE}>"
+    assert CHANNEL not in str(payload)   # nothing in the message refers to the channel it was posted in
+    assert ctx.res.failed is False
+    assert "voice channel" in capsys.readouterr().out
 
 
 # Scripts that do not call live() register their redactor, so main() redacts an escaped error. no_live_redactor
