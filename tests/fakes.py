@@ -71,6 +71,9 @@ class FakeFluxerState:
     deleted: set[tuple[str, str]] = field(default_factory=set)
     # "METHOD /path" -> seconds to sleep before the handler runs (for timeout tests).
     delays: dict[str, float] = field(default_factory=dict)
+    # "METHOD /path" -> the connection is closed before any response, so the client raises an aiohttp
+    # ClientError. A dropped request is recorded with status 0 and changes no state (no handler runs).
+    drops: set[str] = field(default_factory=set)
     requests: list[Recorded] = field(default_factory=list)
     # Gateway fake: when False the fake never ACKs heartbeats (op 1 gets no op 11).
     ack: bool = True
@@ -244,7 +247,12 @@ def make_rest_app(state: FakeFluxerState) -> web.Application:
 
     @web.middleware
     async def _delay(request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]]):
-        delay = state.delays.get(f"{request.method} {request.path}", 0.0)
+        key = f"{request.method} {request.path}"
+        if key in state.drops:
+            state.requests.append(_record(request, 0, None, None))
+            request.transport.close()
+            raise web.HTTPOk()  # never written: the client sees the connection closed before a response
+        delay = state.delays.get(key, 0.0)
         if delay:
             await asyncio.sleep(delay)
         return await handler(request)

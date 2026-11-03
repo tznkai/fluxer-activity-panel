@@ -23,9 +23,13 @@ from fluxer_client.events import MessageDelete
 from fluxer_client.gateway import Gateway
 from fluxer_client.rest import FluxerREST
 from fluxer_client.roles import RoleCache
+from fluxer_panel import text
 from fluxer_panel.bot import Bot
+from fluxer_panel.card_commands import CardContext
 from fluxer_panel.config import Config
+from fluxer_panel.db import Database
 from fluxer_panel.logs import setup_logging
+from fluxer_panel.sources.registry import build_sources
 from tests.fakes import (
     GATEWAY_STATE,
     FakeFluxerState,
@@ -365,19 +369,33 @@ async def test_invalid_session_reidentifies_then_answers_admin_dm(aiohttp_server
     assert rest_state.requests_to(DM_MESSAGES)[0].payload == {"content": "pong"}
 
 
-async def test_dm_card_command_is_routed_to_the_card_context(fake, session, monkeypatch) -> None:
-    import fluxer_panel.card_commands as card_commands
+@pytest.fixture
+async def card_db(tmp_path):
+    database = Database.open(tmp_path / "panel.db")
+    try:
+        yield database
+    finally:
+        database.close()
 
+
+async def test_dm_card_list_is_answered_through_the_card_context(fake, session, card_db) -> None:
     state, base = fake
     rest = make_rest(session, base)
-    card_ctx = object()
-    seen: list[tuple[str, object]] = []
-
-    async def record(args: str, event: object, ctx: object) -> None:
-        seen.append((args, ctx))
-
-    monkeypatch.setattr(card_commands, "handle", record)
-    bot = Bot(rest=rest, config=make_config("1001"), roles=RoleCache(rest), card_ctx=card_ctx)  # type: ignore[arg-type]
+    config = make_config("1001")
+    card_ctx = CardContext(db=card_db, rest=rest, config=config, sources=build_sources(session, config))
+    bot = Bot(rest=rest, config=config, roles=RoleCache(rest), card_ctx=card_ctx)
     await bot.on_dispatch("READY", READY)
     await bot.on_dispatch("MESSAGE_CREATE", dm_message("!card list"))
-    assert seen == [("list", card_ctx)]
+
+    [message] = state.requests_to(DM_MESSAGES)
+    assert message.payload["content"] == text.NO_CARDS
+
+
+async def test_bot_without_a_card_context_sends_nothing_for_card_commands(fake, session) -> None:
+    state, base = fake
+    rest = make_rest(session, base)
+    bot = Bot(rest=rest, config=make_config("1001"), roles=RoleCache(rest))
+    await bot.on_dispatch("READY", READY)
+    await bot.on_dispatch("MESSAGE_CREATE", dm_message("!card list"))
+
+    assert state.requests == []

@@ -33,6 +33,7 @@ DM = "9100"
 GUILD = "2100"                       # the games channel, when configured
 DM_MESSAGES = f"/api/v1/channels/{DM}/messages"
 VOICE_CHANNEL = "/api/v1/channels/2001"
+VOICE_CHANNEL_GET = "GET /api/v1/channels/2001"
 POSTED_MESSAGE = f"/api/v1/channels/{GUILD}/messages/5101"
 VOICE_GUILD = "/api/v1/guilds/1001"
 PTERO_ENV = {"PTERODACTYL_URL": "https://fluxer.invalid", "PTERODACTYL_API_KEY": "test-key"}
@@ -331,11 +332,8 @@ async def test_forbidden_channel_is_reported_as_missing(world: World) -> None:
     assert (await world.card("mc")).voice is None
 
 
-async def test_unreachable_community_refuses_with_retry(world: World, monkeypatch) -> None:
-    async def unreachable(guild_id: str) -> dict[str, Any]:
-        raise aiohttp.ClientConnectionError("unreachable")
-
-    monkeypatch.setattr(world.rest, "get_guild", unreachable)
+async def test_unreachable_community_refuses_with_retry(world: World) -> None:
+    world.state.drops.add(f"GET {VOICE_GUILD}")
     await make_mc(world)
     await world.run("!card set mc voice 1001 2001")
 
@@ -378,13 +376,9 @@ async def test_unexpected_community_shape_refuses_with_retry(world: World) -> No
     assert (await world.card("mc")).voice is None
 
 
-async def test_connection_error_on_the_channel_refuses_with_retry(world: World, monkeypatch) -> None:
+async def test_connection_error_on_the_channel_refuses_with_retry(world: World) -> None:
     seed_voice(world.state)
-
-    async def unreachable(channel_id: str) -> dict[str, Any]:
-        raise aiohttp.ClientConnectionError("unreachable")
-
-    monkeypatch.setattr(world.rest, "get_channel", unreachable)
+    world.state.drops.add(VOICE_CHANNEL_GET)
     await make_mc(world)
     await world.run("!card set mc voice 1001 2001")
 
@@ -674,13 +668,12 @@ async def test_archive_when_already_archived_is_refused(world: World) -> None:
     assert world.last_reply() == text.ALREADY_ARCHIVED
 
 
-async def test_archive_with_an_unreachable_fluxer_refuses_with_retry(world: World, monkeypatch) -> None:
-    async def unreachable(channel_id: str, message_id: str) -> None:
-        raise aiohttp.ClientConnectionError("unreachable")
-
+async def test_archive_with_an_unreachable_fluxer_refuses_with_retry(world: World) -> None:
     await _live_card_with_message(world)
-    monkeypatch.setattr(world.rest, "delete_message", unreachable)
+    world.state.drops.add(f"DELETE {POSTED_MESSAGE}")
+    world.kicks.clear()
     await world.run("!card archive mc")
+    assert world.kicks == []
 
     assert world.last_reply() == text.ARCHIVE_RETRY
     assert (await world.card("mc")).state == "live"

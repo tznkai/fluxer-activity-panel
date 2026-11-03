@@ -501,3 +501,26 @@ async def test_delay_entry_makes_call_time_out(fake, session):
     with pytest.raises(TimeoutError):
         async with asyncio.timeout(0.02):
             await make_rest(session, base).edit_message("1", "2", content="x")
+
+
+# Dropped connections: a real client error from the transport, with no state change on the server
+
+async def test_dropped_connections_raise_client_errors_and_change_no_state(fake, session):
+    state, base = fake
+    state.guilds["1001"] = {"id": "1001"}
+    state.drops.update({"GET /api/v1/guilds/1001", "POST /api/v1/channels/1/messages"})
+    rest = make_rest(session, base)
+
+    with pytest.raises(aiohttp.ClientError):
+        await rest.get_guild("1001")
+    with pytest.raises(aiohttp.ClientError):
+        await rest.send_message("1", content="x")
+
+    assert state.messages == {}
+    assert state.next_message_id == 5001
+    # Every attempt got no response. aiohttp resends the idempotent GET once on a dropped connection, while the
+    # POST is sent once: the non-idempotent request is never repeated by the client.
+    attempts = [(r.method, r.path) for r in state.requests]
+    assert {r.status for r in state.requests} == {0}
+    assert set(attempts) == {("GET", "/api/v1/guilds/1001"), ("POST", "/api/v1/channels/1/messages")}
+    assert attempts.count(("POST", "/api/v1/channels/1/messages")) == 1
