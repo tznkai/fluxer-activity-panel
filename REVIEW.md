@@ -152,13 +152,13 @@ No code in `src/fluxer_panel` calls `add_member_role` or `remove_member_role` in
 
 ## Pterodactyl read-only access
 
-- `src/fluxer_panel/sources/pterodactyl.py:32` `_ENDPOINTS = ("", "/resources", "/schedules")` — the only three paths the plugin reads: server details, `/resources` and `/schedules`.
-- `src/fluxer_panel/sources/pterodactyl.py:31` `_SERVER_ID = re.compile(r"[0-9a-f]{8}")` — a server id must be eight lowercase hex digits before it reaches a URL.
-- `src/fluxer_panel/sources/pterodactyl.py:96` `async with self._session.get(` — the one request call in the module, and it is a GET.
-- `src/fluxer_panel/sources/pterodactyl.py:97` `allow_redirects=False` — a redirect is not followed, so the key is never sent to another host.
-- `src/fluxer_panel/sources/pterodactyl.py:76` `"Authorization": f"Bearer {api_key}"` — the key goes only in this header, never in a URL or a log line.
-- `src/fluxer_panel/sources/pterodactyl.py:125` `details = await self._get(ref, "")` — a 409 on `/resources` falls back to the details endpoint, the only read that reports suspension.
-- `src/fluxer_panel/sources/pterodactyl.py:106` `status = resp.status` — only the status code is kept from an error reply. The error body is never read, so Panel text cannot reach an error message.
+- `src/fluxer_panel/sources/pterodactyl.py:33` `_ENDPOINTS = ("", "/resources", "/schedules")` — the only three paths the plugin reads: server details, `/resources` and `/schedules`.
+- `src/fluxer_panel/sources/pterodactyl.py:32` `_SERVER_ID = re.compile(r"[0-9a-f]{8}")` — a server id must be eight lowercase hex digits before it reaches a URL.
+- `src/fluxer_panel/sources/pterodactyl.py:97` `async with self._session.get(` — the one request call in the module, and it is a GET.
+- `src/fluxer_panel/sources/pterodactyl.py:98` `allow_redirects=False` — a redirect is not followed, so the key is never sent to another host.
+- `src/fluxer_panel/sources/pterodactyl.py:77` `"Authorization": f"Bearer {api_key}"` — the key goes only in this header, never in a URL or a log line.
+- `src/fluxer_panel/sources/pterodactyl.py:126` `details = await self._get(ref, "")` — a 409 on `/resources` falls back to the details endpoint, the only read that reports suspension.
+- `src/fluxer_panel/sources/pterodactyl.py:107` `status = resp.status` — only the status code is kept from an error reply. The error body is never read, so Panel text cannot reach an error message.
 - `tests/test_pterodactyl_ast.py:43` `def test_no_write_or_socket_method_is_called` — the AST test that the module calls no write, socket or websocket method.
 - `tests/test_pterodactyl_ast.py:73` `def test_endpoints_is_the_three_read_paths` — the allowlist test: `_ENDPOINTS` is exactly the three read paths, and every `_get` call uses one of them.
 
@@ -166,8 +166,8 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 
 ## Schedule payloads
 
-- `src/fluxer_panel/sources/pterodactyl.py:183` `power_payload = (` — a task payload is kept only when the action is `power` and the payload is one of the four power kinds. Every other payload is dropped at parse time, so command text and backup names never leave the parser.
-- `src/fluxer_panel/sources/pterodactyl.py:56` `name: str = field(repr=False)` — the schedule name is Panel text. It is kept out of `repr`, and nothing logs it.
+- `src/fluxer_panel/sources/pterodactyl.py:184` `power_payload = (` — a task payload is kept only when the action is `power` and the payload is one of the four power kinds. Every other payload is dropped at parse time, so command text and backup names never leave the parser.
+- `src/fluxer_panel/sources/pterodactyl.py:57` `name: str = field(repr=False)` — the schedule name is Panel text. It is kept out of `repr`, and nothing logs it.
 
 ## Probe details
 
@@ -182,9 +182,9 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 
 ## Plugin boundary
 
-- `src/fluxer_panel/sources/registry.py:18` `MANAGER_FACTORIES: dict` — the host-manager kinds. Adding a kind is one line here.
-- `src/fluxer_panel/sources/registry.py:21` `PROBES: dict[str, Probe]` — the probe kinds, each mapped to one fixed instance.
-- `src/fluxer_panel/sources/registry.py:38` `if manager is not None:` — a factory that returns None (the manager is not configured) registers nothing, so the plugin is unreachable.
+- `src/fluxer_panel/sources/registry.py:29` `MANAGER_PLUGINS: dict` — the host-manager kinds, each with its factory and the ref it expects. Adding a kind is one line here.
+- `src/fluxer_panel/sources/registry.py:32` `PROBES: dict[str, Probe]` — the probe kinds, each mapped to one fixed instance.
+- `src/fluxer_panel/sources/registry.py:49` `if manager is not None:` — a factory that returns None (the manager is not configured) registers nothing, so the plugin is unreachable.
 - `src/fluxer_panel/sources/base.py:65` `class HostManager(Protocol):` — the host-manager contract. `validate_ref` raises only `CardFieldError`, and `power_state` never raises.
 - `src/fluxer_panel/sources/base.py:81` `class Probe(Protocol):` — the probe contract. A probe returns a result or `ProbeFailed` and never raises.
 - `src/fluxer_panel/sources/_probe_util.py:35` `async def _guard(` — every probe runs under this guard, which maps each failure to a fixed reason.

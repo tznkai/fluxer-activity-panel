@@ -20,7 +20,7 @@ from fluxer_panel.cards import SHOW_ITEMS, CardFieldError, ChannelLink
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.logs import log_event
-from fluxer_panel.sources.registry import PROBES, Sources, known_manager_kinds
+from fluxer_panel.sources.registry import PROBES, Sources, known_manager_kinds, manager_ref_hints
 
 log = logging.getLogger(__name__)
 
@@ -433,6 +433,7 @@ def help_fields_reply() -> str:
         sort_min=card_fields.SORT_RANGE[0], sort_max=card_fields.SORT_RANGE[1],
         seats_min=card_fields.SEATS_RANGE[0], seats_max=card_fields.SEATS_RANGE[1],
         manager_kinds="|".join(sorted(known_manager_kinds())),
+        manager_refs="; ".join(f"{kind} {hint}" for kind, hint in sorted(manager_ref_hints().items())),
         probe_kinds="|".join(PROBES), show_items=", ".join(SHOW_ITEMS),
     )
 

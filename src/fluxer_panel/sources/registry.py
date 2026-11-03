@@ -15,8 +15,19 @@ from fluxer_panel.sources import a2s as a2s_probe
 from fluxer_panel.sources import minecraft, pterodactyl
 from fluxer_panel.sources.base import HostManager, Probe
 
-MANAGER_FACTORIES: dict[str, Callable[[aiohttp.ClientSession, Config], HostManager | None]] = {
-    "pterodactyl": pterodactyl.create,  # returns None when not configured
+
+@dataclass(frozen=True)
+class ManagerPlugin:
+    create: Callable[[aiohttp.ClientSession, Config], HostManager | None]  # returns None when not configured
+    ref_hint: str  # the ref the kind expects, shown in `!card help fields`
+
+    def __post_init__(self) -> None:
+        if not self.ref_hint.strip():
+            raise ValueError("a manager plugin needs a ref hint")
+
+
+MANAGER_PLUGINS: dict[str, ManagerPlugin] = {
+    "pterodactyl": ManagerPlugin(pterodactyl.create, pterodactyl.REF_HINT),
 }
 PROBES: dict[str, Probe] = {
     "a2s": a2s_probe.A2SProbe(),
@@ -33,12 +44,16 @@ class Sources:
 
 def build_sources(session: aiohttp.ClientSession, config: Config) -> Sources:
     managers: dict[str, HostManager] = {}
-    for kind, factory in MANAGER_FACTORIES.items():
-        manager = factory(session, config)
+    for kind, plugin in MANAGER_PLUGINS.items():
+        manager = plugin.create(session, config)
         if manager is not None:
             managers[kind] = manager
     return Sources(managers=managers, probes=dict(PROBES))
 
 
 def known_manager_kinds() -> frozenset[str]:
-    return frozenset(MANAGER_FACTORIES)
+    return frozenset(MANAGER_PLUGINS)
+
+
+def manager_ref_hints() -> dict[str, str]:
+    return {kind: plugin.ref_hint for kind, plugin in MANAGER_PLUGINS.items()}

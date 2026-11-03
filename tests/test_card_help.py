@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 from fluxer_panel import card_fields, text
 from fluxer_panel.card_commands import PREVIEW_LIMIT, SETTABLE, help_fields_reply
 from fluxer_panel.sources import registry
-from fluxer_panel.sources.registry import PROBES, known_manager_kinds
+from fluxer_panel.sources.registry import PROBES, known_manager_kinds, manager_ref_hints
 
 TEXT_FIELDS = ("title", "description", "join", "first_time", "location")
 
@@ -74,11 +76,31 @@ def test_manager_kinds_in_the_help_are_the_registry_kinds_in_sorted_order(monkey
     # Extra kinds go into the registry, so the help must list them and not one hard-coded name. The set's own order is
     # hash-dependent per process; with eight kinds, an unsorted listing is almost never the sorted one.
     for name in ("kind-b", "kind-c", "kind-d", "kind-e", "kind-f", "kind-g", "kind-h"):
-        monkeypatch.setitem(registry.MANAGER_FACTORIES, name, lambda session, config: None)
+        monkeypatch.setitem(registry.MANAGER_PLUGINS, name, registry.ManagerPlugin(lambda s, c: None, f"<{name}-ref>"))
     line = _field_lines()["manager"]
     for kind in known_manager_kinds():
         assert kind in line
     assert "|".join(sorted(known_manager_kinds())) in line
+
+
+def test_each_registered_manager_kind_is_shown_with_the_ref_it_expects(monkeypatch) -> None:
+    monkeypatch.setitem(registry.MANAGER_PLUGINS, "kind-b", registry.ManagerPlugin(lambda s, c: None, "<kind-b id>"))
+    monkeypatch.setitem(registry.MANAGER_PLUGINS, "kind-a", registry.ManagerPlugin(lambda s, c: None, "<kind-a id>"))
+    line = _field_lines()["manager"]
+    for kind, hint in manager_ref_hints().items():
+        assert f"{kind} {hint}" in line, kind
+    # One entry per kind, in kind order.
+    refs = "; ".join(f"{kind} {hint}" for kind, hint in sorted(manager_ref_hints().items()))
+    assert f"The ref each kind expects: {refs}." in line
+
+
+def test_the_pterodactyl_ref_is_shown_as_an_eight_character_server_id() -> None:
+    assert "pterodactyl <8-character server id>" in _field_lines()["manager"]
+
+
+def test_a_manager_plugin_without_a_ref_hint_is_refused() -> None:
+    with pytest.raises(ValueError):
+        registry.ManagerPlugin(lambda s, c: None, "   ")
 
 
 def test_each_help_reply_fits_one_message() -> None:

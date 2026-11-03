@@ -26,6 +26,7 @@ from fluxer_panel.logs import log_event
 from fluxer_panel.sources.base import POWER_KINDS, PowerAction, PowerState, SourceError
 
 KIND = "pterodactyl"
+REF_HINT = "<8-character server id>"  # the ref validate_ref accepts, shown in the card help
 log = logging.getLogger(__name__)
 
 _SERVER_ID = re.compile(r"[0-9a-f]{8}")

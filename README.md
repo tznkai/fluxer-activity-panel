@@ -169,8 +169,10 @@ Plugins are modules in `src/fluxer_panel/sources/`.
 
 1. Write a module that implements a protocol from `sources/base.py`: `HostManager` (`kind`,
    `validate_ref`, `power_state`, `next_power_action`) or `Probe` (`kind`, `probe`).
-2. Add one line to `MANAGER_FACTORIES` or `PROBES` in `sources/registry.py`. A manager factory
-   returns `None` when its settings are absent.
+2. Add one line to `MANAGER_PLUGINS` or `PROBES` in `sources/registry.py`. A manager plugin is
+   `ManagerPlugin(create, ref_hint)`: `create` returns `None` when its settings are absent, and `ref_hint` is the
+   ref's shape for the card help (for example `<8-character server id>`). A manager module therefore also exposes a
+   `REF_HINT` string. A blank hint is refused.
 3. Add a fake under `tests/` and tests for the plugin, as the existing probe tests do.
 4. Return `ProbeFailed` or `PowerState.UNKNOWN` instead of raising. `validate_ref` raises
    `CardFieldError`, and `next_power_action` may raise `SourceError`; the caller handles both.
