@@ -233,10 +233,10 @@ async def _check_voice(rest: FluxerREST, guild_id: str, channel_id: str) -> tupl
         return None, text.VOICE_NOT_VOICE
     if str(channel.get("guild_id")) != guild_id:
         return None, text.VOICE_OTHER_COMMUNITY
-    return Voice(guild_id, channel_id, _channel_name(channel.get("name")), True), text.VOICE_VERIFIED
+    return Voice(guild_id, channel_id, channel_name(channel.get("name")), True), text.VOICE_VERIFIED
 
 
-def _channel_name(value: object) -> str | None:
+def channel_name(value: object) -> str | None:
     """A channel name from Fluxer: printable characters only, whitespace collapsed, at most VOICE_NAME_MAX."""
     if not isinstance(value, str):
         return None
