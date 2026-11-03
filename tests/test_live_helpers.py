@@ -163,12 +163,12 @@ def test_shape_of_reaction_add_keeps_emoji_name_and_hides_content():
         "channel_id": CHANNEL,
         "message_id": MESSAGE,
         "guild_id": GUILD,
-        "emoji": {"id": None, "name": "👍", "animated": False},
+        "emoji": {"id": None, "name": "\U0001f44d", "animated": False},
         "content": "secret chat text",
     }
     shaped = redactor.shape(event)
     assert LONG_RUN.search(repr(shaped)) is None
-    assert shaped["emoji"]["name"] == "👍"
+    assert shaped["emoji"]["name"] == "\U0001f44d"
     assert shaped["content"] == "<str len=16>"
     assert shaped["emoji"]["animated"] is False
 
@@ -591,7 +591,7 @@ def test_empty_extra_secrets_leave_text_unchanged():
 
 
 # A non-ASCII host is written with escapes. Its punycode form is built from parts, so no literal host is in the file.
-IDN_HOST = "bücher.invalid"
+IDN_HOST = "b\u00fccher.invalid"
 PUNYCODE_HOST = ".".join(["xn--bcher-kva", "invalid"])
 
 
