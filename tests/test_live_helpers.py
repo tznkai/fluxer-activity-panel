@@ -728,7 +728,22 @@ def test_parse_probe_targets_refuses_bad_entries_without_echoing(raw):
 def test_probe_summary_reports_counts_and_only_present_details():
     result = ProbeResult(counts=PlayerCounts(online=3, max=20),
                          details=ProbeDetails(map="survival", version=None, game_mode="creative"))
-    assert probes_live.probe_summary(result) == "reachable counts=3/20 map=survival game_mode=creative"
+    assert probes_live.probe_summary(result) == "reachable counts=3/20 map_len=8 game_mode=creative"
+
+
+def test_probe_summary_prints_the_map_name_only_as_its_length():
+    map_name = "private-world-name"   # an operator-chosen name, so it must not appear in the output
+    result = ProbeResult(counts=PlayerCounts(online=0, max=8),
+                         details=ProbeDetails(map=map_name, version="1.21", game_mode=None))
+    summary = probes_live.probe_summary(result)
+    assert summary == f"reachable counts=0/8 map_len={len(map_name)} version=1.21"
+    assert "world" not in summary
+
+
+def test_probe_summary_keeps_an_empty_map_as_length_zero():
+    result = ProbeResult(counts=PlayerCounts(online=1, max=2), details=ProbeDetails(map="", version=None,
+                                                                                    game_mode=None))
+    assert probes_live.probe_summary(result) == "reachable counts=1/2 map_len=0"
 
 
 def test_probe_summary_for_an_unreachable_target_gives_the_reason():

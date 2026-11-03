@@ -167,7 +167,8 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
     user's permissions, the power state and the filtered schedules. A schedule name is printed as its length only.
     It flags any permission other than `schedule.read` or `websocket.connect`. It does not connect to Fluxer.
   - `probes_live.py` (needs `LIVE_PROBES`, a comma-separated list of `kind:host:port`): each target's counts, or its
-    failure reason. Hosts and ports are never printed. It does not connect to Fluxer.
+    failure reason. Hosts and ports are never printed, and a map name is printed as its length only (`map_len=N`),
+    since map names are operator-chosen. Version and game mode are printed as given. It does not connect to Fluxer.
   - `markup_live.py` (needs `LIVE_VOICE_CHANNEL_ID` and `LIVE_OTHER_GUILD_ID`, a community the bot is not in): posts
     test messages to `LIVE_CHANNEL_ID` for the timestamp, channel-link, masked-link, mention, edit-burst and escaping
     checks, reads the voice channel type and the other community's status, then deletes its messages. The channel-link

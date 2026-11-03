@@ -53,13 +53,14 @@ def parse_probe_targets(raw: str, kinds: Collection[str]) -> list[Target]:
 
 
 def probe_summary(result: ProbeResult | ProbeFailed) -> str:
-    """Counts and the details the probe returned (absent details are left out), or the failure reason."""
+    """Counts and the details the probe returned (absent details are left out), or the failure reason. The map name
+    is operator-chosen, so only its length is printed; version and game mode are printed as given."""
     if isinstance(result, ProbeFailed):
         return f"unreachable reason={result.reason}"
-    details = [f"{name}={value}" for name, value in (("map", result.details.map),
-                                                      ("version", result.details.version),
-                                                      ("game_mode", result.details.game_mode))
-               if value is not None]
+    details = [f"map_len={len(result.details.map)}"] if result.details.map is not None else []
+    details += [f"{name}={value}" for name, value in (("version", result.details.version),
+                                                       ("game_mode", result.details.game_mode))
+                if value is not None]
     return " ".join([f"reachable counts={result.counts.online}/{result.counts.max}", *details])
 
 
