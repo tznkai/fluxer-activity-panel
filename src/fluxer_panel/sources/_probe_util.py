@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import struct
+from collections.abc import Awaitable
 
 from fluxer_panel.sources.base import ProbeFailed, ProbeResult, sanitize_detail
 
@@ -31,7 +32,9 @@ def _detail(value: object) -> str | None:
     return sanitize_detail(value)
 
 
-async def _guard(coro, timeout: float, malformed: tuple[type[BaseException], ...] = ()) -> ProbeResult | ProbeFailed:
+async def _guard(
+    coro: Awaitable[ProbeResult], timeout: float, malformed: tuple[type[BaseException], ...] = ()
+) -> ProbeResult | ProbeFailed:
     try:
         return await asyncio.wait_for(coro, timeout + 1.0)  # hard cap above the library's own timeout
     except TimeoutError:
