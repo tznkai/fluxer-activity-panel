@@ -109,6 +109,15 @@ def test_failure_one_second_inside_grace_is_still_waking() -> None:
     assert res.alert_sent is False
 
 
+def test_failure_inside_grace_keeps_the_alert_flag() -> None:
+    res = run(has_probe=True, probe=FAILED, failing_since=None, alert_sent=True, now=1000, grace=600)
+    assert res.status is not None
+    assert res.status.kind is StatusKind.WAKING
+    assert res.failing_since == 1000
+    assert res.alert_sent is True
+    assert res.alert_now is False
+
+
 def test_probe_slot_without_result_counts_as_failure() -> None:
     res = run(has_probe=True, probe=None, failing_since=None, now=1000, grace=600)
     assert res.status is not None
@@ -121,6 +130,7 @@ def test_failure_at_grace_boundary_is_ready_and_alerts() -> None:
     assert res.status is not None
     assert res.status.kind is StatusKind.READY
     assert res.status.counts is None
+    assert res.failing_since == 1000
     assert res.alert_now is True
     assert res.alert_sent is True
 
@@ -129,8 +139,67 @@ def test_failure_after_grace_does_not_alert_again() -> None:
     res = run(has_probe=True, probe=FAILED, failing_since=1000, alert_sent=True, now=1700, grace=600)
     assert res.status is not None
     assert res.status.kind is StatusKind.READY
+    assert res.failing_since == 1000
     assert res.alert_now is False
     assert res.alert_sent is True
+
+
+def test_failure_record_stays_fixed_across_ticks_past_grace() -> None:
+    # Each tick is fed the previous Resolution. The start stays at 1000, so the card does not flip back to Waking up.
+    first = run(has_probe=True, probe=FAILED, failing_since=None, now=1000, grace=600)
+    second = run(
+        has_probe=True, probe=FAILED, failing_since=first.failing_since,
+        alert_sent=first.alert_sent, now=1600, grace=600,
+    )
+    assert second.status is not None
+    assert second.status.kind is StatusKind.READY
+    assert second.failing_since == 1000
+    assert second.alert_now is True
+    assert second.alert_sent is True
+    third = run(
+        has_probe=True, probe=FAILED, failing_since=second.failing_since,
+        alert_sent=second.alert_sent, now=1700, grace=600,
+    )
+    assert third.status is not None
+    assert third.status.kind is StatusKind.READY
+    assert third.failing_since == 1000
+    assert third.alert_now is False
+    assert third.alert_sent is True
+
+
+def test_offline_flap_does_not_realert_until_a_probe_succeeds() -> None:
+    # Alert once, flap through Offline, then fail again in and past the grace period. Each call is fed the last result.
+    first = run(has_probe=True, probe=FAILED, failing_since=None, alert_sent=False, now=1000, grace=600)
+    second = run(
+        has_probe=True, probe=FAILED, failing_since=first.failing_since,
+        alert_sent=first.alert_sent, now=1600, grace=600,
+    )
+    assert second.alert_now is True
+    assert second.alert_sent is True
+    offline = run(
+        power=PowerState.OFFLINE, has_probe=True, probe=FAILED, failing_since=second.failing_since,
+        alert_sent=second.alert_sent, now=1650, grace=600,
+    )
+    assert offline.failing_since is None
+    assert offline.alert_sent is True
+    assert offline.alert_now is False
+    inside = run(
+        has_probe=True, probe=FAILED, failing_since=offline.failing_since,
+        alert_sent=offline.alert_sent, now=1700, grace=600,
+    )
+    assert inside.status is not None
+    assert inside.status.kind is StatusKind.WAKING
+    assert inside.failing_since == 1700
+    assert inside.alert_sent is True
+    assert inside.alert_now is False
+    past = run(
+        has_probe=True, probe=FAILED, failing_since=inside.failing_since,
+        alert_sent=inside.alert_sent, now=2300, grace=600,
+    )
+    assert past.status is not None
+    assert past.status.kind is StatusKind.READY
+    assert past.alert_sent is True
+    assert past.alert_now is False
 
 
 # AC4.3: a success or a non-Running state clears the failure record.
@@ -202,17 +271,13 @@ def test_card_with_neither_source_has_no_status() -> None:
     assert res == resolver.Resolution(None, None, False, False)
 
 
-# AC4.7: resolve takes no schedule input, so a schedules error cannot change its result.
+# AC4.7: a schedules error cannot change the status. This holds by construction, because resolve takes no
+# schedule input. The signature check below is the guard: a schedule argument added later would fail it.
 def test_resolve_has_no_schedule_parameter() -> None:
+    """AC4.7 holds by construction: no schedules outcome can reach resolve, so its signature has no schedule argument."""
     assert set(inspect.signature(resolve).parameters) == {
         "has_manager", "power", "has_probe", "probe", "failing_since", "alert_sent", "now", "grace",
     }
-
-
-def test_schedule_outcome_does_not_change_resolution() -> None:
-    first = run(has_probe=True, probe=FAILED, failing_since=1000, now=1100)
-    second = run(has_probe=True, probe=FAILED, failing_since=1000, now=1100)
-    assert first == second
 
 
 # AC4.6: next-action labels.

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import hashlib
 import inspect
 import json
 import re
@@ -436,8 +437,10 @@ def test_maximum_length_card_stays_within_embed_limits() -> None:
         details=ProbeDetails(map=star * 48, version=star * 48, game_mode=star * 48),
     )
     embed = render.render_embed(card, status, "Restarts in 30 min", instance_url=INSTANCE)
+    assert render.LIMITS["description"] == 1024
     assert len(embed["title"]) <= 256
-    assert len(embed["description"]) <= 4096
+    assert len(embed["description"]) <= render.LIMITS["description"]
+    assert embed["description"].endswith("…")
     total = len(embed["title"]) + len(embed["description"])
     for f in embed["fields"]:
         assert len(f["name"]) <= 256
@@ -516,6 +519,15 @@ def test_hash_changes_when_any_field_changes() -> None:
     changed["title"] = base["title"] + "!"
     assert render.rendered_hash(changed) != render.rendered_hash(base)
     assert len(render.rendered_hash(base)) == 64
+
+
+# The hash is over one canonical form: sorted keys, compact separators and raw non-ASCII text.
+def test_rendered_hash_is_the_canonical_serialisation() -> None:
+    embed = render.render_embed(make_card(title="@everyone lobby"), READY_FULL, None, instance_url=INSTANCE)
+    assert ZWJ in embed["title"]
+    assert "·" in fields_of(embed)[text.FIELD_STATUS]
+    canonical = json.dumps(embed, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    assert render.rendered_hash(embed) == hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def test_card_message_wraps_one_embed_with_no_mentions() -> None:
