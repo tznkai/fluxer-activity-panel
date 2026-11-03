@@ -9,6 +9,7 @@ import pytest
 from fluxer_panel.config import Config, ConfigError
 
 TOKEN = "SENTINEL-TOKEN-7f3a9c"
+PTERO_KEY = "SENTINEL-PTERO-KEY-91c2"
 TOO_LONG_ID = "9" * 26
 
 
@@ -74,6 +75,51 @@ def test_repr_never_shows_the_token():
     assert TOKEN not in repr(Config.from_env(env()))
 
 
+def test_card_settings_defaults_when_unset():
+    config = Config.from_env(env())
+    assert config.games_channel_id is None
+    assert config.pterodactyl_url is None
+    assert config.pterodactyl_api_key is None
+    assert config.pterodactyl_configured is False
+    assert config.poll_interval_seconds == 60
+    assert config.schedule_refresh_seconds == 600
+    assert config.poll_concurrency == 8
+    assert config.probe_timeout_seconds == 3
+    assert config.probe_grace_seconds == 600
+
+
+def test_card_settings_parse_when_valid():
+    config = Config.from_env(env(
+        GAMES_CHANNEL_ID="1002",
+        PTERODACTYL_URL="https://panel.invalid",
+        PTERODACTYL_API_KEY=PTERO_KEY,
+        POLL_INTERVAL_SECONDS="30",
+        SCHEDULE_REFRESH_SECONDS="300",
+        POLL_CONCURRENCY="4",
+        PROBE_TIMEOUT_SECONDS="2",
+        PROBE_GRACE_SECONDS="900",
+    ))
+    assert config.games_channel_id == "1002"
+    assert config.pterodactyl_url == "https://panel.invalid"
+    assert config.pterodactyl_api_key == PTERO_KEY
+    assert config.pterodactyl_configured is True
+    assert config.poll_interval_seconds == 30
+    assert config.schedule_refresh_seconds == 300
+    assert config.poll_concurrency == 4
+    assert config.probe_timeout_seconds == 2
+    assert config.probe_grace_seconds == 900
+
+
+def test_repr_hides_the_pterodactyl_key_and_the_token():
+    text = repr(Config.from_env(env(
+        PTERODACTYL_URL="https://panel.invalid",
+        PTERODACTYL_API_KEY=PTERO_KEY,
+    )))
+    assert PTERO_KEY not in text
+    assert TOKEN not in text
+    assert "https://panel.invalid" in text
+
+
 @pytest.mark.parametrize(
     ("variable", "overrides", "bad_value"),
     [
@@ -102,6 +148,33 @@ def test_repr_never_shows_the_token():
         ("PURGE_INTERVAL_SECONDS", {"PURGE_INTERVAL_SECONDS": "1.5"}, "1.5"),
         ("PURGE_INTERVAL_SECONDS", {"PURGE_INTERVAL_SECONDS": "abc"}, "abc"),
         ("PURGE_INTERVAL_SECONDS", {"PURGE_INTERVAL_SECONDS": "+5"}, "+5"),
+        ("PTERODACTYL_URL", {"PTERODACTYL_URL": "https://panel.invalid"}, None),
+        ("PTERODACTYL_API_KEY", {"PTERODACTYL_API_KEY": PTERO_KEY}, None),
+        ("PTERODACTYL_URL", {"PTERODACTYL_URL": "ftp://sentinel.invalid", "PTERODACTYL_API_KEY": PTERO_KEY}, "ftp://sentinel.invalid"),
+        ("PTERODACTYL_API_KEY", {"PTERODACTYL_URL": "https://panel.invalid", "PTERODACTYL_API_KEY": "SENTINEL KEY"}, "SENTINEL KEY"),
+        ("GAMES_CHANNEL_ID", {"GAMES_CHANNEL_ID": "12a"}, "12a"),
+        ("GAMES_CHANNEL_ID", {"GAMES_CHANNEL_ID": "0"}, "0"),
+        ("GAMES_CHANNEL_ID", {"GAMES_CHANNEL_ID": "SENTINEL"}, "SENTINEL"),
+        ("POLL_INTERVAL_SECONDS", {"POLL_INTERVAL_SECONDS": "0"}, "0"),
+        ("POLL_INTERVAL_SECONDS", {"POLL_INTERVAL_SECONDS": "-1"}, "-1"),
+        ("POLL_INTERVAL_SECONDS", {"POLL_INTERVAL_SECONDS": "abc"}, "abc"),
+        ("POLL_INTERVAL_SECONDS", {"POLL_INTERVAL_SECONDS": "SENTINEL"}, "SENTINEL"),
+        ("SCHEDULE_REFRESH_SECONDS", {"SCHEDULE_REFRESH_SECONDS": "0"}, "0"),
+        ("SCHEDULE_REFRESH_SECONDS", {"SCHEDULE_REFRESH_SECONDS": "-1"}, "-1"),
+        ("SCHEDULE_REFRESH_SECONDS", {"SCHEDULE_REFRESH_SECONDS": "abc"}, "abc"),
+        ("SCHEDULE_REFRESH_SECONDS", {"SCHEDULE_REFRESH_SECONDS": "SENTINEL"}, "SENTINEL"),
+        ("POLL_CONCURRENCY", {"POLL_CONCURRENCY": "0"}, "0"),
+        ("POLL_CONCURRENCY", {"POLL_CONCURRENCY": "-1"}, "-1"),
+        ("POLL_CONCURRENCY", {"POLL_CONCURRENCY": "abc"}, "abc"),
+        ("POLL_CONCURRENCY", {"POLL_CONCURRENCY": "SENTINEL"}, "SENTINEL"),
+        ("PROBE_TIMEOUT_SECONDS", {"PROBE_TIMEOUT_SECONDS": "0"}, "0"),
+        ("PROBE_TIMEOUT_SECONDS", {"PROBE_TIMEOUT_SECONDS": "-1"}, "-1"),
+        ("PROBE_TIMEOUT_SECONDS", {"PROBE_TIMEOUT_SECONDS": "abc"}, "abc"),
+        ("PROBE_TIMEOUT_SECONDS", {"PROBE_TIMEOUT_SECONDS": "SENTINEL"}, "SENTINEL"),
+        ("PROBE_GRACE_SECONDS", {"PROBE_GRACE_SECONDS": "0"}, "0"),
+        ("PROBE_GRACE_SECONDS", {"PROBE_GRACE_SECONDS": "-1"}, "-1"),
+        ("PROBE_GRACE_SECONDS", {"PROBE_GRACE_SECONDS": "abc"}, "abc"),
+        ("PROBE_GRACE_SECONDS", {"PROBE_GRACE_SECONDS": "SENTINEL"}, "SENTINEL"),
     ],
 )
 def test_invalid_config_names_variable_not_value(variable, overrides, bad_value):

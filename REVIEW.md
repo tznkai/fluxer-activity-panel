@@ -11,9 +11,9 @@ Paths are relative to this directory.
 
 - `src/fluxer_panel/config.py:17` `_TOKEN = re.compile(` — the token must be printable ASCII with no spaces, because it is placed in an `Authorization` header.
 - `src/fluxer_panel/config.py:21` `Message names the variable, never its value.` — configuration errors name the variable, so a bad token is reported without being echoed. This is the docstring's intent; the enforcement is in the raise lines below.
-- `src/fluxer_panel/config.py:64` `raise ConfigError("FLUXER_TOKEN must be printable ASCII without spaces")` — the bad-token message states the rule and names the variable, and it never includes the token.
+- `src/fluxer_panel/config.py:83` `raise ConfigError("FLUXER_TOKEN must be printable ASCII without spaces")` — the bad-token message states the rule and names the variable, and it never includes the token.
 - `src/fluxer_panel/config.py:37` `raise ConfigError(message) from None` — a URL that fails to parse raises the generic message, and the parser's own text (which may echo the value) is dropped.
-- `src/fluxer_panel/config.py:45` `token: str = field(repr=False)` — the token is left out of `repr(Config)`, so a logged or printed config does not show it.
+- `src/fluxer_panel/config.py:52` `token: str = field(repr=False)` — the token is left out of `repr(Config)`, so a logged or printed config does not show it.
 - `src/fluxer_client/rest.py:102` `self._headers = {"Authorization": f"Bot {token}"}` — the only place REST sends the token. It goes in a header, never in a URL or a log line.
 - `src/fluxer_client/gateway.py:135` `"token": self.token, "session_id"` — the resume frame (op 6) carries the token.
 - `src/fluxer_client/gateway.py:173` `"token": self.token,` — the identify frame (op 2) carries the token.
@@ -138,7 +138,7 @@ No code in `src/fluxer_panel` calls `add_member_role` or `remove_member_role` in
 - `tests/test_repo_hygiene.py:30` `def is_secret(` — the check that a tracked name is a secret.
 - `tools/live/_live.py:39` `def read_env_file(` — the live tool's own `KEY=VALUE` parser. It does no interpolation. Only the live tool reads a `.env` file.
 - `tools/live/_live.py:62` `**read_env_file(env_file)` — values from the real environment override values from the `.env` file.
-- `src/fluxer_panel/config.py:58` `def from_env(` — the panel reads environment variables only. It never opens `.env`; the operator sources the file in their shell.
+- `src/fluxer_panel/config.py:77` `def from_env(` — the panel reads environment variables only. It never opens `.env`; the operator sources the file in their shell.
 
 ## Published-tree hygiene
 

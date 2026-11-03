@@ -40,6 +40,13 @@ def _url(env: Mapping[str, str], name: str, schemes: tuple[str, ...]) -> str | N
     return value
 
 
+def _positive_int(env: Mapping[str, str], name: str, default: str) -> int:
+    raw = _opt(env, name) or default
+    if not _POSITIVE_INT.fullmatch(raw):
+        raise ConfigError(f"{name} must be a positive integer")
+    return int(raw)
+
+
 @dataclass(frozen=True)
 class Config:
     token: str = field(repr=False)
@@ -53,6 +60,18 @@ class Config:
     purge_status_path: Path
     purge_interval_seconds: int
     log_level: str
+    games_channel_id: str | None = None
+    pterodactyl_url: str | None = None
+    pterodactyl_api_key: str | None = field(default=None, repr=False)
+    poll_interval_seconds: int = 60
+    schedule_refresh_seconds: int = 600
+    poll_concurrency: int = 8
+    probe_timeout_seconds: int = 3
+    probe_grace_seconds: int = 600
+
+    @property
+    def pterodactyl_configured(self) -> bool:
+        return self.pterodactyl_url is not None and self.pterodactyl_api_key is not None
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Config:
@@ -76,9 +95,16 @@ class Config:
         log_level = (_opt(env, "LOG_LEVEL") or "INFO").upper()
         if log_level not in LOG_LEVELS:
             raise ConfigError(f"LOG_LEVEL must be one of {', '.join(LOG_LEVELS)}")
-        raw_interval = _opt(env, "PURGE_INTERVAL_SECONDS") or "3600"
-        if not _POSITIVE_INT.fullmatch(raw_interval):
-            raise ConfigError("PURGE_INTERVAL_SECONDS must be a positive integer")
+        purge_interval = _positive_int(env, "PURGE_INTERVAL_SECONDS", "3600")
+        games_channel_id = _opt(env, "GAMES_CHANNEL_ID")
+        if games_channel_id is not None and not _ADMIN_ID.fullmatch(games_channel_id):
+            raise ConfigError("GAMES_CHANNEL_ID must be a snowflake id")
+        pterodactyl_url = _url(env, "PTERODACTYL_URL", ("http", "https"))
+        pterodactyl_key = _opt(env, "PTERODACTYL_API_KEY")
+        if pterodactyl_key is not None and not _TOKEN.fullmatch(pterodactyl_key):
+            raise ConfigError("PTERODACTYL_API_KEY must be printable ASCII with no spaces")
+        if (pterodactyl_url is None) != (pterodactyl_key is None):
+            raise ConfigError("set both PTERODACTYL_URL and PTERODACTYL_API_KEY, or neither")
         data_dir = Path(_opt(env, "DATA_DIR") or "data")
         return cls(
             token=token, instance_url=instance_url, api_url=api_url, gateway_url=gateway_url,
@@ -87,6 +113,14 @@ class Config:
             data_dir=data_dir,
             db_path=Path(_opt(env, "DB_PATH") or data_dir / "panel.db"),
             purge_status_path=Path(_opt(env, "PURGE_STATUS_PATH") or data_dir / "purge-status.json"),
-            purge_interval_seconds=int(raw_interval),
+            purge_interval_seconds=purge_interval,
             log_level=log_level,
+            games_channel_id=games_channel_id,
+            pterodactyl_url=pterodactyl_url,
+            pterodactyl_api_key=pterodactyl_key,
+            poll_interval_seconds=_positive_int(env, "POLL_INTERVAL_SECONDS", "60"),
+            schedule_refresh_seconds=_positive_int(env, "SCHEDULE_REFRESH_SECONDS", "600"),
+            poll_concurrency=_positive_int(env, "POLL_CONCURRENCY", "8"),
+            probe_timeout_seconds=_positive_int(env, "PROBE_TIMEOUT_SECONDS", "3"),
+            probe_grace_seconds=_positive_int(env, "PROBE_GRACE_SECONDS", "600"),
         )
