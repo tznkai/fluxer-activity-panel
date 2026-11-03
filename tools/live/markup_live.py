@@ -132,8 +132,9 @@ async def check_masked_links(ctx: Ctx) -> None:
 async def check_mention(ctx: Ctx) -> None:
     await post(ctx, embeds=[{"fields": [{"name": "Mention", "value": f"<@{ctx.user}>"}]}])
     await ask(ctx, "mention in an embed",
-              "the embed field renders the user as a mention, and the test user gets a notification (empty "
-              "allowed_mentions was sent).")
+              "the embed field renders the user as a mention and no notification reached the test user. Empty "
+              "allowed_mentions was sent, so the mention renders without a ping. Type y only if it renders as a "
+              "mention and no notification arrived.")
 
 
 async def check_edit_burst(ctx: Ctx) -> None:
