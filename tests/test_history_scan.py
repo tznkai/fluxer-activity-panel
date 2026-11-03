@@ -38,8 +38,8 @@ def _git(repo: Path, *args: str) -> str:
                           check=True, timeout=60).stdout
 
 
-def _repo(root: Path, commits: list[tuple[str, dict[str, str | None]]]) -> Path:
-    """Each commit is (message, {path: text}); a None text deletes the path."""
+def _repo(root: Path, commits: list[tuple[str, dict[str, str | bytes | None]]]) -> Path:
+    """Each commit is (message, {path: text or bytes}); a None text deletes the path."""
     root.mkdir(parents=True)
     _git(root, "init", "-q")
     for message, files in commits:
@@ -49,7 +49,10 @@ def _repo(root: Path, commits: list[tuple[str, dict[str, str | None]]]) -> Path:
                 path.unlink(missing_ok=True)
             else:
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(text, "utf-8")
+                if isinstance(text, bytes):
+                    path.write_bytes(text)
+                else:
+                    path.write_text(text, "utf-8")
         _git(root, "add", "-A")
         _git(root, "commit", "-q", "--allow-empty", "-m", message)
     return root
@@ -235,6 +238,71 @@ def test_literal_on_a_removed_line_is_reported_as_patch(tmp_path: Path, capsys) 
     out = capsys.readouterr().out
     assert code == 1
     assert "patch:denylist" in out
+    assert LITERAL not in out
+
+
+@needs_git
+def test_literal_added_only_by_a_merge_resolution_is_reported(tmp_path: Path, capsys) -> None:
+    repo = _repo(tmp_path / "mono", [("base", {"proj/f.txt": "base\n"})])
+    _git(repo, "checkout", "-q", "-b", "side")
+    (repo / "proj" / "f.txt").write_text("side\n", "utf-8")
+    _git(repo, "commit", "-q", "-am", "side edit")
+    _git(repo, "checkout", "-q", "-")
+    (repo / "proj" / "f.txt").write_text("main\n", "utf-8")
+    _git(repo, "commit", "-q", "-am", "main edit")
+    # The merge conflicts on f.txt; the resolution is the only place the literal appears.
+    subprocess.run(["git", "-C", str(repo), *IDENTITY, "merge", "--no-ff", "-q", "side"], capture_output=True,
+                   check=False, timeout=60)
+    (repo / "proj" / "f.txt").write_text(f"resolved {LITERAL}\n", "utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "--no-edit")
+
+    code = history_scan.run(repo, "proj", _denylist(tmp_path, LITERAL + "\n"))
+
+    out = capsys.readouterr().out
+    assert code == 1, out
+    assert "patch:denylist" in out
+    assert LITERAL not in out
+
+
+@needs_git
+def test_literal_in_a_binary_file_is_reported(tmp_path: Path, capsys) -> None:
+    repo = _repo(tmp_path / "mono", [("add blob", {"proj/blob.bin": b"\x00\x01" + LITERAL.encode() + b"\n"})])
+
+    code = history_scan.run(repo, "proj", _denylist(tmp_path, LITERAL + "\n"))
+
+    out = capsys.readouterr().out
+    assert code == 1, out
+    assert "patch:denylist" in out
+    assert LITERAL not in out
+
+
+@needs_git
+def test_literal_hidden_by_a_textconv_filter_is_reported(tmp_path: Path, capsys) -> None:
+    # Git takes attributes from the working tree, so the pattern is at the repo root and matches by basename.
+    repo = _repo(tmp_path / "mono", [
+        ("add doc", {"proj/doc.dat": f"{LITERAL}\n", ".gitattributes": "*.dat diff=hide\n"}),
+    ])
+    _git(repo, "config", "diff.hide.textconv", "echo clean")
+
+    code = history_scan.run(repo, "proj", _denylist(tmp_path, LITERAL + "\n"))
+
+    out = capsys.readouterr().out
+    assert code == 1, out
+    assert "patch:denylist" in out
+    assert LITERAL not in out
+
+
+@needs_git
+def test_a_denylisted_literal_in_a_non_ascii_path_is_reported_as_path(tmp_path: Path, capsys) -> None:
+    denied = "é" + LITERAL
+    repo = _repo(tmp_path / "mono", [("add file", {f"proj/{denied}.txt": "plain text\n"})])
+
+    code = history_scan.run(repo, "proj", _denylist(tmp_path, denied + "\n"))
+
+    out = capsys.readouterr().out
+    assert code == 1, out
+    assert re.search(r"^[0-9a-f]{12} path:denylist$", out, re.MULTILINE), out
     assert LITERAL not in out
 
 

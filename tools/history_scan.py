@@ -119,9 +119,12 @@ def _split(repo: Path, prefix: str) -> str | None:
 
 def _stream(repo: Path, args: list[str], scan: Callable[[Iterable[str], Sequence[str]], Iterator[Hit]],
             literals: Sequence[str]) -> set[Hit] | None:
-    """Scans one `git log` stream. None when git exits with an error."""
-    process = subprocess.Popen(["git", "-C", str(repo), "log", *args], stdout=subprocess.PIPE,
-                               stderr=subprocess.DEVNULL)
+    """Scans one `git log` stream. None when git exits with an error.
+
+    `core.quotePath=false` keeps non-ASCII path names literal in diff headers, so a literal in such a name is seen.
+    """
+    process = subprocess.Popen(["git", "-C", str(repo), "-c", "core.quotePath=false", "log", *args],
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     assert process.stdout is not None
     try:
         hits = set(scan((raw.decode("utf-8", "replace") for raw in process.stdout), literals))
@@ -146,7 +149,10 @@ def run(repo: Path, prefix: str, denylist_file: Path | None) -> int:
         print(f"refused: git cannot split {prefix!r} from HEAD")
         return EXIT_REFUSED
     messages = _stream(repo, ["--no-patch", "--format=%x00%H%n%B", split], scan_message_lines, literals)
-    patches = _stream(repo, ["-p", "--no-color", "--no-ext-diff", "--format=%x00%H", split],
+    # Merges are diffed against their first parent, so a literal a merge resolution adds is seen. Binary files are
+    # diffed as text and textconv filters are off, so the bytes that git stores are what gets checked.
+    patches = _stream(repo, ["-p", "--no-color", "--no-ext-diff", "--no-textconv", "--text",
+                             "--diff-merges=first-parent", "--format=%x00%H", split],
                       scan_patch_lines, literals)
     if messages is None or patches is None:
         print("refused: git log failed on the split history")
