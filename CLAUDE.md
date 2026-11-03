@@ -155,7 +155,7 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
 - The scripts that use `live()` may only use the private guild. `check_safety` refuses unless the channel is in the guild and the user is a member.
   It also refuses if the guild reports more than two members (no refusal when the count is not reported).
 - Never print the token or raw ids. `Redactor` replaces the token with `[REDACTED]`, labels known ids and replaces any
-  other 15+ digit run with `<id>`. Extra secrets (a Panel URL, a probe host) are replaced too, and `label_text` gives any
+  other 15+ digit run with `<id>`. Extra secrets (a Panel URL, a probe host) are replaced too, whatever the case of the match, and `label_text` gives any
   other value a stable label. `out()` is the only print path. Error output is the exception type and redacted message.
 - Exit codes: 0 pass; 1 any FAIL or error; 2 refusal; 130 Ctrl+C.
 - Scripts wait with `wait_for_enter()` (a daemon-thread read), never `input()`, so Ctrl+C still exits 130.
@@ -174,7 +174,8 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
     checks, reads the voice channel type and the other community's status, then deletes its messages. The channel-link
     check builds its bare link, masked link and `<#...>` mention for `LIVE_VOICE_CHANNEL_ID`, the channel the card's
     Voice field links to, because a link to the posting channel does nothing when clicked. The instance URL's forms
-    (the URL, its host, host:port and [host]:port, from `endpoint_secrets`) are redacted from every printed line, the
-    operator's typed NOTE included. The operator judges the rendering on the web and mobile clients.
+    (the URL as given and as normalised, each host in its decoded and punycode spellings, with host:port and
+    [host]:port, from `endpoint_secrets`) are redacted from every printed line, the operator's typed NOTE included,
+    whatever the case of the match. The operator judges the rendering on the web and mobile clients.
 - The `LIVE_*` variables are listed in `.env.example`, with `LIVE_PTERO_SERVERS` (comma-separated 8-hex server ids),
   `LIVE_PROBES`, `LIVE_VOICE_CHANNEL_ID` and `LIVE_OTHER_GUILD_ID` commented out.

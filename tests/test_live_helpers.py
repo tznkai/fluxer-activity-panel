@@ -590,6 +590,48 @@ def test_empty_extra_secrets_leave_text_unchanged():
     assert redactor.text("status 200 ok") == "status 200 ok"
 
 
+# A non-ASCII host is written with escapes. Its punycode form is built from parts, so no literal host is in the file.
+IDN_HOST = "bücher.invalid"
+PUNYCODE_HOST = ".".join(["xn--bcher-kva", "invalid"])
+
+
+def test_extra_secrets_match_regardless_of_case():
+    redactor = Redactor("", extra_secrets=("fluxer.invalid",))
+    assert redactor.text("reached FLUXER.Invalid and fluxer.INVALID") == "reached [REDACTED] and [REDACTED]"
+
+
+def test_a_mixed_case_instance_url_hides_its_host_in_every_spelling():
+    secrets = markup_live.markup_secrets({"FLUXER_INSTANCE_URL": "https://Fluxer.Invalid:8443"})
+    redactor = Redactor(TOKEN, extra_secrets=secrets)
+    assert redactor.text("https://Fluxer.Invalid:8443/ fluxer.invalid:8443 FLUXER.INVALID") == \
+        "[REDACTED]/ [REDACTED] [REDACTED]"
+
+
+def test_punycode_host_is_redacted_where_an_error_names_host_and_port():
+    secrets = markup_live.markup_secrets({"FLUXER_INSTANCE_URL": "https://" + IDN_HOST})
+    redactor = Redactor(TOKEN, extra_secrets=secrets)
+    assert redactor.text(f"cannot connect to {PUNYCODE_HOST}:443") == "cannot connect to [REDACTED]"
+
+
+def test_punycode_url_is_redacted_where_an_error_names_the_url():
+    secrets = markup_live.markup_secrets({"FLUXER_INSTANCE_URL": "https://" + IDN_HOST})
+    redactor = Redactor(TOKEN, extra_secrets=secrets)
+    assert redactor.text("GET " + "https://" + PUNYCODE_HOST + "/x") == "GET [REDACTED]/x"
+
+
+def test_punycode_host_in_upper_case_is_redacted():
+    secrets = markup_live.markup_secrets({"FLUXER_INSTANCE_URL": "https://" + IDN_HOST})
+    redactor = Redactor(TOKEN, extra_secrets=secrets)
+    assert redactor.text(PUNYCODE_HOST.upper()) == "[REDACTED]"
+
+
+def test_instance_url_forms_include_the_punycode_host_and_its_port_forms():
+    assert markup_live.markup_secrets({"FLUXER_INSTANCE_URL": "https://" + IDN_HOST}) == (
+        "https://" + IDN_HOST, "https://" + PUNYCODE_HOST,
+        IDN_HOST, f"{IDN_HOST}:443", f"[{IDN_HOST}]:443",
+        PUNYCODE_HOST, f"{PUNYCODE_HOST}:443", f"[{PUNYCODE_HOST}]:443")
+
+
 def test_label_text_is_stable_per_value_and_counts_per_kind():
     redactor = Redactor(TOKEN)
     first = redactor.label_text("alpha.invalid", "target")
@@ -875,6 +917,9 @@ async def test_live_hides_the_extra_secrets_in_every_line_it_prints(fake, monkey
     ("https://fluxer.invalid", "port fluxer.invalid:443", "port [REDACTED]"),
     ("https://fluxer.invalid:8443", "at fluxer.invalid:8443", "at [REDACTED]"),
     ("https://[" + PROBE_IPV6 + "]:8443", f"at [{PROBE_IPV6}]:8443", "at [REDACTED]"),
+    ("https://Fluxer.Invalid", "host FLUXER.invalid", "host [REDACTED]"),
+    ("https://" + IDN_HOST, "host " + PUNYCODE_HOST, "host [REDACTED]"),
+    ("https://" + IDN_HOST, "host " + IDN_HOST, "host [REDACTED]"),
 ])
 async def test_a_note_echoing_the_instance_host_is_redacted(fake, session, monkeypatch, capsys, instance, note,
                                                             shown):

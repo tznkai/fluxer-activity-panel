@@ -68,7 +68,7 @@ No code in `src/fluxer_panel` calls `add_member_role` or `remove_member_role` in
 - `src/fluxer_client/rest.py:233` `def _reaction_path(` — builds the path from snowflake-checked ids and an encoded emoji.
 - `src/fluxer_client/rest.py:240` `async def remove_reaction(` — a DELETE of one user's reaction. Fluxer requires Manage Messages for it. Removal has been exercised only in a guild channel. The DM case is not covered (see the phase 1 section).
 - `tools/live/reaction_remove.py:80` `await rest.remove_reaction(channel, message_id, emoji, user)` — the only live exercise of removal.
-- `tools/live/_live.py:221` `LIVE_CHANNEL_ID is not in LIVE_GUILD_ID` — the safety check that makes that live removal guild-only.
+- `tools/live/_live.py:223` `LIVE_CHANNEL_ID is not in LIVE_GUILD_ID` — the safety check that makes that live removal guild-only.
 
 ## Purge deletion
 
@@ -119,16 +119,16 @@ No code in `src/fluxer_panel` calls `add_member_role` or `remove_member_role` in
 
 - `tools/live/_live.py:27` `LONG_NUMBER = re.compile(` — any 15-plus-digit run that is not a known id is replaced with `<id>`.
 - `tools/live/_live.py:33` `_redactor: Redactor | None = None` — set as soon as the token is loaded. `main()` reads it when it reports an error.
-- `tools/live/_live.py:91` `class Redactor:` — maps known ids to labels and replaces the token and each extra secret (a Panel URL, a probe host) with `[REDACTED]`.
-- `tools/live/_live.py:127` `return LONG_NUMBER.sub("<id>", s)` — the last step: any remaining long digit run.
-- `tools/live/_live.py:151` `def log_handler(` — the stderr log handler formats the whole record, message and traceback, through the redactor.
-- `tools/live/_live.py:166` `def out(` — the only print path for the live scripts.
-- `tools/live/_live.py:214` `async def check_safety(` — refuses unless the channel is in the guild and the user is a member. It also refuses if the guild reports more than two members (no refusal when the count is not reported).
-- `tools/live/_live.py:226` `LIVE_USER_ID is not a member of LIVE_GUILD_ID` — a 404 on the membership check refuses. A mistyped user id never gets a DM.
-- `tools/live/_live.py:237` `"Authorization": f"Bot {env['FLUXER_TOKEN']}"` — the version capture sends the token in a header and prints nothing from it.
-- `tools/live/_live.py:251` `def gateway_failure(` — a gateway failure reports only the exception's type name. Its message is never printed, since it may echo the token or a payload.
-- `tools/live/_live.py:380` `def error_redactor(` — resolved at the moment an error is printed, so a redactor set up later in the run still applies.
-- `tools/live/_live.py:399` `f"ERROR {type(exc).__name__}: {exc}"` — error output is the type and the redacted message only, with no traceback.
+- `tools/live/_live.py:91` `class Redactor:` — maps known ids to labels and replaces the token and each extra secret (a Panel URL, a probe host, an instance URL and its host forms) with `[REDACTED]`, matching regardless of case.
+- `tools/live/_live.py:129` `return LONG_NUMBER.sub("<id>", s)` — the last step: any remaining long digit run.
+- `tools/live/_live.py:153` `def log_handler(` — the stderr log handler formats the whole record, message and traceback, through the redactor.
+- `tools/live/_live.py:168` `def out(` — the only print path for the live scripts.
+- `tools/live/_live.py:216` `async def check_safety(` — refuses unless the channel is in the guild and the user is a member. It also refuses if the guild reports more than two members (no refusal when the count is not reported).
+- `tools/live/_live.py:228` `LIVE_USER_ID is not a member of LIVE_GUILD_ID` — a 404 on the membership check refuses. A mistyped user id never gets a DM.
+- `tools/live/_live.py:239` `"Authorization": f"Bot {env['FLUXER_TOKEN']}"` — the version capture sends the token in a header and prints nothing from it.
+- `tools/live/_live.py:253` `def gateway_failure(` — a gateway failure reports only the exception's type name. Its message is never printed, since it may echo the token or a payload.
+- `tools/live/_live.py:384` `def error_redactor(` — resolved at the moment an error is printed, so a redactor set up later in the run still applies.
+- `tools/live/_live.py:403` `f"ERROR {type(exc).__name__}: {exc}"` — error output is the type and the redacted message only, with no traceback.
 
 ## .env handling
 

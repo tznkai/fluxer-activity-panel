@@ -119,9 +119,11 @@ class Redactor:
         return self._free[key]
 
     def text(self, s: str) -> str:
-        for secret in sorted((self.token, *self.extra_secrets), key=len, reverse=True):
-            if secret:   # str.replace("") would insert the marker between every character
-                s = s.replace(secret, "[REDACTED]")
+        # Longest first, so a longer secret is replaced before its prefix. Matching ignores case: a host is
+        # case-insensitive, and an operator's note or an error can spell it in any case.
+        secrets = [secret for secret in sorted((self.token, *self.extra_secrets), key=len, reverse=True) if secret]
+        if secrets:   # an empty pattern would match between every character
+            s = re.sub("|".join(re.escape(secret) for secret in secrets), "[REDACTED]", s, flags=re.IGNORECASE)
         for snowflake in sorted(self.labels, key=len, reverse=True):
             s = re.sub(rf"(?<!\d){re.escape(snowflake)}(?!\d)", self.labels[snowflake], s)
         return LONG_NUMBER.sub("<id>", s)
@@ -276,7 +278,9 @@ def redacted_logging(redactor: Redactor) -> Iterator[None]:
 async def live(*, gateway: bool, extra_secrets: tuple[str, ...] = ()) -> AsyncIterator[Live]:
     """install redactor.log_handler() as the only root handler (level WARNING) -> load_env -> session -> api base (FLUXER_API_URL or discover_api) -> FluxerREST -> check_safety ->
     capture_version -> label the env ids -> print the version block -> optionally start a Gateway whose
-    on_dispatch puts (t, d) on the queue and wait for READY (label the bot user as <bot>). On exit: gateway.stop()."""
+    on_dispatch puts (t, d) on the queue and wait for READY (label the bot user as <bot>). On exit: gateway.stop().
+    extra_secrets are added to the redactor, so every line the script prints and every log record hides them
+    (matched regardless of case, see Redactor.text)."""
     global _redactor
     env = load_env()
     redactor = Redactor(token=env["FLUXER_TOKEN"], extra_secrets=extra_secrets)
@@ -402,9 +406,16 @@ def main(coro_fn: Callable[[], Any]) -> None:
 
 
 def endpoint_secrets(url: str) -> tuple[str, ...]:
-    """The forms an error or an operator's note can use for a base URL: the URL itself, its host, and, when the port
-    is known (given, or the scheme's default), host:port and the bracketed [host]:port. Empty forms are left out."""
+    """The forms an error or an operator's note can use for a base URL: the URL as given and as yarl normalises it,
+    and each host (`host` is the decoded name, `raw_host` the punycode form that aiohttp errors use). When the port
+    is known (given, or the scheme's default), each host also gives host:port and the bracketed [host]:port. Empty
+    and repeated forms are left out."""
     parsed = URL(url)
-    host, port = parsed.host, parsed.port
-    host_forms = (host, f"{host}:{port}", f"[{host}]:{port}") if host and port else (host,)
-    return tuple(value for value in (url, *host_forms) if value)
+    port = parsed.port
+    hosts = dict.fromkeys(host for host in (parsed.host, parsed.raw_host) if host)
+    forms: list[str] = [url, str(parsed)]
+    for host in hosts:
+        forms.append(host)
+        if port:
+            forms += [f"{host}:{port}", f"[{host}]:{port}"]
+    return tuple(dict.fromkeys(form for form in forms if form))
