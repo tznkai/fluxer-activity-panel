@@ -57,16 +57,16 @@ No code in `src/fluxer_panel` calls `add_member_role` or `remove_member_role` in
 
 - `src/fluxer_client/rest.py:66` `def _check_reason(` — the audit reason is fixed, printable ASCII, and at most 128 characters. Caller text must never reach it.
 - `src/fluxer_client/rest.py:71` `audit reason must be 1-128 printable ASCII characters` — the refusal happens before any request is sent.
-- `src/fluxer_client/rest.py:238` `def _role_path(` — builds the role URL from ids that have passed the snowflake check.
-- `src/fluxer_client/rest.py:239` `/members/{require_snowflake(user_id)}"` — the user id is validated as a snowflake in the path.
-- `src/fluxer_client/rest.py:242` `async def add_member_role(` — a PUT that grants a role. This is a privilege change, so the role allowlist and the role hierarchy must be checked before the call. Fluxer answers both a hierarchy refusal and a missing permission with the same 403 code.
-- `src/fluxer_client/rest.py:246` `async def remove_member_role(` — a DELETE that removes a role. The same checks apply.
+- `src/fluxer_client/rest.py:244` `def _role_path(` — builds the role URL from ids that have passed the snowflake check.
+- `src/fluxer_client/rest.py:245` `/members/{require_snowflake(user_id)}"` — the user id is validated as a snowflake in the path.
+- `src/fluxer_client/rest.py:248` `async def add_member_role(` — a PUT that grants a role. This is a privilege change, so the role allowlist and the role hierarchy must be checked before the call. Fluxer answers both a hierarchy refusal and a missing permission with the same 403 code.
+- `src/fluxer_client/rest.py:252` `async def remove_member_role(` — a DELETE that removes a role. The same checks apply.
 - `tools/live/roles.py:32` `await rest.add_member_role(guild, user, role, reason=REASON)` — the live tool's call, which runs only in the private guild.
 
 ## Reaction removal
 
-- `src/fluxer_client/rest.py:227` `def _reaction_path(` — builds the path from snowflake-checked ids and an encoded emoji.
-- `src/fluxer_client/rest.py:234` `async def remove_reaction(` — a DELETE of one user's reaction. Fluxer requires Manage Messages for it. Removal has been exercised only in a guild channel. The DM case is not covered (see the phase 1 section).
+- `src/fluxer_client/rest.py:233` `def _reaction_path(` — builds the path from snowflake-checked ids and an encoded emoji.
+- `src/fluxer_client/rest.py:240` `async def remove_reaction(` — a DELETE of one user's reaction. Fluxer requires Manage Messages for it. Removal has been exercised only in a guild channel. The DM case is not covered (see the phase 1 section).
 - `tools/live/reaction_remove.py:80` `await rest.remove_reaction(channel, message_id, emoji, user)` — the only live exercise of removal.
 - `tools/live/_live.py:192` `LIVE_CHANNEL_ID is not in LIVE_GUILD_ID` — the safety check that makes that live removal guild-only.
 

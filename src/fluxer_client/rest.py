@@ -172,6 +172,7 @@ class FluxerREST:
         embeds: list[dict[str, Any]] | None = None,
         reply_to: str | None = None,
         file: tuple[str, bytes, str] | None = None,
+        allowed_mentions: Mapping[str, Any] | None = None,
     ) -> Any:
         """POST a message. `file` is (filename, data, content_type) and is sent as multipart files[0]."""
         path = f"/channels/{require_snowflake(channel_id)}/messages"
@@ -183,7 +184,9 @@ class FluxerREST:
         if reply_to is not None:
             # the reference lives in the JSON body only, never in the URL
             payload["message_reference"] = {"message_id": require_snowflake(reply_to)}
-        if not payload.keys() - {"message_reference"} and file is None:
+        if allowed_mentions is not None:
+            payload["allowed_mentions"] = dict(allowed_mentions)
+        if not payload.keys() - {"message_reference", "allowed_mentions"} and file is None:
             raise ValueError("send_message needs content, embeds or a file")
         if file is None:
             return await self.request("POST", path, json_body=payload)
@@ -213,6 +216,7 @@ class FluxerREST:
         *,
         content: str | None | Unset = UNSET,
         embeds: list[dict[str, Any]] | Unset = UNSET,
+        allowed_mentions: Mapping[str, Any] | Unset = UNSET,
     ) -> Any:
         path = f"/channels/{require_snowflake(channel_id)}/messages/{require_snowflake(message_id)}"
         body: dict[str, Any] = {}
@@ -220,7 +224,9 @@ class FluxerREST:
             body["content"] = content  # None is sent as JSON null
         if embeds is not UNSET:
             body["embeds"] = embeds  # replaces the whole list
-        if not body:
+        if allowed_mentions is not UNSET:
+            body["allowed_mentions"] = dict(allowed_mentions)
+        if not body.keys() - {"allowed_mentions"}:
             raise ValueError("edit_message needs content or embeds")
         return await self.request("PATCH", path, json_body=body)
 
@@ -255,6 +261,26 @@ class FluxerREST:
         if not isinstance(channel_id, str):
             raise ValueError("DM channel response has no string id")
         return require_snowflake(channel_id)
+
+    @staticmethod
+    def _object(data: Any) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise FluxerHTTPError(200, None, "unexpected response shape")
+        return data
+
+    async def get_channel(self, channel_id: str) -> dict[str, Any]:
+        return self._object(await self.request("GET", f"/channels/{require_snowflake(channel_id)}"))
+
+    async def get_guild(self, guild_id: str) -> dict[str, Any]:
+        return self._object(await self.request("GET", f"/guilds/{require_snowflake(guild_id)}"))
+
+    async def get_message(self, channel_id: str, message_id: str) -> dict[str, Any]:
+        path = f"/channels/{require_snowflake(channel_id)}/messages/{require_snowflake(message_id)}"
+        return self._object(await self.request("GET", path))
+
+    async def delete_message(self, channel_id: str, message_id: str) -> None:
+        path = f"/channels/{require_snowflake(channel_id)}/messages/{require_snowflake(message_id)}"
+        await self.request("DELETE", path)
 
 
 async def resolve_endpoints(

@@ -240,6 +240,12 @@ CALLS: list[tuple[str, Callable[[FluxerREST, str], Awaitable[object]]]] = [
     ("remove_member_role user", lambda r, v: r.remove_member_role("1", v, "3")),
     ("remove_member_role role", lambda r, v: r.remove_member_role("1", "2", v)),
     ("open_dm user", lambda r, v: r.open_dm(v)),
+    ("get_channel channel", lambda r, v: r.get_channel(v)),
+    ("get_guild guild", lambda r, v: r.get_guild(v)),
+    ("get_message channel", lambda r, v: r.get_message(v, "2")),
+    ("get_message message", lambda r, v: r.get_message("1", v)),
+    ("delete_message channel", lambda r, v: r.delete_message(v, "2")),
+    ("delete_message message", lambda r, v: r.delete_message("1", v)),
 ]
 
 
@@ -250,6 +256,142 @@ async def test_bad_snowflake_raises_before_any_request(fake, session, label, cal
     with pytest.raises(ValueError):
         await call(make_rest(session, base), bad)
     assert state.requests == []
+
+
+# Phase 2 (AC5.1): allowed_mentions on send and edit. Every card send and edit carries an
+# empty parse list, so Phase 6 can rely on it. It is never counted as content.
+
+ALLOWED_NONE = {"parse": []}
+
+
+async def test_send_message_embeds_with_allowed_mentions_sends_both_and_no_content(fake, session):
+    state, base = fake
+    embeds = [{"description": "d"}]
+    await make_rest(session, base).send_message("1", embeds=embeds, allowed_mentions=ALLOWED_NONE)
+    assert state.requests[0].payload == {"embeds": embeds, "allowed_mentions": {"parse": []}}
+
+
+async def test_send_message_without_allowed_mentions_has_no_such_key(fake, session):
+    state, base = fake
+    await make_rest(session, base).send_message("1", content="x")
+    assert state.requests[0].payload == {"content": "x"}
+
+
+async def test_send_message_allowed_mentions_alone_raises_without_request(fake, session):
+    state, base = fake
+    with pytest.raises(ValueError):
+        await make_rest(session, base).send_message("1", allowed_mentions=ALLOWED_NONE)
+    assert state.requests == []
+
+
+async def test_send_message_multipart_carries_allowed_mentions_in_payload_json(fake, session):
+    state, base = fake
+    await make_rest(session, base).send_message(
+        "1", content="x", allowed_mentions=ALLOWED_NONE, file=("card.png", b"\x89PNG", "image/png"),
+    )
+    assert state.requests[0].payload == {"content": "x", "allowed_mentions": {"parse": []}}
+
+
+async def test_edit_message_embeds_with_allowed_mentions_has_no_content_key(fake, session):
+    state, base = fake
+    embeds = [{"description": "d"}]
+    await make_rest(session, base).edit_message("1", "2", embeds=embeds, allowed_mentions=ALLOWED_NONE)
+    payload = state.requests[0].payload
+    assert payload == {"embeds": embeds, "allowed_mentions": {"parse": []}}
+    assert "content" not in payload
+
+
+async def test_edit_message_allowed_mentions_alone_raises_without_request(fake, session):
+    state, base = fake
+    with pytest.raises(ValueError):
+        await make_rest(session, base).edit_message("1", "2", allowed_mentions=ALLOWED_NONE)
+    assert state.requests == []
+
+
+# Phase 2: channel, guild and message reads and message delete
+
+
+async def test_get_channel_and_get_guild_return_seeded_objects(fake, session):
+    state, base = fake
+    state.channels["3001"] = {"id": "3001", "name": "games"}
+    state.guilds["2001"] = {"id": "2001", "name": "server"}
+    rest = make_rest(session, base)
+    assert await rest.get_channel("3001") == {"id": "3001", "name": "games"}
+    assert await rest.get_guild("2001") == {"id": "2001", "name": "server"}
+
+
+async def test_get_channel_and_get_guild_unknown_ids_raise_404(fake, session):
+    _, base = fake
+    rest = make_rest(session, base)
+    with pytest.raises(FluxerHTTPError) as channel:
+        await rest.get_channel("3001")
+    with pytest.raises(FluxerHTTPError) as guild:
+        await rest.get_guild("2001")
+    assert channel.value.status == 404
+    assert guild.value.status == 404
+
+
+async def test_get_guild_403_and_500_surface_their_status(fake, session):
+    state, base = fake
+    state.guilds["2001"] = {"id": "2001"}
+    rest = make_rest(session, base)
+    state.overrides["GET /api/v1/guilds/2001"] = Override(403, b'{"code":"MISSING_ACCESS","message":"x"}')
+    with pytest.raises(FluxerHTTPError) as forbidden:
+        await rest.get_guild("2001")
+    assert forbidden.value.status == 403
+    state.overrides["GET /api/v1/guilds/2001"] = Override(500, b'{"code":"INTERNAL","message":"x"}')
+    with pytest.raises(FluxerHTTPError) as broken:
+        await rest.get_guild("2001")
+    assert broken.value.status == 500
+
+
+@pytest.mark.parametrize("path, call", [
+    ("GET /api/v1/channels/3001", lambda r: r.get_channel("3001")),
+    ("GET /api/v1/guilds/2001", lambda r: r.get_guild("2001")),
+])
+async def test_get_channel_and_guild_non_object_body_raises_shape_error(fake, session, path, call):
+    state, base = fake
+    state.overrides[path] = Override(200, b"[]")
+    with pytest.raises(FluxerHTTPError, match="unexpected response shape") as info:
+        await call(make_rest(session, base))
+    assert info.value.status == 200
+
+
+async def test_get_message_returns_a_sent_message(fake, session):
+    state, base = fake
+    rest = make_rest(session, base)
+    sent = await rest.send_message("1", content="x")
+    assert sent["id"].isdigit()
+    got = await rest.get_message("1", sent["id"])
+    assert got == {"id": sent["id"], "channel_id": "1", "content": "x"}
+
+
+async def test_get_message_after_delete_is_404(fake, session):
+    _, base = fake
+    rest = make_rest(session, base)
+    mid = (await rest.send_message("1", content="x"))["id"]
+    await rest.delete_message("1", mid)
+    with pytest.raises(FluxerHTTPError) as info:
+        await rest.get_message("1", mid)
+    assert info.value.status == 404
+
+
+async def test_delete_message_twice_second_is_404(fake, session):
+    state, base = fake
+    rest = make_rest(session, base)
+    mid = (await rest.send_message("1", content="x"))["id"]
+    assert await rest.delete_message("1", mid) is None
+    with pytest.raises(FluxerHTTPError) as info:
+        await rest.delete_message("1", mid)
+    assert info.value.status == 404
+    assert [r.status for r in state.requests if r.method == "DELETE"] == [204, 404]
+
+
+async def test_delete_message_never_sent_is_404(fake, session):
+    _, base = fake
+    with pytest.raises(FluxerHTTPError) as info:
+        await make_rest(session, base).delete_message("1", "9999")
+    assert info.value.status == 404
 
 
 # Retry: 429 on an encoded reaction path is retried and the encoding survives the retry
