@@ -560,3 +560,46 @@ def test_no_denylisted_literal_in_tracked_files():
         pytest.skip("private denylist absent")
     offenders = denylist_offenders(PROJECT, load_denylist(path))
     assert offenders == [], f"tracked files contain denylisted literals (path:line only): {offenders}"
+
+
+# Bidi controls (U+202A-U+202E, U+2066-U+2069) and zero-width characters (U+200B-U+200F, U+2060-U+2069, U+FEFF)
+# can hide or reorder source text. The pattern is written as escapes so this file holds none of them.
+INVISIBLE_CHARACTER = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
+
+
+def invisible_offenders(root: Path) -> list[str]:
+    """Tracked text under `root` with a bidi control or zero-width character, as `path:line`.
+
+    Secrets are skipped before any read, and a tracked path that is missing or no longer a regular file is
+    skipped. A finding names the location only, never the character: CI logs are public.
+    """
+    offenders = []
+    for path in tracked_files(root):
+        if is_secret(path):
+            continue
+        if not path.is_file():
+            continue
+        text = path.read_bytes().decode("utf-8", "ignore")
+        for number, line in enumerate(text.splitlines(), start=1):
+            if INVISIBLE_CHARACTER.search(line):
+                offenders.append(f"{path.relative_to(root)}:{number}")
+    return offenders
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not on PATH")
+def test_invisible_scan_reports_the_tracked_line_and_never_the_character(tmp_path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=60)
+    (tmp_path / "clean.txt").write_text("plain text\n", "utf-8")
+    (tmp_path / "bidi.txt").write_text("first\nx" + chr(0x202E) + "y\n", "utf-8")
+    (tmp_path / "zero.txt").write_text("a" + chr(0x200B) + "b\n", "utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-f", "clean.txt", "bidi.txt", "zero.txt"],
+                   check=True, timeout=60)
+
+    offenders = invisible_offenders(tmp_path)
+    assert offenders == ["bidi.txt:2", "zero.txt:1"]
+    assert chr(0x202E) not in " ".join(offenders)
+
+
+def test_no_bidi_or_zero_width_characters_in_tracked_files():
+    offenders = invisible_offenders(PROJECT)
+    assert offenders == [], f"tracked files contain bidi or zero-width characters (path:line only): {offenders}"

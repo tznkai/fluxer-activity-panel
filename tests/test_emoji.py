@@ -15,7 +15,7 @@ from fluxer_client.rest import _check_reason, encode_emoji
         ("👍", "%F0%9F%91%8D"),
         ("✅", "%E2%9C%85"),
         ("👍🏽", "%F0%9F%91%8D%F0%9F%8F%BD"),
-        ("👨‍👩‍👧", "%F0%9F%91%A8%E2%80%8D%F0%9F%91%A9%E2%80%8D%F0%9F%91%A7"),
+        ("👨\u200d👩\u200d👧", "%F0%9F%91%A8%E2%80%8D%F0%9F%91%A9%E2%80%8D%F0%9F%91%A7"),
         ("party_parrot:123456", "party_parrot:123456"),
     ],
 )

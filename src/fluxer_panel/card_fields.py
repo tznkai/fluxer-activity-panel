@@ -27,7 +27,7 @@ _PORT = re.compile(r"[0-9]{1,5}")
 _INT = re.compile(r"[0-9]{1,9}")
 _BRACKETED = re.compile(r"\[([^\]\s]+)\]:([0-9]{1,5})")
 # Bidirectional overrides and isolates, written as escapes so no invisible character sits in the source.
-_BIDI = frozenset("‪‫‬‭‮⁦⁧⁨⁩")
+_BIDI = frozenset("\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
 
 
 def text_value(field: str, value: str) -> str:

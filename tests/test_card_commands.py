@@ -192,7 +192,7 @@ async def test_non_admin_list_makes_no_request(world: World) -> None:
     (None, f"!card new BAD-{SENTINEL} Title", "Can't set slug: it must be 1–32 of a-z, 0-9 and -."),
     (None, "!card new mc \x07Title", "Can't set title: it must not contain control characters."),
     ("mc", f"!card set mc description {'y' * 1001}", "Can't set description: it must be 1–1000 characters."),
-    ("mc", "!card set mc join ‮" + SENTINEL, "Can't set join: it must not contain control characters."),
+    ("mc", "!card set mc join \u202e" + SENTINEL, "Can't set join: it must not contain control characters."),
     ("mc", f"!card set mc sort {SENTINEL}", "Can't set sort: it is out of range."),
     ("mc", f"!card set mc seats {SENTINEL}", "Can't set seats: it is out of range."),
     ("mc", f"!card set mc address {SENTINEL}", "Can't set address: it must be host:port."),

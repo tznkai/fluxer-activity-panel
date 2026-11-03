@@ -46,7 +46,7 @@ def test_text_value_accepts_and_strips(value: str, expected: str) -> None:
     ("   ", "length"),                       # empty after stripping
     ("\x07" + SENTINEL, "control"),         # a C0 control character
     ("line\nbreak " + SENTINEL, "control"),  # an embedded newline is a control character too
-    ("‮" + SENTINEL, "control"),       # a right-to-left override
+    ("\u202e" + SENTINEL, "control"),       # a right-to-left override
 ])
 def test_text_value_refuses_bad_text(value: str, rule: str) -> None:
     err = refused(lambda: card_fields.text_value("title", value))
