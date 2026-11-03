@@ -126,7 +126,7 @@ channel ID.
 - A human author has no `bot` key at all, so `author.bot` is absent rather than `false`.
 - Extra `channel_type: 1` field.
 
-## Implications for later panel phases
+## Implications for later panel work
 
 - Reaction events need no gateway intents. Identify without intents is enough for reaction-driven features.
 - DM reaction events carry no `member`, so no role data is available in a DM. Role-gated behaviour in DMs
@@ -142,13 +142,13 @@ channel ID.
   unmeasured.
 - The interactive scripts must run in a real terminal. Any future live script that reads stdin needs the same.
 - `events.py` matched all observed shapes; no parser changes. Observed-shape fixtures are in `tests/test_events.py`.
-- `MESSAGE_REACTION_ADD_MANY` was not observed, and is left unparsed in this phase.
+- `MESSAGE_REACTION_ADD_MANY` was not observed, and is left unparsed in this run.
 
-## Panel smoke test (Phase 4)
+## Panel smoke test
 
 - 2026-11-01 (UTC), server 2026.1031.154542: `python -m fluxer_panel` resolved endpoints, logged `ready`, answered an admin's DM `!admin ping` with `pong` (`admin_command` `ping`; a bare or unknown subcommand got the list, `admin_command` `unknown`), and on SIGTERM from `timeout` logged `shutting_down` then closed the gateway cleanly. No message content appeared in any log line.
 
-## Live card checks (Phase 7)
+## Live card checks
 
 - Run date 2026-11-03. Server build as in the Version section: `X-Fluxer-Version=2026.1031.154542`,
   `api_code_version=1`. Run by the operator with the live scripts in `tools/live/`.
@@ -174,8 +174,11 @@ channel ID.
 - The A2S target: reachable. Counts and map reported (the script prints the map as its length only).
 - The `minecraft_bedrock` target: reachable. Counts, map, version and game mode reported.
 - `minecraft_java`: not tested in this run.
-- Game query ports (A2S, Valheim): a probe against the game port `<port>` timed out (`reason=timeout`). The
-  same probe against `<port>+1` passed. Valheim's query port is the game port + 1.
+
+### Game query ports
+
+- Valheim's A2S query port is the game port + 1. A probe against the game port times out (`reason=timeout`);
+  a probe against the game port + 1 succeeds.
 
 ### Timestamp markup
 
@@ -185,8 +188,10 @@ channel ID.
 
 ### Channel links
 
-- The bare link, the masked `[voice](...)` link in an embed description, and the `<#C>` mention all open the voice
-  channel. Built for the voice channel.
+- Web: the bare link, the masked `[voice](...)` link in an embed description, and the `<#C>` mention each opened the
+  voice channel.
+- Mobile: the bare link, the masked link and the `<#C>` mention each opened the voice channel.
+- Built for the voice channel.
 - The copied link shape is `H/channels/G/C`, which matches `channel_link`'s `{instance}/channels/{G}/{C}`.
 - Decision: no change to `channel_link` or `CHANNEL_LINK_RE`. The Voice field stays a masked link.
 
@@ -196,8 +201,9 @@ channel ID.
 
 ### Mentions in embeds
 
-- `<@U>` in an embed field renders as a mention. With empty `allowed_mentions`, no notification fired. This is
-  the expected behaviour, not a Fluxer bug.
+- Web and mobile: `<@U>` in an embed field rendered as a mention on both.
+- With empty `allowed_mentions`, no notification arrived on either client. This is the expected behaviour, not a
+  Fluxer bug.
 - Decision: no code change. No REVIEW.md note, since no ping fired.
 
 ### Escaping
@@ -210,6 +216,7 @@ channel ID.
 - 20 edits in each of three runs: 20 ok, 0 rate-limited (429), 0 other errors. Each run took about 1.2 to 1.4
   seconds.
 - The existing client retries 429. None was seen in these runs.
+- This is an API-level measurement. It does not depend on the client (web or mobile).
 
 ### Voice channel type
 
