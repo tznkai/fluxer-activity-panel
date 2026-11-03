@@ -17,6 +17,8 @@ from fluxer_panel.render import CHANNEL_LINK_RE
 from fluxer_panel.sources.registry import Sources, known_manager_kinds
 
 TEXT_LIMITS = {"title": 200, "description": 1000, "join": 1000, "first_time": 1000, "location": 200}
+SORT_RANGE = (0, 9999)
+SEATS_RANGE = (1, 999)
 # Every field name a validator may name in a refusal. A refusal for any other name uses a fixed label instead.
 FIELD_NAMES = frozenset({"title", "description", "join", "first_time", "sort", "seats", "location", "voice",
                          "address", "address_public", "manager", "probe", "show", "slug"})

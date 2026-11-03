@@ -16,11 +16,11 @@ import aiohttp
 from fluxer_client.events import MessageCreate
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
 from fluxer_panel import card_fields, cards, render, text
-from fluxer_panel.cards import CardFieldError, Voice
+from fluxer_panel.cards import SHOW_ITEMS, CardFieldError, Voice
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.logs import log_event
-from fluxer_panel.sources.registry import Sources
+from fluxer_panel.sources.registry import PROBES, Sources
 
 log = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ VOICE_CHANNEL_TYPE = 2
 VOICE_NAME_MAX = 100
 LIST_CHUNK = 1900
 PREVIEW_LIMIT = 2000  # Fluxer's message content limit
-SUBCOMMANDS = ("new", "set", "clear", "show", "list", "publish", "archive")
+SUBCOMMANDS = ("new", "set", "clear", "show", "list", "publish", "archive", "help")
 SETTABLE = ("title", "description", "join", "first_time", "sort", "seats", "location", "voice", "address",
             "address_public", "manager", "probe", "show")
 CLEARABLE = ("description", "join", "first_time", "sort", "seats", "location", "voice", "address",
@@ -173,7 +173,7 @@ async def _prepare_set(ctx: CardContext, card: cards.Card, field_name: str,
         stored = _base_value(field_name, value)
         return (lambda c: cards.update_fields(c, card_id, now, **{column: stored})), text.CARD_UPDATED
     if field_name == "seats":
-        seats = card_fields.int_range("seats", value, 1, 999)
+        seats = card_fields.int_range("seats", value, *card_fields.SEATS_RANGE)
         return (lambda c: cards.set_seats(c, card_id, seats)), text.CARD_UPDATED
     if field_name == "location":
         location = cards.Location(card_fields.text_value("location", value))
@@ -205,7 +205,7 @@ async def _prepare_set(ctx: CardContext, card: cards.Card, field_name: str,
 
 def _base_value(field_name: str, value: str) -> Any:
     if field_name == "sort":
-        return card_fields.int_range("sort", value, 0, 9999)
+        return card_fields.int_range("sort", value, *card_fields.SORT_RANGE)
     if field_name == "show":
         return card_fields.show(value)
     return card_fields.text_value(field_name, value)
@@ -404,6 +404,31 @@ async def _archive(event: MessageCreate, ctx: CardContext, rest: str) -> _Result
     return _Result(card_id)
 
 
+# help ------------------------------------------------------------------------------------------------
+
+def help_fields_reply() -> str:
+    """The fields page, with each limit and kind taken from the code that enforces it."""
+    return text.HELP_FIELDS.format(
+        title=card_fields.TEXT_LIMITS["title"], description=card_fields.TEXT_LIMITS["description"],
+        join=card_fields.TEXT_LIMITS["join"], first_time=card_fields.TEXT_LIMITS["first_time"],
+        location=card_fields.TEXT_LIMITS["location"],
+        sort_min=card_fields.SORT_RANGE[0], sort_max=card_fields.SORT_RANGE[1],
+        seats_min=card_fields.SEATS_RANGE[0], seats_max=card_fields.SEATS_RANGE[1],
+        probe_kinds="|".join(PROBES), show_items=", ".join(SHOW_ITEMS),
+    )
+
+
+async def _help(event: MessageCreate, ctx: CardContext, rest: str) -> _Result:
+    topic = rest.split()
+    if not topic:
+        await _say(ctx, event, text.HELP_COMMANDS)
+    elif [word.lower() for word in topic] == ["fields"]:
+        await _say(ctx, event, help_fields_reply())
+    else:
+        await _say(ctx, event, text.CARD_USAGE)
+    return _Result()
+
+
 def _one_slug(rest: str) -> str | None:
     parts = rest.split()
     return parts[0] if len(parts) == 1 else None
@@ -417,4 +442,5 @@ _HANDLERS: dict[str, Callable[[MessageCreate, CardContext, str], Any]] = {
     "list": _list,
     "publish": _publish,
     "archive": _archive,
+    "help": _help,
 }

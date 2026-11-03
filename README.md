@@ -132,9 +132,12 @@ repost does not wait for the next poll interval.
 !card list                                 slug, state and title, by sort order
 !card publish <slug>                       draft or archived -> live
 !card archive <slug>                       deletes the message, keeps the card
+!card help                                 the subcommands and the field names
+!card help fields                          each field, its format and its limits
 ```
 
-The last argument takes the rest of the line, so no quoting is needed.
+The last argument takes the rest of the line, so no quoting is needed. `!card help` and
+`!card help fields` are the replies to read when you forget a format or a limit.
 
 ### Fields
 

@@ -20,7 +20,7 @@ import pytest
 from fluxer_client.events import MessageCreate
 from fluxer_client.rest import FluxerREST
 from fluxer_panel import admin, cards, text
-from fluxer_panel.card_commands import LIST_CHUNK, CardContext, _chunks
+from fluxer_panel.card_commands import LIST_CHUNK, CardContext, _chunks, help_fields_reply
 from fluxer_panel.cards import Voice
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
@@ -805,6 +805,26 @@ async def test_unknown_slug_replies_no_such_card_and_creates_nothing(world: Worl
 async def test_wrong_argument_count_gets_usage(world: World, args: str) -> None:
     await world.run(f"!card {args}".rstrip())
     assert world.last_reply() == text.CARD_USAGE
+
+
+# Help: the subcommand pages, routed by `!card help` ----------------------------------------------------
+
+@pytest.mark.parametrize(("content", "expected"), [
+    ("!card help", "commands"),
+    ("!card HELP", "commands"),
+    ("!card help fields", "fields"),
+    ("!card help FIELDS", "fields"),
+    ("!card help fields extra", "usage"),
+    ("!card help nonsense", "usage"),
+])
+async def test_help_replies_with_the_matching_page_and_changes_nothing(
+        world: World, content: str, expected: str) -> None:
+    await world.run(content)
+
+    replies = {"commands": text.HELP_COMMANDS, "fields": help_fields_reply(), "usage": text.CARD_USAGE}
+    assert world.last_reply() == replies[expected]
+    assert world.kicks == []
+    assert await world.db.run(lambda c: cards.list_cards(c)) == []
 
 
 # AC9.2: logs carry only allowlisted fields -----------------------------------------------------------

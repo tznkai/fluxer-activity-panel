@@ -61,7 +61,37 @@ RULES = {
 
 # Admin card commands: replies. None of them contains user input.
 CARD_USAGE = ("Usage: !card new <slug> <title> · !card set <slug> <field> <value> · "
-              "!card clear <slug> <field> · !card show|publish|archive <slug> · !card list")
+              "!card clear <slug> <field> · !card show|publish|archive <slug> · !card list · !card help")
+# `!card help`: the subcommands and the field names. Under 2000 characters, the message limit.
+HELP_COMMANDS = (
+    "Card commands, sent by direct message:\n"
+    "!card new <slug> <title>: create a draft card\n"
+    "!card set <slug> <field> <value>: set one field\n"
+    "!card clear <slug> <field>: clear one field\n"
+    "!card show <slug>: preview the inside embed and the outside text\n"
+    "!card list: every card, by sort order\n"
+    "!card publish <slug>: make the card live\n"
+    "!card archive <slug>: remove the posted message and keep the card\n"
+    "!card help fields: each field, its format and its limits\n"
+    "Fields: title, description, join, first_time, sort, seats, location, voice, address, address_public, "
+    "manager, probe, show"
+)
+# `!card help fields`: one line per field. The placeholders are filled from the code's limits and kinds.
+HELP_FIELDS = (
+    "title: text, 1 to {title} characters.\n"
+    "description: text, 1 to {description} characters.\n"
+    "join: how to join, text, 1 to {join} characters.\n"
+    "first_time: text for first-timers, 1 to {first_time} characters.\n"
+    "sort: a whole number from {sort_min} to {sort_max}.\n"
+    "seats: a whole number from {seats_min} to {seats_max}.\n"
+    "location: text, 1 to {location} characters. Outside Fluxer it shows only a fixed line.\n"
+    "voice: <community id> <channel id>, or a pasted channel link. Verified when the bot is in that community.\n"
+    "address: <host>:<port>, the server address. An IPv6 host goes in brackets: [host]:port.\n"
+    "address_public: yes or no (default no). Shows the address outside Fluxer. Needs an address first.\n"
+    "manager: pterodactyl <8-character server id>.\n"
+    "probe: <{probe_kinds}> <host> <port>.\n"
+    "show: any of {show_items}, comma separated, or none."
+)
 PUBLISHED_NO_CHANNEL = "Published, but GAMES_CHANNEL_ID isn't set, so nothing will be posted."
 NO_SUCH_CARD = "No such card."
 UNKNOWN_FIELD = "I don't know that field."
