@@ -829,6 +829,11 @@ def test_ptero_secrets_include_the_default_port_when_the_url_has_none():
     assert f"{PANEL_HOST}:443" in secrets
 
 
+def test_ptero_secrets_hide_only_the_host_when_the_url_has_no_known_port():
+    url = "foo://" + PANEL_HOST + "/"
+    assert ptero_live.ptero_secrets({"PTERODACTYL_URL": url}) == (url, PANEL_HOST)
+
+
 def test_ptero_secrets_skip_a_host_that_is_not_there_and_a_missing_bot_token():
     assert ptero_live.ptero_secrets({"PTERODACTYL_URL": "/relative/path"}) == ("/relative/path",)
 
@@ -869,6 +874,25 @@ def test_a_probe_error_naming_the_target_is_redacted_through_probe_redactor(
     assert host not in out
     assert str(PROBE_PORT) not in out
     assert out.strip() == "ERROR RuntimeError: probe of [REDACTED] failed"
+
+
+def test_target_secrets_include_the_bare_host_of_each_target():
+    target = probes_live.Target(kind="a2s", host=PROBE_HOST, port=PROBE_PORT)
+    assert probes_live.target_secrets([target]) == (
+        PROBE_HOST, f"{PROBE_HOST}:{PROBE_PORT}", f"[{PROBE_HOST}]:{PROBE_PORT}")
+
+
+def test_a_probe_error_naming_only_the_bare_host_is_redacted_through_probe_redactor(no_live_redactor, capsys):
+    probes_live.probe_redactor({"FLUXER_TOKEN": "bot-token-value"},
+                               [probes_live.Target(kind="a2s", host=PROBE_HOST, port=PROBE_PORT)])
+
+    async def failing_run():
+        raise RuntimeError(f"cannot resolve {PROBE_HOST}")
+
+    with pytest.raises(SystemExit):
+        _live.main(failing_run)
+
+    assert capsys.readouterr().out.strip() == "ERROR RuntimeError: cannot resolve [REDACTED]"
 
 
 class _DeleteRest:
