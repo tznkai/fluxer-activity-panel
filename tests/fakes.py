@@ -212,6 +212,7 @@ def make_rest_app(state: FakeFluxerState) -> web.Application:
         if key in state.deleted:
             return _send(state, request, 404, {"code": "UNKNOWN_MESSAGE", "message": "Unknown Message"},
                          payload=payload)
+
         def commit() -> None:
             # Only messages the fake created are updated; an unknown id echoes without being stored.
             if key in state.messages:

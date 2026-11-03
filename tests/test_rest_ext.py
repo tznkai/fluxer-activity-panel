@@ -410,8 +410,8 @@ async def test_add_reaction_retries_429_with_same_encoding(fake, session):
     assert all(THUMB in rec.raw_path for rec in state.requests)
 
 
-# Phase 2 review: the fake changes stored state only when the request succeeds. An injected
-# failure (an override or a rate_limit count) must leave the stored messages as a real server would.
+# Injected failures leave stored state unchanged: the fake changes stored messages only when the
+# request succeeds, so an override or a rate_limit count never alters what a later read returns.
 
 
 async def test_delete_with_500_override_keeps_message_readable(fake, session):
@@ -465,7 +465,7 @@ async def test_rate_limited_post_then_retry_stores_exactly_one_message(fake, ses
     assert state.next_message_id == 5002
 
 
-# Minor 3: a PATCH to a never-created id echoes but does not create the message.
+# PATCH to an unknown id echoes without creating it.
 
 
 async def test_patch_to_never_created_message_echoes_without_creating_it(fake, session):
@@ -481,7 +481,7 @@ async def test_patch_to_never_created_message_echoes_without_creating_it(fake, s
     assert gone.value.status == 404
 
 
-# Minor 1: behaviour Phase 5 and Phase 6 rely on.
+# PATCH after DELETE and slow responses
 
 
 async def test_edit_after_delete_raises_404_unknown_message(fake, session):
