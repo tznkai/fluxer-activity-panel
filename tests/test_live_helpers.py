@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
 
 import aiohttp
@@ -30,7 +31,11 @@ from _live import (  # noqa: E402
     out,
     read_env_file,
 )
+import ptero_live  # noqa: E402
+import probes_live  # noqa: E402
 from fluxer_client.rest import FluxerREST  # noqa: E402
+from fluxer_panel.sources.base import PlayerCounts, PowerAction, ProbeDetails, ProbeFailed, ProbeResult  # noqa: E402
+from fluxer_panel.sources.pterodactyl import Schedule, Task  # noqa: E402
 from tests.fakes import FakeFluxerState, Override, make_rest_app  # noqa: E402
 
 TOKEN = "SENTINEL-TOKEN-xyz"
@@ -562,3 +567,162 @@ def test_fluxer_notes_have_no_raw_ids_or_tokens():
     assert re.search(r"\d{15,}", text) is None
     assert TOKEN_LIKE.search(text) is None
     assert "X-Fluxer-Version" in text
+
+
+# Redactor: extra secrets and free-text labels
+
+
+def test_extra_secrets_are_redacted_in_text():
+    redactor = Redactor(TOKEN, extra_secrets=("panel.invalid", "other-secret"))
+    assert redactor.text("at panel.invalid with other-secret") == "at [REDACTED] with [REDACTED]"
+
+
+def test_empty_extra_secrets_leave_text_unchanged():
+    redactor = Redactor(TOKEN, extra_secrets=("", ""))
+    assert redactor.text("status 200 ok") == "status 200 ok"
+
+
+def test_label_text_is_stable_per_value_and_counts_per_kind():
+    redactor = Redactor(TOKEN)
+    first = redactor.label_text("alpha.invalid", "target")
+    assert first == "<target#1>"
+    assert redactor.label_text("alpha.invalid", "target") == first
+    assert redactor.label_text("beta.invalid", "target") == "<target#2>"
+    assert redactor.label_text("27015", "port") == "<port#1>"
+
+
+def test_label_text_never_echoes_the_value():
+    value = "panel-host.invalid"
+    assert value not in Redactor(TOKEN).label_text(value, "target")
+
+
+def test_label_text_refuses_an_empty_value():
+    with pytest.raises(ValueError):
+        Redactor(TOKEN).label_text("", "target")
+
+
+def test_redacted_logging_restores_root_handlers_and_level():
+    root = logging.getLogger()
+    before_handlers, before_level = root.handlers[:], root.level
+    with _live.redacted_logging(Redactor(TOKEN)):
+        assert len(root.handlers) == 1
+        assert root.level == logging.WARNING
+    assert root.handlers == before_handlers
+    assert root.level == before_level
+
+
+def test_read_env_merges_file_under_environ(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text("A=file\nB=file\n", encoding="utf-8")
+    assert _live.read_env(path=path, environ={"B": "env"}) == {"A": "file", "B": "env"}
+
+
+def test_require_vars_names_missing_variables_and_never_values():
+    with pytest.raises(LiveRefused) as info:
+        _live.require_vars({"A": "secret-value", "B": ""}, ("A", "B", "C"))
+    message = str(info.value)
+    assert "B" in message and "C" in message
+    assert "secret-value" not in message
+
+
+def test_require_vars_passes_when_all_are_set():
+    _live.require_vars({"A": "x", "B": "y"}, ("A", "B"))
+
+
+# ptero_live: pure helpers (no network)
+
+WHEN = datetime(2026, 11, 3, 12, 0, tzinfo=UTC)
+
+
+def test_parse_server_ids_accepts_a_comma_list_with_spaces():
+    assert ptero_live.parse_server_ids(" 0a1b2c3d, 9f8e7d6c ") == ["0a1b2c3d", "9f8e7d6c"]
+
+
+@pytest.mark.parametrize("raw", ["", " , ", "0a1b2c3", "0A1B2C3D", "0a1b2c3d,zz"])
+def test_parse_server_ids_refuses_empty_or_bad_entries_without_echoing(raw):
+    with pytest.raises(LiveRefused) as info:
+        ptero_live.parse_server_ids(raw)
+    message = str(info.value)
+    assert "LIVE_PTERO_SERVERS" in message
+    for token in raw.replace(",", " ").split():
+        assert token not in message
+
+
+def test_user_permissions_reads_meta_and_sorts():
+    doc = {"meta": {"user_permissions": ["websocket.connect", "schedule.read"]}}
+    assert ptero_live.user_permissions(doc) == ["schedule.read", "websocket.connect"]
+
+
+@pytest.mark.parametrize("doc", [[], {}, {"meta": {}}, {"meta": {"user_permissions": "schedule.read"}},
+                                 {"meta": {"user_permissions": [1]}}])
+def test_user_permissions_refuses_missing_or_mistyped(doc):
+    with pytest.raises(ValueError):
+        ptero_live.user_permissions(doc)
+
+
+def test_extra_permissions_flags_only_what_the_plugin_does_not_need():
+    assert ptero_live.extra_permissions(["websocket.connect", "schedule.read"]) == []
+    assert ptero_live.extra_permissions(["control.console", "schedule.read", "websocket.connect",
+                                         "backup.read"]) == ["backup.read", "control.console"]
+
+
+def test_schedule_summary_hides_name_and_reports_first_power_kind():
+    tasks = (
+        Task(sequence=2, action="command", power_payload=None),
+        Task(sequence=3, action="power", power_payload="stop"),
+        Task(sequence=1, action="power", power_payload="restart"),
+    )
+    summary = ptero_live.schedule_summary(
+        Schedule(name="SECRET NAME", is_active=True, next_run_at=WHEN, tasks=tasks))
+    assert summary == f"name_len=11 active=True next={WHEN.isoformat()} first_power=restart"
+    assert "SECRET" not in summary
+
+
+def test_schedule_summary_without_power_task_or_next_run():
+    summary = ptero_live.schedule_summary(Schedule(name="x", is_active=False, next_run_at=None, tasks=()))
+    assert summary == "name_len=1 active=False next=none first_power=none"
+
+
+def test_schedule_summary_marks_an_unlisted_power_payload_as_other():
+    tasks = (Task(sequence=1, action="power", power_payload=None),)
+    summary = ptero_live.schedule_summary(Schedule(name="x", is_active=True, next_run_at=WHEN, tasks=tasks))
+    assert summary.endswith("first_power=other")
+
+
+def test_next_action_text_for_none_and_for_an_action():
+    assert ptero_live.next_action_text(None) == "none"
+    assert ptero_live.next_action_text(PowerAction(kind="restart", at=WHEN)) == f"restart at {WHEN.isoformat()}"
+
+
+# probes_live: pure helpers (no network)
+
+PROBE_KINDS = frozenset({"a2s", "minecraft_bedrock"})
+
+
+def test_parse_probe_targets_splits_kind_host_and_port():
+    targets = probes_live.parse_probe_targets("a2s:game.invalid:27015, minecraft_bedrock:mc.invalid:19132",
+                                              PROBE_KINDS)
+    assert targets == [
+        probes_live.Target("a2s", "game.invalid", 27015),
+        probes_live.Target("minecraft_bedrock", "mc.invalid", 19132),
+    ]
+
+
+@pytest.mark.parametrize("raw", ["", "unknown:h.invalid:1", "a2s:h.invalid", "a2s::1", "a2s:h.invalid:0",
+                                 "a2s:h.invalid:70000", "a2s:h.invalid:x", "a2s:h.invalid:+1"])
+def test_parse_probe_targets_refuses_bad_entries_without_echoing(raw):
+    with pytest.raises(LiveRefused) as info:
+        probes_live.parse_probe_targets(raw, PROBE_KINDS)
+    message = str(info.value)
+    assert "LIVE_PROBES" in message
+    assert "h.invalid" not in message
+
+
+def test_probe_summary_reports_counts_and_only_present_details():
+    result = ProbeResult(counts=PlayerCounts(online=3, max=20),
+                         details=ProbeDetails(map="survival", version=None, game_mode="creative"))
+    assert probes_live.probe_summary(result) == "reachable counts=3/20 map=survival game_mode=creative"
+
+
+def test_probe_summary_for_an_unreachable_target_gives_the_reason():
+    assert probes_live.probe_summary(ProbeFailed(reason="timeout")) == "unreachable reason=timeout"

@@ -10,7 +10,7 @@ import os
 import re
 import sys
 import threading
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TextIO
@@ -54,12 +54,24 @@ def read_env_file(path: Path) -> dict[str, str]:
     return values
 
 
+def read_env(path: Path | None = None, environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """The project .env merged under the environment (os.environ wins). No validation."""
+    env_file = PROJECT / ".env" if path is None else path
+    return {**read_env_file(env_file), **(dict(os.environ) if environ is None else environ)}
+
+
+def require_vars(env: Mapping[str, str], names: Sequence[str]) -> None:
+    """Raises LiveRefused naming the unset variables. Values are never part of the message."""
+    missing = [name for name in names if not env.get(name)]
+    if missing:
+        raise LiveRefused(f"{', '.join(missing)} is missing")
+
+
 def load_env(path: Path | None = None, environ: Mapping[str, str] | None = None) -> dict[str, str]:
     """os.environ wins over .env. Raises LiveRefused naming (not showing) a missing/invalid variable.
     Requires FLUXER_TOKEN, FLUXER_INSTANCE_URL or FLUXER_API_URL, and LIVE_GUILD_ID/CHANNEL_ID/USER_ID
     as snowflakes (LIVE_ROLE_ID / LIVE_HIGH_ROLE_ID are validated if set)."""
-    env_file = PROJECT / ".env" if path is None else path
-    merged = {**read_env_file(env_file), **(dict(os.environ) if environ is None else environ)}
+    merged = read_env(path, environ)
     if not merged.get("FLUXER_TOKEN"):
         raise LiveRefused("FLUXER_TOKEN is missing")
     if not (merged.get("FLUXER_INSTANCE_URL") or merged.get("FLUXER_API_URL")):
@@ -76,10 +88,14 @@ def load_env(path: Path | None = None, environ: Mapping[str, str] | None = None)
 
 @dataclass
 class Redactor:
-    """Maps known ids to stable placeholders; any other 15-25 digit run becomes <id>; the token becomes [REDACTED]."""
+    """Maps known ids to stable placeholders; any other 15-25 digit run becomes <id>; the token and each
+    extra secret become [REDACTED]."""
     token: str = field(repr=False)
     labels: dict[str, str] = field(default_factory=dict)   # id -> "<guild>", "<channel>", "<user>", "<role>", "<message:1>", ...
+    extra_secrets: tuple[str, ...] = field(default=(), repr=False)   # e.g. a Panel URL or a host; empty entries are ignored
     _counts: dict[str, int] = field(default_factory=dict, repr=False)
+    _free: dict[tuple[str, str], str] = field(default_factory=dict, repr=False)
+    _free_counts: dict[str, int] = field(default_factory=dict, repr=False)
 
     def label(self, snowflake: str, kind: str) -> None:
         if snowflake in self.labels:
@@ -90,9 +106,21 @@ class Redactor:
         else:
             self.labels[snowflake] = f"<{kind}>"
 
+    def label_text(self, value: str, kind: str) -> str:
+        """A stable "<kind#n>" label for a free string such as a host, port or server id. Labels count per kind
+        from 1, and the label never contains the value. Scripts print this label instead of the value."""
+        if not value:
+            raise ValueError("label_text needs a non-empty value")
+        key = (kind, value)
+        if key not in self._free:
+            self._free_counts[kind] = self._free_counts.get(kind, 0) + 1
+            self._free[key] = f"<{kind}#{self._free_counts[kind]}>"
+        return self._free[key]
+
     def text(self, s: str) -> str:
-        if self.token:
-            s = s.replace(self.token, "[REDACTED]")
+        for secret in (self.token, *self.extra_secrets):
+            if secret:   # str.replace("") would insert the marker between every character
+                s = s.replace(secret, "[REDACTED]")
         for snowflake in sorted(self.labels, key=len, reverse=True):
             s = re.sub(rf"(?<!\d){re.escape(snowflake)}(?!\d)", self.labels[snowflake], s)
         return LONG_NUMBER.sub("<id>", s)
@@ -227,6 +255,20 @@ def gateway_failure(task: asyncio.Task[None] | None, redactor: Redactor) -> str:
         kind = type(task.exception()).__name__
         message += f" (gateway task failed: {redactor.text(kind)})"
     return message
+
+
+@contextlib.contextmanager
+def redacted_logging(redactor: Redactor) -> Iterator[None]:
+    """Root logging through the redacting handler at WARNING, with the previous handlers and level restored on exit."""
+    root = logging.getLogger()
+    saved_handlers, saved_level = root.handlers[:], root.level
+    root.handlers = [redactor.log_handler()]
+    root.setLevel(logging.WARNING)
+    try:
+        yield
+    finally:
+        root.handlers = saved_handlers
+        root.setLevel(saved_level)
 
 
 @contextlib.asynccontextmanager
