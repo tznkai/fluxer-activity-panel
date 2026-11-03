@@ -9,14 +9,18 @@ import logging
 import math
 import re
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import TextIO
 
 from fluxer_client.ids import is_snowflake
 
 ID_KEYS = frozenset({"guild_id", "channel_id", "message_id", "user_id", "role_id"})
-OTHER_KEYS = frozenset({"event_type", "command", "status", "code", "count", "duration_ms"})
+OTHER_KEYS = frozenset({
+    "event_type", "command", "status", "code", "count", "duration_ms", "card_id", "field", "kind", "reason",
+})
+# Third-party loggers that log more than warnings. a2s logs raw packets at DEBUG (python-a2s 1.4.2).
+PINNED_LOGGERS = ("a2s", "mcstatus")
 _SAFE_TOKEN = re.compile(r"[A-Za-z0-9_.:-]{1,64}")   # str values of OTHER_KEYS must look like identifiers
 FIELDS_ATTR = "panel_fields"
 
@@ -93,9 +97,14 @@ def token_variants(token: str) -> list[str]:
 class TokenRedactionFilter(logging.Filter):
     """Handler-level backstop: replaces the token in the message, args and traceback before formatting."""
 
-    def __init__(self, token: str) -> None:
+    def __init__(self, secrets: Sequence[str]) -> None:
         super().__init__()
-        self._variants = token_variants(token)
+        if isinstance(secrets, str):   # a bare str would iterate character by character
+            raise TypeError("secrets must be a sequence of strings")
+        variants: set[str] = set()
+        for secret in secrets:
+            variants.update(token_variants(secret))
+        self._variants = sorted(variants, key=len, reverse=True)   # longest first, as token_variants does
 
     def _redact(self, text: str) -> str:
         for variant in self._variants:
@@ -119,19 +128,23 @@ class TokenRedactionFilter(logging.Filter):
         return True
 
 
-def setup_logging(level: str, token: str, stream: TextIO | None = None) -> logging.Handler:
+def setup_logging(level: str, secrets: Sequence[str], stream: TextIO | None = None) -> logging.Handler:
     """Replace root handlers with one JSON handler on stdout (or `stream`); returns it (tests remove it).
 
-    Also routes `warnings` through logging so warning text gets the same JSON format and redaction.
+    Every non-empty secret is redacted. Also routes `warnings` through logging so warning text gets the same
+    JSON format and redaction, and pins the probe libraries' loggers to WARNING.
     Tests that call this must restore it with `logging.captureWarnings(False)`.
     """
+    redaction = TokenRedactionFilter(secrets)   # validates `secrets` before any logging state is changed
     handler = logging.StreamHandler(stream if stream is not None else sys.stdout)
     handler.setFormatter(JsonFormatter())
-    handler.addFilter(TokenRedactionFilter(token))
+    handler.addFilter(redaction)
     root = logging.getLogger()
     for old in list(root.handlers):
         root.removeHandler(old)
     root.addHandler(handler)
     root.setLevel(level)
+    for name in PINNED_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
     logging.captureWarnings(True)
     return handler

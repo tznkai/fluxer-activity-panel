@@ -125,7 +125,7 @@ def root_logging():
 @pytest.fixture
 def captured(root_logging) -> io.StringIO:
     stream = io.StringIO()
-    setup_logging("DEBUG", TOKEN, stream)
+    setup_logging("DEBUG", [TOKEN], stream)
     return stream
 
 

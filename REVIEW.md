@@ -19,21 +19,21 @@ Paths are relative to this directory.
 - `src/fluxer_client/gateway.py:173` `"token": self.token,` — the identify frame (op 2) carries the token.
 - `src/fluxer_panel/__main__.py:108` `print(f"Configuration error: {exc}"` — one of the two panel prints (the other is the usage line below). It writes to stderr a configuration message, which names variables and never values.
 - `src/fluxer_panel/__main__.py:103` `print(USAGE, file=sys.stderr)` — the second panel print, for a bad command line. It writes the fixed `USAGE` text to stderr, which names no values.
-- `src/fluxer_panel/__main__.py:110` `setup_logging(config.log_level, config.token)` — the token is handed to the redaction filter before anything can log.
+- `src/fluxer_panel/__main__.py:110` `setup_logging(config.log_level, [s for s in (config.token, config.pterodactyl_api_key) if s])` — the token and the Pterodactyl key are handed to the redaction filter before anything can log.
 - `src/fluxer_panel/__main__.py:125` `last resort: log (redacted) and exit 1` — the last-resort catch-all logs through the redacting handler and returns 1. No raw traceback reaches stderr.
 
 ## Logging
 
 - `src/fluxer_panel/logs.py:18` `ID_KEYS = frozenset(` — the only keys whose values may be logged as ids. `clean_fields` keeps one only if it is a snowflake.
 - `src/fluxer_panel/logs.py:19` `OTHER_KEYS = frozenset(` — the other keys that may be logged. Numbers and bools pass. Strings must match `_SAFE_TOKEN`.
-- `src/fluxer_panel/logs.py:20` `_SAFE_TOKEN = re.compile(` — string values for other keys must look like identifiers, so free text such as names or message content cannot be logged through them.
-- `src/fluxer_panel/logs.py:24` `def clean_fields(` — the allowlist. Any key not listed in `ID_KEYS` or `OTHER_KEYS` is dropped.
-- `src/fluxer_panel/logs.py:61` `_ESCAPE_ROUNDS = 3` — the token is redacted when it is repr'd or json-escaped up to three nested levels. Deeper nesting is not covered.
-- `src/fluxer_panel/logs.py:74` `def token_variants(` — builds the raw and escaped forms of the token that the filter replaces.
-- `src/fluxer_panel/logs.py:93` `class TokenRedactionFilter` — the handler-level backstop. It replaces the token in the message, the args and the traceback before formatting.
-- `src/fluxer_panel/logs.py:108` `a malformed call must not raise` — a malformed log call is caught inside the filter, so it cannot raise into the code that logged it.
-- `src/fluxer_panel/logs.py:130` `handler.addFilter(TokenRedactionFilter(token))` — the filter is installed on the one JSON handler that `setup_logging` creates.
-- `src/fluxer_panel/logs.py:136` `logging.captureWarnings(True)` — Python warnings go through logging, so they are JSON lines and are redacted too.
+- `src/fluxer_panel/logs.py:24` `_SAFE_TOKEN = re.compile(` — string values for other keys must look like identifiers, so free text such as names or message content cannot be logged through them.
+- `src/fluxer_panel/logs.py:28` `def clean_fields(` — the allowlist. Any key not listed in `ID_KEYS` or `OTHER_KEYS` is dropped.
+- `src/fluxer_panel/logs.py:65` `_ESCAPE_ROUNDS = 3` — the token is redacted when it is repr'd or json-escaped up to three nested levels. Deeper nesting is not covered.
+- `src/fluxer_panel/logs.py:78` `def token_variants(` — builds the raw and escaped forms of the token that the filter replaces.
+- `src/fluxer_panel/logs.py:97` `class TokenRedactionFilter` — the handler-level backstop. It replaces the token in the message, the args and the traceback before formatting.
+- `src/fluxer_panel/logs.py:117` `a malformed call must not raise` — a malformed log call is caught inside the filter, so it cannot raise into the code that logged it.
+- `src/fluxer_panel/logs.py:141` `handler.addFilter(redaction)` — the filter is installed on the one JSON handler that `setup_logging` creates.
+- `src/fluxer_panel/logs.py:149` `logging.captureWarnings(True)` — Python warnings go through logging, so they are JSON lines and are redacted too.
 - `src/fluxer_client/events.py:26` `session_id: str = field(repr=False)` — the gateway session id from `Ready`, which with the token enables a session resume, is kept out of reprs.
 - `src/fluxer_client/events.py:42` `content: str = field(repr=False)` — message text is kept out of reprs and therefore out of debug output.
 - `src/fluxer_client/events.py:236` `log.warning("malformed %s payload: field %s", t, exc.field_name)` — a malformed payload is logged with the field name only.

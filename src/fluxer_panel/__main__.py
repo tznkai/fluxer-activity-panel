@@ -107,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 2
-    setup_logging(config.log_level, config.token)
+    setup_logging(config.log_level, [s for s in (config.token, config.pterodactyl_api_key) if s])
     try:
         db = Database.open(config.db_path)
     except DatabaseRefused:
