@@ -729,6 +729,37 @@ async def test_archive_waits_for_the_card_lock(world: World) -> None:
     assert (await world.card("mc")).state == "archived"
 
 
+async def test_archive_of_a_card_deleted_while_waiting_replies_no_such_card(world: World) -> None:
+    await make_mc(world)
+    card = await world.card("mc")
+    assert card is not None
+    world.kicks.clear()
+    async with world.ctx.locks.get(card.id):
+        task = asyncio.create_task(world.run("!card archive mc"))
+        await asyncio.sleep(0.1)
+        assert not task.done()
+        await world.db.run(lambda c: c.execute("DELETE FROM cards WHERE id = ?", (card.id,)))
+    await asyncio.wait_for(task, 5)
+
+    assert world.last_reply() == text.NO_SUCH_CARD
+    assert world.kicks == []
+
+
+async def test_publish_waits_for_the_card_lock(world: World) -> None:
+    await make_mc(world)
+    card = await world.card("mc")
+    assert card is not None
+    async with world.ctx.locks.get(card.id):
+        task = asyncio.create_task(world.run("!card publish mc"))
+        await asyncio.sleep(0.1)
+        assert not task.done()
+        assert (await world.card("mc")).state == "draft"
+    await asyncio.wait_for(task, 5)
+
+    assert (await world.card("mc")).state == "live"
+    assert world.last_reply() == text.PUBLISHED_NO_CHANNEL
+
+
 # AC7.11: unknown slug ----------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("command", [

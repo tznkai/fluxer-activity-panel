@@ -332,22 +332,30 @@ async def _publish(event: MessageCreate, ctx: CardContext, rest: str) -> _Result
     if slug is None:
         await _say(ctx, event, text.CARD_USAGE)
         return _Result()
-    now = int(ctx.clock())
-
-    def publish_tx(conn: Any) -> tuple[int | None, bool]:
-        card = cards.get_by_slug(conn, slug)
-        if card is None:
-            return None, False
-        if card.state == "live":
-            return card.id, False
-        cards.set_state(conn, card.id, "live", now)
-        return card.id, True
-
-    card_id, published = await ctx.db.run(publish_tx)
-    if card_id is None:
+    found = await _find(ctx, slug)
+    if found is None:
         await _say(ctx, event, text.NO_SUCH_CARD)
         return _Result()
-    if not published:
+    card_id = found.id
+    now = int(ctx.clock())
+
+    def publish_tx(conn: Any) -> str:
+        """Re-reads the card under the lock. Returns "missing", "live" (nothing changed) or "published"."""
+        current = cards.get_by_id(conn, card_id)
+        if current is None:
+            return "missing"
+        if current.state == "live":
+            return "live"
+        cards.set_state(conn, card_id, "live", now)
+        return "published"
+
+    # The lock is shared with archive and the poller, so a publish cannot interleave with an archive's delete.
+    async with ctx.locks.get(card_id):
+        outcome = await ctx.db.run(publish_tx)
+    if outcome == "missing":
+        await _say(ctx, event, text.NO_SUCH_CARD)
+        return _Result()
+    if outcome == "live":
         await _say(ctx, event, text.ALREADY_LIVE)
         return _Result(card_id)
     ctx.kick()
@@ -368,7 +376,10 @@ async def _archive(event: MessageCreate, ctx: CardContext, rest: str) -> _Result
     card_id = found.id
     async with ctx.locks.get(card_id):
         current = await ctx.db.run(lambda c: cards.get_by_id(c, card_id))
-        if current is None or current.state == "archived":
+        if current is None:  # deleted while this command waited for the lock
+            await _say(ctx, event, text.NO_SUCH_CARD)
+            return _Result(card_id)
+        if current.state == "archived":
             await _say(ctx, event, text.ALREADY_ARCHIVED)
             return _Result(card_id)
         if current.channel_id and current.message_id:
