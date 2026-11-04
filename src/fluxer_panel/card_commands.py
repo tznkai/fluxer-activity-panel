@@ -384,7 +384,14 @@ async def _publish(event: MessageCreate, ctx: CardContext, rest: str) -> _Result
         await _say(ctx, event, text.ALREADY_LIVE)
         return _Result(card_id)
     ctx.kick()
-    reply = text.CARD_PUBLISHED if ctx.config.games_channel_id is not None else text.PUBLISHED_NO_CHANNEL
+    # The reply says what the next check will post: the card when a games channel is set, otherwise only its active
+    # copies (the poller posts those without a games channel), otherwise nothing.
+    if ctx.config.games_channel_id is not None:
+        reply = text.CARD_PUBLISHED
+    elif await ctx.db.run(lambda c: subscriptions.list_active(c, card_id)):
+        reply = text.PUBLISHED_COPIES_ONLY
+    else:
+        reply = text.PUBLISHED_NO_CHANNEL
     await _say(ctx, event, reply)
     return _Result(card_id)
 

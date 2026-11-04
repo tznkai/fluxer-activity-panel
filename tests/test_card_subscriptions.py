@@ -608,3 +608,27 @@ async def test_subscribe_and_unsubscribe_are_logged_under_their_own_command_name
     await world.run(f"!card unsubscribe mc {GUILD} {CHANNELS[0]}")
     commands = [record.panel_fields["command"] for record in caplog.records if record.getMessage() == "admin_command"]
     assert commands == ["card_new", "card_subscribe", "card_unsubscribe"]
+
+
+# publish reply: what the next check will post --------------------------------------------------------
+
+async def test_publish_without_a_games_channel_says_only_the_copies_will_post(world: World) -> None:
+    await make_card(world)
+    await subscribe_by_ids(world, "mc", CHANNELS[0])
+    await world.run("!card publish mc")
+    assert world.last_reply() == text.PUBLISHED_COPIES_ONLY
+
+
+async def test_publish_without_a_games_channel_and_only_paused_copies_says_nothing_will_post(world: World) -> None:
+    card = await make_card(world)
+    await subscribe_by_ids(world, "mc", CHANNELS[0])
+    await world.db.run(lambda c: subscriptions.pause(c, card.id, CHANNELS[0]))
+    await world.run("!card publish mc")
+    assert world.last_reply() == text.PUBLISHED_NO_CHANNEL
+
+
+async def test_publish_with_a_games_channel_says_the_card_will_post_even_with_copies(games_world: World) -> None:
+    await make_card(games_world)
+    await subscribe_by_ids(games_world, "mc", CHANNELS[0])
+    await games_world.run("!card publish mc")
+    assert games_world.last_reply() == text.CARD_PUBLISHED

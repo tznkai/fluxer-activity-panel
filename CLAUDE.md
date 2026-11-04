@@ -119,7 +119,10 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
 - `!card` subcommands are `card_commands.SUBCOMMANDS` (new, set, clear, show, list, publish, archive, subscribe,
   unsubscribe, help), routed by `admin.handle` after `authorize`. Fields are `SETTABLE` and `CLEARABLE`;
   `README.md` documents syntax and fields. A card is `draft`, `live` or `archived` (`cards.CARD_STATES`); only a live
-  card is posted. Rows without a slug (v1 data) are never read or listed.
+  card is posted, and only to `GAMES_CHANNEL_ID`. With that unset, a live card's active copies are still posted
+  (`poller._publish`), so `!card publish` replies with one of three texts: `text.CARD_PUBLISHED` (a games channel is
+  set), `text.PUBLISHED_COPIES_ONLY` (no games channel, at least one active copy) or `text.PUBLISHED_NO_CHANNEL`
+  (no games channel and no active copy, so nothing is posted). Rows without a slug (v1 data) are never read or listed.
 - `!card help` lists the subcommands; `!card help fields` lists every field with limits, ranges and kinds taken from
   the code that enforces them (`card_fields`, `sources/registry.py`). `tests/test_card_help.py` checks they match and
   that each reply fits one message, so a new field or limit needs no hand edit of the help numbers but a new field

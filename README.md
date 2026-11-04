@@ -39,7 +39,9 @@ Core:
 Cards and sources:
 
 - `GAMES_CHANNEL_ID` (optional): the channel where published cards and the summary board are posted.
-  Without it, no card or board is posted, and the log says `games_channel_unset`.
+  Without it, neither a card nor the board is posted, and the log says `games_channel_unset`. A live card's
+  copies (see Subscriptions) are still posted in their own channels. The publish reply says which of these
+  will happen.
   Changing it does not move anything already posted. A card or the board stays in the channel it was
   posted in, and its edits go there. New cards go to the new channel. To move the board or a card,
   delete its message by hand, and the bot posts it again in the current channel.
@@ -120,7 +122,8 @@ server can also show a status line, such as Asleep, Waking up or Ready with a pl
 
 - **Draft:** `!card new` creates a card as a draft. A draft is never posted.
 - **Live:** `!card publish` makes the card live. The poller posts it in the games channel on its
-  next tick, and edits the message when its content changes.
+  next tick, and edits the message when its content changes. Without `GAMES_CHANNEL_ID` the card is not
+  posted, but its active copies are.
 - **Archived:** `!card archive` deletes the card's message and keeps the card. Publishing it again
   makes it live.
 

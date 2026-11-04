@@ -101,6 +101,9 @@ HELP_FIELDS = (
     "show: any of {show_items}, comma separated, or none."
 )
 PUBLISHED_NO_CHANNEL = "Published, but GAMES_CHANNEL_ID isn't set, so nothing will be posted."
+# Used when the card has active copies: the card's own message is not posted, but its copies are.
+PUBLISHED_COPIES_ONLY = ("Published, but GAMES_CHANNEL_ID isn't set, so the card itself won't be posted. "
+                         "Only its copies will be, in the channels it is subscribed to.")
 NO_SUCH_CARD = "No such card."
 UNKNOWN_FIELD = "I don't know that field."
 CARD_CREATED = "Created a draft card. Use !card set to fill it in, then !card publish."
