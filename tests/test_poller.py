@@ -1433,6 +1433,23 @@ async def test_a_failing_copy_does_not_stop_the_card_or_the_other_copies(world: 
     assert (await subscription(db, card_id, SUB2)).message_id is not None
 
 
+async def test_a_failing_card_post_still_posts_its_copy_and_is_logged_by_ids_and_type(
+        world: World, poller: Poller, db: Database, caplog: pytest.LogCaptureFixture):
+    caplog.set_level(logging.WARNING, logger="fluxer_panel.poller")
+    card_id = await seed(db, "alpha")
+    await subscribe(db, card_id, SUB)
+    world.fluxer.overrides[f"POST {GAMES_MESSAGES}"] = Override(500, b'{"code": "X", "message": "boom"}')
+
+    await poller.tick()
+
+    assert (await load(db, card_id)).message_id is None
+    [copy] = copy_posts(world.fluxer, SUB)
+    assert copy.status == 200
+    assert (await subscription(db, card_id, SUB)).message_id is not None
+    [failed] = records(caplog, "card_poll_failed")
+    assert failed.panel_fields == {"card_id": card_id, "reason": "FluxerHTTPError"}
+
+
 async def test_a_copy_deleted_by_hand_is_posted_again_at_once_through_the_kick(
         world: World, poller: Poller, db: Database):
     card_id = await seed(db, "alpha")

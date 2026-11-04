@@ -127,7 +127,8 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
 - Card subscriptions (`subscriptions.py`, migration 0005): a copy of the full card message in another text channel.
   Its payload is the card's own, from `render.card_message`, with `allowed_mentions={"parse": []}`. The poller posts,
   edits and reposts a copy through the card's `_sync` path, under the card's lock, after the card's own message. A
-  copy is never on the board, and a board link never points at one. `subscriptions.MAX_SUBSCRIPTIONS` (5) is checked
+  failed post or edit of the card's own message is logged and the copies still run. A copy is never on the board, and
+  a board link never points at one. `subscriptions.MAX_SUBSCRIPTIONS` (5) is checked
   in `subscriptions.add`, in the insert's transaction. A 403 on a copy's post or edit, or a 404 on its post (the channel
   is gone), pauses it and DMs the admins once: the pause changes a row only while it is active. The DM takes
   `text.SUBSCRIPTION_PAUSED_ALERT` (403) or `text.SUBSCRIPTION_CHANNEL_GONE_ALERT` (404), with the card slug and

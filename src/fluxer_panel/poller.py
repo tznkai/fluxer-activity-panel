@@ -426,8 +426,8 @@ class Poller:
         await self._db.run(lambda c: board.set_hash_if(c, channel_id, message_id, rendered))
 
     async def _publish(self, card_id: int, embed: dict[str, Any]) -> None:
-        """Brings the card's own message up to date, then each active copy, all under the card's lock. A copy runs
-        after the card's message, so a failure in one copy never stops the card or the copies after it."""
+        """Brings the card's own message up to date, then each active copy, all under the card's lock. A failure of the
+        card's own message is logged and the copies still run, and a failure in one copy never stops the others."""
         rendered = render.rendered_hash(embed)
         payload = render.card_message(embed)
         async with self._locks.get(card_id):
@@ -440,9 +440,13 @@ class Poller:
                     self._warned_no_channel = True
                     log_event(log, "games_channel_unset", level=logging.WARNING)
             else:
-                await self._sync(card_id, post_channel=channel_id, edit_channel=fresh.channel_id,
-                                 message_id=fresh.message_id, stored_hash=fresh.runtime.rendered_hash,
-                                 rendered=rendered, payload=payload, subscription=False)
+                try:
+                    await self._sync(card_id, post_channel=channel_id, edit_channel=fresh.channel_id,
+                                     message_id=fresh.message_id, stored_hash=fresh.runtime.rendered_hash,
+                                     rendered=rendered, payload=payload, subscription=False)
+                except Exception as exc:  # noqa: BLE001 - logged here, and the copies below still run
+                    log_event(log, "card_poll_failed", level=logging.WARNING, card_id=card_id,
+                              reason=type(exc).__name__)
             await self._publish_subscriptions(card_id, fresh.slug, rendered, payload)
 
     async def _publish_subscriptions(self, card_id: int, slug: str, rendered: str, payload: dict[str, Any]) -> None:
