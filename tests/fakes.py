@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -408,3 +409,21 @@ def instance_url_of_units(units: int) -> str:
     if room < 0:
         raise ValueError("units must leave room for the prefix")
     return prefix + "\U0001F600" * (room // 2) + "a" * (room % 2)
+
+
+# Test-side waits, shared by every suite that drives the fake servers from a running task.
+
+async def wait_until(predicate: Callable[[], bool], timeout: float = 5.0, *,
+                     waiting_for: str = "the fake servers") -> None:
+    """Polls `predicate` every 10 ms until it holds, and fails the test once `timeout` seconds have passed."""
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() > deadline:
+            raise AssertionError(f"timed out waiting for {waiting_for}")
+        await asyncio.sleep(0.01)
+
+
+async def settle() -> None:
+    """Gives the running tasks time to reach their next wait, so a count taken after it does not change."""
+    for _ in range(20):
+        await asyncio.sleep(0.01)

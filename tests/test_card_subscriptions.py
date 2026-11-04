@@ -7,18 +7,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import aiohttp
 import pytest
 
-from fluxer_panel import board, cards, subscriptions, text
+from fluxer_panel import board, cards, render, subscriptions, text
 from fluxer_panel.card_commands import SUBCOMMANDS
 from fluxer_panel.db import Database
 from fluxer_panel.poller import Poller
-from tests.fakes import FakeFluxerState, Override, Recorded, make_rest_app
+from tests.fakes import FakeFluxerState, Override, Recorded, make_rest_app, settle, wait_until
 from tests.test_card_commands import World, build
 
 GUILD = "1001"
@@ -357,12 +356,25 @@ async def test_archive_deletes_every_copy_before_the_card_message_and_keeps_the_
     assert world.last_reply() == text.CARD_ARCHIVED
 
 
+def delete_failures(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.getMessage() == "delete_failed"]
+
+
+def left_reply(*channels: str) -> str:
+    """The archive reply when the bot is refused a delete in each of `channels`, in the order given."""
+    return text.CARD_ARCHIVED_SOME_LEFT + "".join("\n" + text.ARCHIVE_LEFT_LINE.format(channel_id=channel)
+                                                 for channel in channels)
+
+
 async def test_archive_stopped_by_a_copy_that_fails_with_a_server_error_keeps_the_card_live_with_its_message(
-        world: World) -> None:
+        world: World, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.WARNING, logger="fluxer_panel.card_commands")
     card = await make_card(world)
     await publish_with_copies(world, card, (CHANNELS[0],))
     delete_status(world, CHANNELS[0], copy_id(CHANNELS[0]), 500)
     await world.run("!card archive mc")
+    [failed] = delete_failures(caplog)
+    assert failed.panel_fields == {"channel_id": CHANNELS[0], "reason": "FluxerHTTPError"}
     assert world.last_reply() == text.ARCHIVE_RETRY
     after = await world.card("mc")
     assert after is not None and after.state == "live" and after.message_id == MAIN_MESSAGE
@@ -373,23 +385,31 @@ async def test_archive_stopped_by_a_copy_that_fails_with_a_server_error_keeps_th
     assert sub is not None and sub.message_id == copy_id(CHANNELS[0])
 
 
-async def test_archive_stopped_by_a_copy_whose_delete_drops_the_connection_keeps_the_card_live(world: World) -> None:
+async def test_archive_stopped_by_a_copy_whose_delete_drops_the_connection_keeps_the_card_live(
+        world: World, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.WARNING, logger="fluxer_panel.card_commands")
     card = await make_card(world)
     await publish_with_copies(world, card, (CHANNELS[0],))
     world.state.drops.add(f"DELETE {copy_path(CHANNELS[0], copy_id(CHANNELS[0]))}")
     await world.run("!card archive mc")
+    [failed] = delete_failures(caplog)
+    assert failed.panel_fields == {"channel_id": CHANNELS[0], "reason": "ServerDisconnectedError"}
     assert world.last_reply() == text.ARCHIVE_RETRY
     after = await world.card("mc")
     assert after is not None and after.state == "live" and after.message_id == MAIN_MESSAGE
     assert (GAMES_ID, MAIN_MESSAGE) in world.state.messages and (GAMES_ID, MAIN_MESSAGE) not in world.state.deleted
 
 
-async def test_archive_leaves_a_copy_the_bot_is_refused_and_names_its_channel(world: World) -> None:
+async def test_archive_leaves_a_copy_the_bot_is_refused_and_names_its_channel(
+        world: World, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.WARNING, logger="fluxer_panel.card_commands")
     card = await make_card(world)
     await publish_with_copies(world, card, (CHANNELS[0],))
     delete_status(world, CHANNELS[0], copy_id(CHANNELS[0]), 403)
     await world.run("!card archive mc")
-    assert world.last_reply() == text.CARD_ARCHIVED + "\n" + text.ARCHIVED_COPY_LEFT.format(channel_id=CHANNELS[0])
+    [failed] = delete_failures(caplog)
+    assert failed.panel_fields == {"channel_id": CHANNELS[0], "reason": "FluxerHTTPError"}
+    assert world.last_reply() == left_reply(CHANNELS[0])
     archived = await world.card("mc")
     assert archived is not None and archived.state == "archived" and archived.message_id is None
     assert (GAMES_ID, MAIN_MESSAGE) in world.state.deleted
@@ -399,15 +419,46 @@ async def test_archive_leaves_a_copy_the_bot_is_refused_and_names_its_channel(wo
     assert sub is not None and (sub.message_id, sub.content_hash) == (None, None)
 
 
-async def test_archive_leaves_the_card_message_the_bot_is_refused_and_names_its_channel(world: World) -> None:
+async def test_archive_leaves_the_card_message_the_bot_is_refused_and_names_its_channel(
+        world: World, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.WARNING, logger="fluxer_panel.card_commands")
     card = await make_card(world)
     await publish_with_copies(world, card, (CHANNELS[0],))
     delete_status(world, GAMES_ID, MAIN_MESSAGE, 403)
     await world.run("!card archive mc")
-    assert world.last_reply() == text.CARD_ARCHIVED + "\n" + text.ARCHIVED_COPY_LEFT.format(channel_id=GAMES_ID)
+    [failed] = delete_failures(caplog)
+    assert failed.panel_fields == {"channel_id": GAMES_ID, "reason": "FluxerHTTPError"}
+    assert world.last_reply() == left_reply(GAMES_ID)
     archived = await world.card("mc")
     assert archived is not None and archived.state == "archived" and archived.message_id is None
     assert (GAMES_ID, MAIN_MESSAGE) in world.state.messages and (GAMES_ID, MAIN_MESSAGE) not in world.state.deleted
+    sub = await stored(world, card.id, CHANNELS[0])
+    assert sub is not None and (sub.message_id, sub.content_hash) == (None, None)
+
+
+async def test_archive_names_the_copy_and_the_card_message_when_both_are_refused(world: World) -> None:
+    card = await make_card(world)
+    await publish_with_copies(world, card, (CHANNELS[0],))
+    delete_status(world, CHANNELS[0], copy_id(CHANNELS[0]), 403)
+    delete_status(world, GAMES_ID, MAIN_MESSAGE, 403)
+    await world.run("!card archive mc")
+    assert world.last_reply() == left_reply(CHANNELS[0], GAMES_ID)
+    archived = await world.card("mc")
+    assert archived is not None and archived.state == "archived" and archived.message_id is None
+
+
+async def test_archive_reply_with_every_channel_left_stays_under_the_message_limit(world: World) -> None:
+    """The most channels an archive can leave is the subscription cap plus the card's own message: one line each."""
+    card = await make_card(world)
+    channels = CHANNELS[:subscriptions.MAX_SUBSCRIPTIONS]
+    await publish_with_copies(world, card, channels)
+    for channel in channels:
+        delete_status(world, channel, copy_id(channel), 403)
+    delete_status(world, GAMES_ID, MAIN_MESSAGE, 403)
+    await world.run("!card archive mc")
+    reply = world.last_reply()
+    assert reply == left_reply(*channels, GAMES_ID)
+    assert render.units(reply) <= 2000
 
 
 async def test_archive_counts_a_copy_already_gone_as_removed(world: World) -> None:
@@ -463,20 +514,6 @@ async def test_a_stopped_archive_leaves_the_card_live_and_the_poller_posts_the_c
 
 
 # Commands during a tick: the card's lock makes a command wait for the tick that holds it ---------------
-
-async def wait_until(predicate: Callable[[], bool], timeout: float = 5.0) -> None:
-    deadline = time.monotonic() + timeout
-    while not predicate():
-        if time.monotonic() > deadline:
-            raise AssertionError("timed out waiting for the fake servers")
-        await asyncio.sleep(0.01)
-
-
-async def settle() -> None:
-    """Gives the running tasks time to reach their next wait, so a count taken after it does not change."""
-    for _ in range(20):
-        await asyncio.sleep(0.01)
-
 
 async def tick_held_at_a_copy_post(world: World, poller: Poller, channel: str) -> tuple[asyncio.Event, asyncio.Task]:
     """Starts a tick and holds its POST of the copy in `channel` in flight. The tick holds the card's lock meanwhile."""

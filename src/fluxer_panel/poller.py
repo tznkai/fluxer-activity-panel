@@ -470,8 +470,11 @@ class Poller:
                 _subscription_failed(card_id, sub.channel_id, exc)
 
     async def _pause_subscription(self, card_id: int, slug: str, channel_id: str, alert: str) -> None:
-        """Pauses a copy Fluxer refused, or whose channel is gone. The DM goes out only when this call changed the row, so
-        each pause alerts the admins once. The DM names the card by its slug and the channel by its mention, nothing else."""
+        """Pauses a copy Fluxer refused, or whose channel is gone, and DMs the admins. The card lock is what makes the alert
+        go out once: the copies are read and paused under it, so one tick pauses a copy at a time. The guard below is a
+        backstop: the DM goes out only when this call changed the row. The DM names the card by its slug and the channel
+        by its mention, nothing else."""
+        # defensive: copies are read and paused under the card's lock, so a tick never sees this False
         if not await self._db.run(lambda c: subscriptions.pause(c, card_id, channel_id)):
             return
         log_event(log, "subscription_paused", level=logging.WARNING, card_id=card_id, channel_id=channel_id)

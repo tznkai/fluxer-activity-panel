@@ -141,9 +141,10 @@ games channel.
 - **Limit:** a card has at most five subscribed channels. A paused channel counts toward the five.
 - **Already subscribed:** subscribing an active channel again changes nothing and says so.
 - **Pause:** when Fluxer refuses a copy's post or edit with 403, or its post returns 404 (the channel is gone),
-  that copy is paused. Each admin gets one DM for the pause, naming the card by its slug and the channel.
-  The bot stops posting and editing there, and each admin gets one direct message that names the
-  channel with a mention. The message carries no card text, so use `!card show` to find the card.
+  that copy is paused and the bot stops posting and editing there. Each pause sends each admin one direct
+  message, which names the card by its slug and the channel by a mention, and carries no other card text;
+  `!card show` lists each card's channels. A 403 pause is cleared by `!card subscribe` for that channel,
+  which resumes it. A channel-gone pause is cleared by `!card unsubscribe` for that channel.
 - **Resume:** `!card subscribe` on a paused channel resumes it. The next check posts the copy, or edits
   it if the card changed.
 - **Failures:** a copy whose edit returns 404 is posted again, as the card is. Any other failure is
@@ -152,11 +153,13 @@ games channel.
 - **Unsubscribe:** deletes the copy and removes the subscription. A copy that is already gone counts as
   removed. If the bot cannot delete it for another reason, the subscription is still removed, and the
   reply says the copy is still there, to delete by hand.
-- **Archive:** deletes every copy, then the card's message last. A copy the bot is refused (403) stays where
-  it is, the archive goes ahead, and the reply names its channel to delete by hand. Any other failure to
-  delete (not already gone) stops the archive while the card is still live: the copies deleted before the
-  stop are posted again by the next check, and the card's message stays in place, so running it again is
-  safe. The subscriptions are kept. Publishing again posts every subscription that is not paused.
+- **Archive:** deletes every copy, then the card's message last. A 403 on a copy or on the card's own message is
+  handled the same way: that message stays where it is, the archive goes ahead, and the reply lists each
+  channel left, as a mention, to delete by hand. The reply says the message was removed only when nothing is
+  left; otherwise it says the card is archived and its settings are kept. Any other failure to delete (not
+  already gone) stops the archive while the card is still live: the copies deleted before the stop are posted
+  again by the next check, and the card's message stays in place, so running it again is safe. The
+  subscriptions are kept. Publishing again posts every subscription that is not paused.
 - **Show:** `!card show` lists the subscribed channels, with "(paused)" after each paused one.
 - **Rate:** each copy costs one send, or one edit, each time the card's content changes, and nothing
   when it does not. Each poll compares every copy's stored hash, but sends nothing for an unchanged copy.

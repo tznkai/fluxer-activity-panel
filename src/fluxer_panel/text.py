@@ -108,11 +108,14 @@ CARD_UPDATED = "Card updated."
 CARD_CLEARED = "Cleared."
 CARD_PUBLISHED = "Published. The card will post on the next check."
 CARD_ARCHIVED = "Archived. The posted message is removed and the card's settings are kept."
+# Used only when a posted message was refused (403) and is still in Fluxer. The header never says the message was removed;
+# each channel left then gets one ARCHIVE_LEFT_LINE, which names it by mention.
+CARD_ARCHIVED_SOME_LEFT = "Archived. The card's settings are kept, but these posted messages are still in Fluxer:"
+ARCHIVE_LEFT_LINE = "I couldn't remove the message in <#{channel_id}>, so it is still there. Delete it by hand."
 ALREADY_LIVE = "That card is already live."
 ALREADY_ARCHIVED = "That card is already archived."
 ARCHIVE_RETRY = ("I couldn't remove a posted message, so the archive stopped and the card is still live. "
                  "Try again in a minute.")
-ARCHIVED_COPY_LEFT = "Archived, but I couldn't remove the message in <#{channel_id}>, so it is still there. Delete it by hand."
 NO_CARDS = "No cards yet."
 SHOW_OUTSIDE_LABEL = "Outside Fluxer:"
 SHOW_NOTE = "Preview: live status appears once the card is published."

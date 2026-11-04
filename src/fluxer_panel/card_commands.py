@@ -439,8 +439,11 @@ async def _archive(event: MessageCreate, ctx: CardContext, rest: str) -> _Result
 
         await ctx.db.run(archive_tx)
     ctx.kick()
-    reply = text.CARD_ARCHIVED + "".join("\n" + text.ARCHIVED_COPY_LEFT.format(channel_id=channel_id)
-                                         for channel_id in left)
+    if left:
+        reply = text.CARD_ARCHIVED_SOME_LEFT + "".join("\n" + text.ARCHIVE_LEFT_LINE.format(channel_id=channel_id)
+                                                       for channel_id in left)
+    else:
+        reply = text.CARD_ARCHIVED
     await _say(ctx, event, reply)
     return _Result(card_id)
 

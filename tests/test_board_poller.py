@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
-import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,7 +25,7 @@ from fluxer_panel.db import Database
 from fluxer_panel.poller import Poller
 from fluxer_panel.sources.base import PlayerCounts, ProbeDetails, ProbeResult
 from fluxer_panel.sources.registry import Sources
-from tests.fakes import FakeFluxerState, Override, Recorded, make_rest_app
+from tests.fakes import FakeFluxerState, Override, Recorded, make_rest_app, wait_until
 
 TOKEN = "SENTINEL-TOKEN-board-7c1e"
 INSTANCE = "https://fluxer.invalid"
@@ -364,10 +363,10 @@ async def test_a_deleted_board_message_is_forgotten_and_reposted_without_waiting
     try:
         # The run loop's first tick is the second probe call. Its kick is cleared at the top of the loop, so the
         # delete must come once the loop is waiting, or the repost would come from that tick and not from the kick.
-        await _wait_until(lambda: len(world.probe.calls) == 2)
+        await wait_until(lambda: len(world.probe.calls) == 2)
         await asyncio.sleep(0.1)
         await poller.on_message_delete(MessageDelete(BOARD, GAMES, None))
-        await _wait_until(lambda: len(board_posts(world.fluxer)) == 2)
+        await wait_until(lambda: len(board_posts(world.fluxer)) == 2)
     finally:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -644,7 +643,7 @@ async def test_with_a_board_stored_a_stalled_card_does_not_hold_back_another_car
     task = asyncio.create_task(world.poller().tick())
     try:
         # Alpha's evaluation is the one stalled, so beta is the only card posted while the tick is still running.
-        await _wait_until(lambda: card_titles(world.fluxer) == ["Beta"])
+        await wait_until(lambda: card_titles(world.fluxer) == ["Beta"])
         assert not task.done()
     finally:
         release.set()
@@ -677,7 +676,7 @@ async def test_at_most_poll_concurrency_cards_are_evaluated_at_once(world: World
     world.probe.on_call = hold_each_evaluation
     task = asyncio.create_task(world.poller(POLL_CONCURRENCY="2").tick())
     try:
-        await _wait_until(lambda: in_flight >= 2)
+        await wait_until(lambda: in_flight >= 2)
         await _settle()
         assert in_flight == 2
     finally:
@@ -705,7 +704,7 @@ async def test_at_most_poll_concurrency_cards_are_published_at_once(world: World
         world.fluxer.gate_passes[key] = 1
     task = asyncio.create_task(world.poller(POLL_CONCURRENCY="2").tick())
     try:
-        await _wait_until(lambda: len(world.fluxer.gated) >= 2)
+        await wait_until(lambda: len(world.fluxer.gated) >= 2)
         await _settle()
         assert len(world.fluxer.gated) == 2
     finally:
@@ -831,9 +830,3 @@ async def _settle() -> None:
         await asyncio.sleep(0)
 
 
-async def _wait_until(predicate: Callable[[], bool], timeout: float = 5.0) -> None:
-    deadline = time.monotonic() + timeout
-    while not predicate():
-        if time.monotonic() > deadline:
-            raise AssertionError("timed out waiting for the fake server")
-        await asyncio.sleep(0.01)

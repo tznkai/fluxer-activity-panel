@@ -9,8 +9,7 @@ import itertools
 import json
 import logging
 import sqlite3
-import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from dataclasses import asdict
 from pathlib import Path
 
@@ -19,6 +18,7 @@ import pytest
 from fluxer_panel import purge as purge_module
 from fluxer_panel.db import Database
 from fluxer_panel.purge import PurgeResult, purge, purge_loop, run_purge, write_status
+from tests.fakes import wait_until
 
 NOW = 2_000_000_000
 DAY = 86400
@@ -85,14 +85,6 @@ def _read_status(path: Path) -> dict | None:
         return json.loads(path.read_bytes())
     except (OSError, ValueError):
         return None
-
-
-async def _wait_until(predicate: Callable[[], bool], timeout: float = 5.0) -> None:
-    deadline = time.monotonic() + timeout
-    while not predicate():
-        if time.monotonic() > deadline:
-            raise AssertionError("timed out waiting for the purge status file")
-        await asyncio.sleep(0.01)
 
 
 # AC6.1 ------------------------------------------------------------------------------------------------
@@ -275,13 +267,14 @@ async def test_purge_loop_keeps_running_through_failures_and_recovers(db: Databa
     task = asyncio.create_task(purge_loop(db, status, interval=0.05, clock=lambda: next(clock)))
     try:
         # the loop runs on its own: two failed attempts at NOW and NOW + 1, and the task is still alive
-        await _wait_until(lambda: (_read_status(status) or {}).get("last_attempt_at", 0) >= NOW + 1)
+        await wait_until(lambda: (_read_status(status) or {}).get("last_attempt_at", 0) >= NOW + 1,
+                         waiting_for="the purge status file")
         assert not task.done()
         assert _read_status(status)["ok"] is False
 
         await db.run(lambda conn: conn.execute("DROP TRIGGER fail_requests"))
 
-        await _wait_until(lambda: (_read_status(status) or {}).get("ok") is True)
+        await wait_until(lambda: (_read_status(status) or {}).get("ok") is True, waiting_for="the purge status file")
         assert _read_status(status)["deleted"]["requests"] == 1
     finally:
         task.cancel()
@@ -307,7 +300,8 @@ async def test_purge_loop_survives_an_iteration_that_raises(db: Database, status
     clock = itertools.count(NOW)
     task = asyncio.create_task(purge_loop(db, status, interval=0.05, clock=lambda: next(clock)))
     try:
-        await _wait_until(lambda: task.done() or (_read_status(status) or {}).get("ok") is True)
+        await wait_until(lambda: task.done() or (_read_status(status) or {}).get("ok") is True,
+                         waiting_for="the purge status file")
         assert not task.done()
         assert calls >= 2
     finally:

@@ -49,6 +49,8 @@ from tests.fakes import (
     make_rest_app,
     message_delete,
     send,
+    settle,
+    wait_until,
 )
 
 TOKEN = "SENTINEL-TOKEN-7f3a9c"
@@ -62,7 +64,13 @@ SERVER = "abcd1234"
 HOST = "127.0.0.1"
 PORT = 25565
 GAMES_MESSAGES = f"/api/v1/channels/{GAMES}/messages"
-POSTED = f"{GAMES_MESSAGES}/5001"
+
+
+def channel_messages(channel: str) -> str:
+    return f"/api/v1/channels/{channel}/messages"
+
+
+POSTED =f"{GAMES_MESSAGES}/5001"
 # The summary board already exists in these tests, so card message ids start at 5001 as they always did. The board's
 # own posting and sync are covered by tests/test_board_poller.py. Its edits are filtered out of `patches`.
 BOARD_MESSAGE = "4000"
@@ -238,20 +246,6 @@ async def set_title(db: Database, card_id: int, title: str) -> None:
     await db.run(lambda c: cards.update_fields(c, card_id, 0, title=title))
 
 
-async def _wait_until(predicate: Callable[[], bool], timeout: float = 5.0) -> None:
-    deadline = time.monotonic() + timeout
-    while not predicate():
-        if time.monotonic() > deadline:
-            raise AssertionError("timed out waiting for the fake servers")
-        await asyncio.sleep(0.01)
-
-
-async def settle() -> None:
-    """Gives the running tasks time to reach their next wait, so a count taken after it does not change."""
-    for _ in range(20):
-        await asyncio.sleep(0.01)
-
-
 def posts(state: FakeFluxerState) -> list[Recorded]:
     return [r for r in state.requests if r.method == "POST" and r.path == GAMES_MESSAGES]
 
@@ -418,7 +412,7 @@ async def test_startup_recreates_a_stored_message_that_no_longer_exists(
 
     run_task = asyncio.create_task(poller.run())
     try:
-        await _wait_until(lambda: len(posts(world.fluxer)) == 1)
+        await wait_until(lambda: len(posts(world.fluxer)) == 1)
         card = await wait_for_card(db, card_id, lambda c: c.message_id == "5001")
     finally:
         run_task.cancel()
@@ -485,9 +479,9 @@ async def test_a_message_delete_recreates_the_card_without_waiting_for_the_poll(
     card_id = await seed(db, "alpha")
     run_task = asyncio.create_task(poller.run())
     try:
-        await _wait_until(lambda: len(posts(world.fluxer)) == 1)
+        await wait_until(lambda: len(posts(world.fluxer)) == 1)
         await poller.on_message_delete(MessageDelete("5001", GAMES, None))
-        await _wait_until(lambda: len(posts(world.fluxer)) == 2, timeout=2.0)
+        await wait_until(lambda: len(posts(world.fluxer)) == 2, timeout=2.0)
         await wait_for_card(db, card_id, lambda c: c.message_id == "5002")
     finally:
         run_task.cancel()
@@ -527,10 +521,10 @@ async def test_a_message_delete_over_the_gateway_recreates_the_card(
     run_task = asyncio.create_task(poller.run())
     gateway_task = asyncio.create_task(gateway.run())
     try:
-        await _wait_until(lambda: len(posts(world.fluxer)) == 1)
+        await wait_until(lambda: len(posts(world.fluxer)) == 1)
         world.fluxer.deleted.add((GAMES, "5001"))
         deleted.set()
-        await _wait_until(lambda: len(posts(world.fluxer)) == 2, timeout=5.0)
+        await wait_until(lambda: len(posts(world.fluxer)) == 2, timeout=5.0)
         await wait_for_card(db, card_id, lambda c: c.message_id == "5002")
     finally:
         await gateway.stop()
@@ -546,14 +540,14 @@ async def test_a_message_delete_during_an_edit_is_not_written_back_and_the_card_
     card_id = await seed(db, "alpha", title="Alpha")
     run_task = asyncio.create_task(poller.run())
     try:
-        await _wait_until(lambda: len(posts(world.fluxer)) == 1)
+        await wait_until(lambda: len(posts(world.fluxer)) == 1)
         await wait_for_card(db, card_id, lambda c: c.message_id == "5001")
         await set_title(db, card_id, "Beta")
         world.fluxer.delays[f"PATCH {POSTED}"] = 0.3
         poller.kick()
         await asyncio.sleep(0.1)     # the edit is delayed 0.3 s, so it is still in flight here
         await poller.on_message_delete(MessageDelete("5001", GAMES, None))
-        await _wait_until(lambda: len(posts(world.fluxer)) == 2, timeout=2.0)
+        await wait_until(lambda: len(posts(world.fluxer)) == 2, timeout=2.0)
         card = await wait_for_card(db, card_id, lambda c: c.message_id == "5002")
     finally:
         run_task.cancel()
@@ -572,7 +566,7 @@ async def test_a_message_delete_for_a_message_still_being_posted_causes_a_repost
     try:
         await asyncio.sleep(0.1)     # the first post is delayed 0.3 s, so it is still in flight here
         await poller.on_message_delete(MessageDelete("5001", GAMES, None))   # the id the fake hands out first
-        await _wait_until(lambda: len(posts(world.fluxer)) == 2, timeout=2.0)
+        await wait_until(lambda: len(posts(world.fluxer)) == 2, timeout=2.0)
         await wait_for_card(db, card_id, lambda c: c.message_id == "5002")
     finally:
         run_task.cancel()
@@ -610,11 +604,11 @@ async def test_a_kick_publishes_a_change_without_waiting_for_the_poll(
     card_id = await seed(db, "alpha", title="Alpha")
     run_task = asyncio.create_task(poller.run())
     try:
-        await _wait_until(lambda: len(posts(world.fluxer)) == 1)
+        await wait_until(lambda: len(posts(world.fluxer)) == 1)
         await wait_for_card(db, card_id, lambda c: c.message_id == "5001")
         await set_title(db, card_id, "Beta")
         poller.kick()
-        await _wait_until(lambda: len(patches(world.fluxer)) == 1, timeout=2.0)
+        await wait_until(lambda: len(patches(world.fluxer)) == 1, timeout=2.0)
     finally:
         run_task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -629,12 +623,12 @@ async def test_a_late_delete_of_a_replaced_message_clears_nothing_and_kicks_noth
     card_id = await seed(db, "alpha", title="Alpha")
     run_task = asyncio.create_task(poller.run())
     try:
-        await _wait_until(lambda: len(posts(world.fluxer)) == 1)
+        await wait_until(lambda: len(posts(world.fluxer)) == 1)
         await wait_for_card(db, card_id, lambda c: c.message_id == "5001")
         world.fluxer.deleted.add((GAMES, "5001"))
         await set_title(db, card_id, "Beta")
         poller.kick()
-        await _wait_until(lambda: len(posts(world.fluxer)) == 2, timeout=2.0)
+        await wait_until(lambda: len(posts(world.fluxer)) == 2, timeout=2.0)
         await wait_for_card(db, card_id, lambda c: c.message_id == "5002")
 
         # A title change with no kick: only a tick would edit, so a kick from the late delete shows as a PATCH.
@@ -674,10 +668,10 @@ async def test_a_failed_tick_is_logged_and_the_loop_keeps_running(
     await db.run(lambda c: c.execute("ALTER TABLE card_runtime RENAME TO card_runtime_away"))
     run_task = asyncio.create_task(poller.run())
     try:
-        await _wait_until(lambda: bool(records(caplog, "poller_tick_failed")))
+        await wait_until(lambda: bool(records(caplog, "poller_tick_failed")))
         await db.run(lambda c: c.execute("ALTER TABLE card_runtime_away RENAME TO card_runtime"))
         poller.kick()
-        await _wait_until(lambda: len(posts(world.fluxer)) == 1)
+        await wait_until(lambda: len(posts(world.fluxer)) == 1)
         assert not run_task.done()
     finally:
         run_task.cancel()
@@ -935,7 +929,7 @@ async def test_an_archive_during_a_probe_stops_the_post(world: World, poller: Po
     world.probe.gate = asyncio.Event()
     card_id = await seed(db, "alpha", probe=cards.ProbeRef("stub", HOST, PORT))
     tick = asyncio.create_task(poller.tick())
-    await _wait_until(lambda: len(world.probe.calls) == 1)
+    await wait_until(lambda: len(world.probe.calls) == 1)
 
     ctx = CardContext(db=db, rest=world.rest, config=world.config, sources=world.sources, locks=world.locks)
     await admin.handle(_admin_message("!card archive alpha"), world.config, world.rest, ctx)
@@ -1332,7 +1326,7 @@ async def test_a_copy_deleted_while_its_edit_is_in_flight_is_not_written_back(
     gate = asyncio.Event()
     world.fluxer.gates[key] = gate
     tick = asyncio.create_task(poller.tick())
-    await _wait_until(lambda: key in world.fluxer.gated)
+    await wait_until(lambda: key in world.fluxer.gated)
 
     await poller.on_message_delete(MessageDelete(SUB_MESSAGE, SUB, None))
     gate.set()
@@ -1493,7 +1487,7 @@ async def test_a_copy_deleted_by_hand_is_posted_again_at_once_through_the_kick(
     await subscribe(db, card_id, SUB)
     run_task = asyncio.create_task(poller.run())
     try:
-        await _wait_until(lambda: len(copy_posts(world.fluxer, SUB)) == 1)
+        await wait_until(lambda: len(copy_posts(world.fluxer, SUB)) == 1)
         await _wait_for_subscription(db, card_id, SUB, lambda s: s.message_id == SUB_MESSAGE)
         await poller.on_message_delete(MessageDelete(SUB_MESSAGE, SUB, None))
         await _wait_for_subscription(db, card_id, SUB, lambda s: s.message_id == "5003")
@@ -1512,7 +1506,7 @@ async def test_a_copy_deleted_while_its_post_is_in_flight_is_not_stored_and_is_p
     gate = asyncio.Event()
     world.fluxer.gates[gate_key] = gate
     tick = asyncio.create_task(poller.tick())
-    await _wait_until(lambda: gate_key in world.fluxer.gated)
+    await wait_until(lambda: gate_key in world.fluxer.gated)
 
     await poller.on_message_delete(MessageDelete(SUB_MESSAGE, SUB, None))
     gate.set()
@@ -1580,7 +1574,7 @@ async def test_startup_recreates_a_copy_that_no_longer_exists(world: World, poll
 
     run_task = asyncio.create_task(poller.run())
     try:
-        await _wait_until(lambda: len(copy_posts(world.fluxer, SUB)) == 1)
+        await wait_until(lambda: len(copy_posts(world.fluxer, SUB)) == 1)
         await _wait_for_subscription(db, card_id, SUB, lambda s: s.message_id == SUB_MESSAGE)
     finally:
         run_task.cancel()
@@ -1662,7 +1656,7 @@ async def test_copies_hold_the_cards_semaphore_slot(world: World, db: Database):
     poller = world.make_poller(config=config_for(POLL_CONCURRENCY="1"))
     tick = asyncio.create_task(poller.tick())
     try:
-        await _wait_until(lambda: len(world.fluxer.gated) == 1)
+        await wait_until(lambda: len(world.fluxer.gated) == 1)
         await settle()
         assert len(world.fluxer.gated) == 1
         assert len(posts(world.fluxer)) == 1      # the second card's own post waits for the first card's copy
@@ -1672,5 +1666,3 @@ async def test_copies_hold_the_cards_semaphore_slot(world: World, db: Database):
     assert len(copy_posts(world.fluxer, SUB)) == 1 and len(copy_posts(world.fluxer, SUB2)) == 1
 
 
-def channel_messages(channel: str) -> str:
-    return f"/api/v1/channels/{channel}/messages"
