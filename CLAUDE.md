@@ -132,8 +132,10 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   in `subscriptions.add`, in the insert's transaction. A 403 on a copy's post or edit, or a 404 on its post (the channel
   is gone), pauses it and DMs the admins once: the pause changes a row only while it is active. The DM takes
   `text.SUBSCRIPTION_PAUSED_ALERT` (403) or `text.SUBSCRIPTION_CHANNEL_GONE_ALERT` (404), with the card slug and
-  channel id as its only inputs. A 404 on an edit reposts the copy. `!card subscribe` on a paused channel resumes it. `!card archive` deletes every copy,
-  and a delete that fails other than with 404 stops the archive with nothing changed. `!card unsubscribe` removes the
+  channel id as its only inputs. A 404 on an edit reposts the copy. `!card subscribe` on a paused channel resumes it. `!card archive` deletes every
+  copy first and the card's message last. A 404 counts as deleted; a 403 leaves that message in place and the reply
+  names its channel; any other failure stops the archive while the card stays live, and the copies it already deleted
+  are forgotten so the poller posts them again. `!card unsubscribe` removes the
   row whatever the delete outcome, and says so when the copy is left. Copies log ids and exception types only.
 - Summary board (`render.board_message`, `board.py`, `poller.py`): one message, always on when `GAMES_CHANNEL_ID` is
   set. It is posted to that channel when none is stored, and then it stays in the channel it was posted in: a changed

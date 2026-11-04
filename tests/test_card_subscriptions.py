@@ -11,10 +11,11 @@ from pathlib import Path
 import aiohttp
 import pytest
 
-from fluxer_panel import cards, subscriptions, text
+from fluxer_panel import board, cards, subscriptions, text
 from fluxer_panel.card_commands import SUBCOMMANDS
 from fluxer_panel.db import Database
-from tests.fakes import FakeFluxerState, Override, make_rest_app
+from fluxer_panel.poller import Poller
+from tests.fakes import FakeFluxerState, Override, Recorded, make_rest_app
 from tests.test_card_commands import World, build
 
 GUILD = "1001"
@@ -68,6 +69,8 @@ async def world(db, fake, session) -> World:
 async def games_world(db, fake, session) -> World:
     state, base = fake
     state.guilds[GUILD] = {"id": GUILD}
+    for channel in CHANNELS:
+        state.channels[channel] = {"id": channel, "type": 0, "guild_id": GUILD, "name": "lounge"}
     state.channels[GAMES_CHANNEL] = {"id": GAMES_CHANNEL, "type": 0, "guild_id": GUILD, "name": "games"}
     return await build(db, state, base, session, GAMES_CHANNEL_ID=GAMES_CHANNEL)
 
@@ -316,13 +319,13 @@ def copy_id(channel: str) -> str:
     return f"{COPY}{channel}"
 
 
-async def publish_with_copies(world: World, card: cards.Card, channels: tuple[str, ...]) -> None:
-    """A live card with its main message and a copy in each channel, as the poller leaves them."""
-    world.state.messages[(GAMES_ID, MAIN_MESSAGE)] = {"embeds": []}
+async def publish_with_copies(world: World, card: cards.Card, channels: tuple[str, ...], games: str = GAMES_ID) -> None:
+    """A live card with its main message in `games` and a copy in each channel, as the poller leaves them."""
+    world.state.messages[(games, MAIN_MESSAGE)] = {"embeds": []}
 
     def live(conn):
         cards.set_state(conn, card.id, "live", 1)
-        cards.set_message(conn, card.id, GAMES_ID, MAIN_MESSAGE, HASH)
+        cards.set_message(conn, card.id, games, MAIN_MESSAGE, HASH)
 
     await world.db.run(live)
     for channel in channels:
@@ -330,12 +333,19 @@ async def publish_with_copies(world: World, card: cards.Card, channels: tuple[st
         await post_copy(world, card, channel, message_id=copy_id(channel))
 
 
-async def test_archive_deletes_every_copy_and_keeps_the_rows(world: World) -> None:
+def delete_status(world: World, channel: str, message_id: str, status: int) -> None:
+    """Makes the fake answer a delete of this message with `status`, without changing its state."""
+    world.state.overrides[f"DELETE {copy_path(channel, message_id)}"] = Override(
+        status, b'{"code": "X", "message": "no"}')
+
+
+async def test_archive_deletes_every_copy_before_the_card_message_and_keeps_the_rows(world: World) -> None:
     card = await make_card(world)
     await publish_with_copies(world, card, (CHANNELS[0], CHANNELS[1]))
     await world.run("!card archive mc")
-    assert deletes(world) == [copy_path(GAMES_ID, MAIN_MESSAGE), copy_path(CHANNELS[0], copy_id(CHANNELS[0])),
-                              copy_path(CHANNELS[1], copy_id(CHANNELS[1]))]
+    assert deletes(world) == [copy_path(CHANNELS[0], copy_id(CHANNELS[0])),
+                              copy_path(CHANNELS[1], copy_id(CHANNELS[1])),
+                              copy_path(GAMES_ID, MAIN_MESSAGE)]
     archived = await world.card("mc")
     assert archived is not None and archived.state == "archived" and archived.message_id is None
     for channel in (CHANNELS[0], CHANNELS[1]):
@@ -344,17 +354,57 @@ async def test_archive_deletes_every_copy_and_keeps_the_rows(world: World) -> No
     assert world.last_reply() == text.CARD_ARCHIVED
 
 
-async def test_archive_with_a_copy_that_cannot_be_deleted_changes_nothing(world: World) -> None:
+async def test_archive_stopped_by_a_copy_that_fails_with_a_server_error_keeps_the_card_live_with_its_message(
+        world: World) -> None:
     card = await make_card(world)
     await publish_with_copies(world, card, (CHANNELS[0],))
-    world.state.overrides[f"DELETE {copy_path(CHANNELS[0], copy_id(CHANNELS[0]))}"] = Override(
-        500, b'{"code": "X", "message": "boom"}')
+    delete_status(world, CHANNELS[0], copy_id(CHANNELS[0]), 500)
     await world.run("!card archive mc")
     assert world.last_reply() == text.ARCHIVE_RETRY
     after = await world.card("mc")
     assert after is not None and after.state == "live" and after.message_id == MAIN_MESSAGE
+    # The card's own message was never tried, and it still exists in Fluxer.
+    assert deletes(world) == [copy_path(CHANNELS[0], copy_id(CHANNELS[0]))]
+    assert (GAMES_ID, MAIN_MESSAGE) in world.state.messages and (GAMES_ID, MAIN_MESSAGE) not in world.state.deleted
     sub = await stored(world, card.id, CHANNELS[0])
     assert sub is not None and sub.message_id == copy_id(CHANNELS[0])
+
+
+async def test_archive_stopped_by_a_copy_whose_delete_drops_the_connection_keeps_the_card_live(world: World) -> None:
+    card = await make_card(world)
+    await publish_with_copies(world, card, (CHANNELS[0],))
+    world.state.drops.add(f"DELETE {copy_path(CHANNELS[0], copy_id(CHANNELS[0]))}")
+    await world.run("!card archive mc")
+    assert world.last_reply() == text.ARCHIVE_RETRY
+    after = await world.card("mc")
+    assert after is not None and after.state == "live" and after.message_id == MAIN_MESSAGE
+    assert (GAMES_ID, MAIN_MESSAGE) in world.state.messages and (GAMES_ID, MAIN_MESSAGE) not in world.state.deleted
+
+
+async def test_archive_leaves_a_copy_the_bot_is_refused_and_names_its_channel(world: World) -> None:
+    card = await make_card(world)
+    await publish_with_copies(world, card, (CHANNELS[0],))
+    delete_status(world, CHANNELS[0], copy_id(CHANNELS[0]), 403)
+    await world.run("!card archive mc")
+    assert world.last_reply() == text.CARD_ARCHIVED + "\n" + text.ARCHIVED_COPY_LEFT.format(channel_id=CHANNELS[0])
+    archived = await world.card("mc")
+    assert archived is not None and archived.state == "archived" and archived.message_id is None
+    assert (GAMES_ID, MAIN_MESSAGE) in world.state.deleted
+    assert (CHANNELS[0], copy_id(CHANNELS[0])) in world.state.messages
+    assert (CHANNELS[0], copy_id(CHANNELS[0])) not in world.state.deleted
+    sub = await stored(world, card.id, CHANNELS[0])
+    assert sub is not None and (sub.message_id, sub.content_hash) == (None, None)
+
+
+async def test_archive_leaves_the_card_message_the_bot_is_refused_and_names_its_channel(world: World) -> None:
+    card = await make_card(world)
+    await publish_with_copies(world, card, (CHANNELS[0],))
+    delete_status(world, GAMES_ID, MAIN_MESSAGE, 403)
+    await world.run("!card archive mc")
+    assert world.last_reply() == text.CARD_ARCHIVED + "\n" + text.ARCHIVED_COPY_LEFT.format(channel_id=GAMES_ID)
+    archived = await world.card("mc")
+    assert archived is not None and archived.state == "archived" and archived.message_id is None
+    assert (GAMES_ID, MAIN_MESSAGE) in world.state.messages and (GAMES_ID, MAIN_MESSAGE) not in world.state.deleted
 
 
 async def test_archive_counts_a_copy_already_gone_as_removed(world: World) -> None:
@@ -363,6 +413,50 @@ async def test_archive_counts_a_copy_already_gone_as_removed(world: World) -> No
     world.state.deleted.add((CHANNELS[0], copy_id(CHANNELS[0])))
     await world.run("!card archive mc")
     assert world.last_reply() == text.CARD_ARCHIVED
+
+
+BOARD_MESSAGE = "4000"
+
+
+async def poller_with_board(world: World) -> Poller:
+    """A poller on this world's store, Fluxer and card locks. Its games channel already holds the summary board, so a
+    tick publishes only cards and copies."""
+    world.state.messages[(GAMES_CHANNEL, BOARD_MESSAGE)] = {"embeds": []}
+    await world.db.run(lambda c: board.set_message(c, GAMES_CHANNEL, BOARD_MESSAGE, HASH))
+    return Poller(db=world.db, rest=world.rest, sources=world.ctx.sources, config=world.config,
+                  locks=world.ctx.locks, clock=lambda: 0.0)
+
+
+def posts_to(state: FakeFluxerState, channel: str) -> list[Recorded]:
+    return [r for r in state.requests if r.method == "POST" and r.path == f"/api/v1/channels/{channel}/messages"]
+
+
+async def test_a_stopped_archive_leaves_the_card_live_and_the_poller_posts_the_copies_it_deleted(
+        games_world: World) -> None:
+    card = await make_card(games_world)
+    await publish_with_copies(games_world, card, (CHANNELS[0], CHANNELS[1]), games=GAMES_CHANNEL)
+    delete_status(games_world, CHANNELS[1], copy_id(CHANNELS[1]), 500)
+    games_world.kicks.clear()
+
+    await games_world.run("!card archive mc")
+
+    assert games_world.last_reply() == text.ARCHIVE_RETRY
+    assert games_world.kicks    # the forgotten copy is posted again at once, not at the next interval
+    assert (CHANNELS[0], copy_id(CHANNELS[0])) in games_world.state.deleted
+    forgotten = await stored(games_world, card.id, CHANNELS[0])
+    assert forgotten is not None and forgotten.message_id is None
+    kept = await stored(games_world, card.id, CHANNELS[1])
+    assert kept is not None and kept.message_id == copy_id(CHANNELS[1])
+    assert (GAMES_CHANNEL, MAIN_MESSAGE) in games_world.state.messages
+    assert (GAMES_CHANNEL, MAIN_MESSAGE) not in games_world.state.deleted
+
+    poller = await poller_with_board(games_world)
+    await poller.tick()
+
+    assert len(posts_to(games_world.state, CHANNELS[0])) == 1
+    reposted = await stored(games_world, card.id, CHANNELS[0])
+    assert reposted is not None and reposted.message_id not in (None, copy_id(CHANNELS[0]))
+    assert posts_to(games_world.state, CHANNELS[1]) == []     # the copy the stopped archive kept is not posted again
 
 
 # show and help ---------------------------------------------------------------------------------------

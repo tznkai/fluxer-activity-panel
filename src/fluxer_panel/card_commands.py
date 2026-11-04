@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import enum
 import logging
 import time
 from collections.abc import Callable, Container
@@ -406,16 +407,29 @@ async def _archive(event: MessageCreate, ctx: CardContext, rest: str) -> _Result
         if current.state == "archived":
             await _say(ctx, event, text.ALREADY_ARCHIVED)
             return _Result(card_id)
-        # The card's message first, then every subscription copy. Any copy that cannot be deleted stops the archive
-        # before anything is stored, so a retry finds the same messages; a copy already gone counts as deleted.
+        # The copies go first and the card's own message last. A copy the bot is refused (403) stays where it is and is
+        # named in the reply. Any other failure stops the archive while the card's message is still there.
         copies = await ctx.db.run(lambda c: subscriptions.list_for_card(c, card_id))
-        posted = [(sub.channel_id, sub.message_id) for sub in copies if sub.message_id is not None]
-        if current.channel_id and current.message_id:
-            posted.insert(0, (current.channel_id, current.message_id))
-        for channel_id, message_id in posted:
-            if not await _delete_copy(ctx.rest, channel_id, message_id):
-                await _say(ctx, event, text.ARCHIVE_RETRY)
+        deleted_copies: list[tuple[str, str]] = []
+        left: list[str] = []
+        for sub in copies:
+            if sub.message_id is None:
+                continue
+            outcome = await _delete_posted(ctx.rest, sub.channel_id, sub.message_id)
+            if outcome is _Delete.RETRY:
+                await _stop_archive(ctx, event, deleted_copies)
                 return _Result(card_id)
+            if outcome is _Delete.LEFT:
+                left.append(sub.channel_id)
+            else:
+                deleted_copies.append((sub.channel_id, sub.message_id))
+        if current.channel_id and current.message_id:
+            outcome = await _delete_posted(ctx.rest, current.channel_id, current.message_id)
+            if outcome is _Delete.RETRY:
+                await _stop_archive(ctx, event, deleted_copies)
+                return _Result(card_id)
+            if outcome is _Delete.LEFT:
+                left.append(current.channel_id)
         now = int(ctx.clock())
 
         def archive_tx(conn: Any) -> None:
@@ -425,26 +439,47 @@ async def _archive(event: MessageCreate, ctx: CardContext, rest: str) -> _Result
 
         await ctx.db.run(archive_tx)
     ctx.kick()
-    await _say(ctx, event, text.CARD_ARCHIVED)
+    reply = text.CARD_ARCHIVED + "".join("\n" + text.ARCHIVED_COPY_LEFT.format(channel_id=channel_id)
+                                         for channel_id in left)
+    await _say(ctx, event, reply)
     return _Result(card_id)
 
 
-async def _delete_copy(rest: FluxerREST, channel_id: str, message_id: str) -> bool:
-    """Deletes one posted message. True when it is gone: deleted, or already a 404. False for any other failure, which
-    is logged with the channel id and the exception type only."""
+class _Delete(enum.Enum):
+    """What came of one delete. GONE: deleted, or already a 404. LEFT: refused with a 403, so the message stays where it
+    is. RETRY: any other status, or a transport error."""
+    GONE = "gone"
+    LEFT = "left"
+    RETRY = "retry"
+
+
+async def _stop_archive(ctx: CardContext, event: MessageCreate, deleted_copies: list[tuple[str, str]]) -> None:
+    """Replies that the archive stopped. The card stays live and its own message stays in place, so the copies this
+    archive already deleted are forgotten and the poller posts them again."""
+    if deleted_copies:
+        def forget(conn: Any) -> None:
+            for channel_id, message_id in deleted_copies:
+                subscriptions.clear_message_if(conn, channel_id, message_id)
+
+        await ctx.db.run(forget)
+        ctx.kick()
+    await _say(ctx, event, text.ARCHIVE_RETRY)
+
+
+async def _delete_posted(rest: FluxerREST, channel_id: str, message_id: str) -> _Delete:
+    """Deletes one posted message and says what came of it. A failure is logged with the channel id and the exception
+    type only."""
     try:
         await rest.delete_message(channel_id, message_id)
     except FluxerHTTPError as exc:
         if exc.status == 404:
-            return True
-        log_event(log, "copy_delete_failed", level=logging.WARNING, channel_id=channel_id,
-                  reason=type(exc).__name__)
-        return False
+            return _Delete.GONE
+        log_event(log, "delete_failed", level=logging.WARNING, channel_id=channel_id, reason=type(exc).__name__)
+        return _Delete.LEFT if exc.status == 403 else _Delete.RETRY
     except (aiohttp.ClientError, TimeoutError) as exc:
-        log_event(log, "copy_delete_failed", level=logging.WARNING, channel_id=channel_id,
-                  reason=type(exc).__name__)
-        return False
-    return True
+        log_event(log, "delete_failed", level=logging.WARNING, channel_id=channel_id, reason=type(exc).__name__)
+        return _Delete.RETRY
+    return _Delete.GONE
 
 
 # subscribe, unsubscribe ------------------------------------------------------------------------------
@@ -496,7 +531,7 @@ async def _subscribe_locked(ctx: CardContext, card_id: int, guild_id: str, chann
         else:
             await ctx.db.run(lambda c: subscriptions.resume(c, card_id, channel_id))
             done = text.SUBSCRIPTION_RESUMED
-    except subscriptions.SubscriptionFull:
+    except subscriptions.SubscriptionFull:  # defensive: the count above runs under this card's lock, so this cannot fire
         return limit_reply
     ctx.kick()
     return done
@@ -524,7 +559,8 @@ async def _unsubscribe(event: MessageCreate, ctx: CardContext, rest: str) -> _Re
         if sub is None:
             reply = text.SUBSCRIPTION_NOT_FOUND
         else:
-            copy_gone = sub.message_id is None or await _delete_copy(ctx.rest, channel_id, sub.message_id)
+            copy_gone = (sub.message_id is None
+                         or await _delete_posted(ctx.rest, channel_id, sub.message_id) is _Delete.GONE)
             await ctx.db.run(lambda c: subscriptions.remove(c, card.id, channel_id))
             reply = text.UNSUBSCRIBED if copy_gone else text.UNSUBSCRIBED_COPY_LEFT.format(channel_id=channel_id)
     await _say(ctx, event, reply)

@@ -832,10 +832,9 @@ async def test_archive_deletes_the_message_and_keeps_every_row(ptero_world: Worl
     assert ptero_world.kicks == [1]
 
 
-@pytest.mark.parametrize("status", [500, 403])
-async def test_archive_with_a_failed_delete_changes_nothing(world: World, status: int) -> None:
+async def test_archive_with_a_server_error_on_the_card_message_changes_nothing(world: World) -> None:
     await _live_card_with_message(world)
-    world.state.overrides[f"DELETE {POSTED_MESSAGE}"] = Override(status, b'{"code": "X", "message": "no"}')
+    world.state.overrides[f"DELETE {POSTED_MESSAGE}"] = Override(500, b'{"code": "X", "message": "no"}')
     world.kicks.clear()
     await world.run("!card archive mc")
 

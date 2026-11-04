@@ -152,9 +152,11 @@ games channel.
 - **Unsubscribe:** deletes the copy and removes the subscription. A copy that is already gone counts as
   removed. If the bot cannot delete it for another reason, the subscription is still removed, and the
   reply says the copy is still there, to delete by hand.
-- **Archive:** deletes every copy as well as the card's message. If a copy cannot be deleted (anything
-  other than already gone), the archive stops and changes nothing, so running it again is safe. The
-  subscriptions are kept. Publishing again posts every subscription that is not paused.
+- **Archive:** deletes every copy, then the card's message last. A copy the bot is refused (403) stays where
+  it is, the archive goes ahead, and the reply names its channel to delete by hand. Any other failure to
+  delete (not already gone) stops the archive while the card is still live: the copies deleted before the
+  stop are posted again by the next check, and the card's message stays in place, so running it again is
+  safe. The subscriptions are kept. Publishing again posts every subscription that is not paused.
 - **Show:** `!card show` lists the subscribed channels, with "(paused)" after each paused one.
 - **Rate:** each copy costs one send, or one edit, each time the card's content changes, and nothing
   when it does not. Each poll compares every copy's stored hash, but sends nothing for an unchanged copy.
