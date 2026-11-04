@@ -323,3 +323,10 @@ Running two panels against one database is unsupported.
 Exit 1 with a `fatal_error` event means something else failed while opening the database,
 such as the data directory could not be created (for example, its parent is a regular file).
 That is not a refusal and does not quarantine anything.
+
+## How this was developed
+
+This project was coded using Claude Code, orchestrated by Opus 5.5 with Haiku 5.5 subagents writing much of the code,
+under instructions from K. Chen. Its Fluxer client was carried over from his earlier green-oaks-bot project, which was
+built the same way. As with all free and open source projects, the user's ultimate protections lie in the ability to
+examine the code and the right to fork it.
