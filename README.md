@@ -140,7 +140,8 @@ games channel.
   is already posted there.
 - **Limit:** a card has at most five subscribed channels. A paused channel counts toward the five.
 - **Already subscribed:** subscribing an active channel again changes nothing and says so.
-- **Pause:** when Fluxer refuses a post or an edit in a subscribed channel with 403, that copy is paused.
+- **Pause:** when Fluxer refuses a copy's post or edit with 403, or its post returns 404 (the channel is gone),
+  that copy is paused. Each admin gets one DM for the pause, naming the card by its slug and the channel.
   The bot stops posting and editing there, and each admin gets one direct message that names the
   channel with a mention. The message carries no card text, so use `!card show` to find the card.
 - **Resume:** `!card subscribe` on a paused channel resumes it. The next check posts the copy, or edits

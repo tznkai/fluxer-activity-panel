@@ -443,11 +443,12 @@ class Poller:
                 await self._sync(card_id, post_channel=channel_id, edit_channel=fresh.channel_id,
                                  message_id=fresh.message_id, stored_hash=fresh.runtime.rendered_hash,
                                  rendered=rendered, payload=payload, subscription=False)
-            await self._publish_subscriptions(card_id, rendered, payload)
+            await self._publish_subscriptions(card_id, fresh.slug, rendered, payload)
 
-    async def _publish_subscriptions(self, card_id: int, rendered: str, payload: dict[str, Any]) -> None:
+    async def _publish_subscriptions(self, card_id: int, slug: str, rendered: str, payload: dict[str, Any]) -> None:
         """Brings each active copy up to date, in the order the channels were added. A copy that fails is logged by ids
-        and exception type and retried on the next tick. A 403 pauses the copy instead, and its admins are told once."""
+        and exception type and retried on the next tick. A 403 on a copy's post or edit pauses it, and so does a 404 on
+        its post, which means the channel is gone. Each pause tells the admins once. A 404 on an edit reposts the copy."""
         for sub in await self._db.run(lambda c: subscriptions.list_active(c, card_id)):
             try:
                 await self._sync(card_id, post_channel=sub.channel_id, edit_channel=sub.channel_id,
@@ -455,19 +456,22 @@ class Poller:
                                  payload=payload, subscription=True)
             except FluxerHTTPError as exc:
                 if exc.status == 403:
-                    await self._pause_subscription(card_id, sub.channel_id)
+                    await self._pause_subscription(card_id, slug, sub.channel_id, text.SUBSCRIPTION_PAUSED_ALERT)
+                elif exc.status == 404:
+                    await self._pause_subscription(card_id, slug, sub.channel_id,
+                                                   text.SUBSCRIPTION_CHANNEL_GONE_ALERT)
                 else:
                     _subscription_failed(card_id, sub.channel_id, exc)
             except Exception as exc:  # noqa: BLE001 - one copy's failure must not stop the other copies
                 _subscription_failed(card_id, sub.channel_id, exc)
 
-    async def _pause_subscription(self, card_id: int, channel_id: str) -> None:
-        """Pauses a copy the bot was refused in. The DM goes out only when this call changed the row, so each pause
-        alerts the admins once, and the DM names the channel by its mention and no card text."""
+    async def _pause_subscription(self, card_id: int, slug: str, channel_id: str, alert: str) -> None:
+        """Pauses a copy Fluxer refused, or whose channel is gone. The DM goes out only when this call changed the row, so
+        each pause alerts the admins once. The DM names the card by its slug and the channel by its mention, nothing else."""
         if not await self._db.run(lambda c: subscriptions.pause(c, card_id, channel_id)):
             return
         log_event(log, "subscription_paused", level=logging.WARNING, card_id=card_id, channel_id=channel_id)
-        await self._dm_admins(text.SUBSCRIPTION_PAUSED_ALERT.format(channel_id=channel_id),
+        await self._dm_admins(alert.format(slug=slug, channel_id=channel_id),
                               failed_event="subscription_alert_failed")
 
     async def _sync(self, card_id: int, *, post_channel: str, edit_channel: str | None, message_id: str | None,

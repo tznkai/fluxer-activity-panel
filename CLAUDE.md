@@ -128,9 +128,10 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   Its payload is the card's own, from `render.card_message`, with `allowed_mentions={"parse": []}`. The poller posts,
   edits and reposts a copy through the card's `_sync` path, under the card's lock, after the card's own message. A
   copy is never on the board, and a board link never points at one. `subscriptions.MAX_SUBSCRIPTIONS` (5) is checked
-  in `subscriptions.add`, in the insert's transaction. A 403 on a copy's post or edit pauses it and DMs the admins
-  once: the pause changes a row only while it is active, and the DM takes `text.SUBSCRIPTION_PAUSED_ALERT` with the
-  channel id as its only input. `!card subscribe` on a paused channel resumes it. `!card archive` deletes every copy,
+  in `subscriptions.add`, in the insert's transaction. A 403 on a copy's post or edit, or a 404 on its post (the channel
+  is gone), pauses it and DMs the admins once: the pause changes a row only while it is active. The DM takes
+  `text.SUBSCRIPTION_PAUSED_ALERT` (403) or `text.SUBSCRIPTION_CHANNEL_GONE_ALERT` (404), with the card slug and
+  channel id as its only inputs. A 404 on an edit reposts the copy. `!card subscribe` on a paused channel resumes it. `!card archive` deletes every copy,
   and a delete that fails other than with 404 stops the archive with nothing changed. `!card unsubscribe` removes the
   row whatever the delete outcome, and says so when the copy is left. Copies log ids and exception types only.
 - Summary board (`render.board_message`, `board.py`, `poller.py`): one message, always on when `GAMES_CHANNEL_ID` is

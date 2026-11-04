@@ -1349,9 +1349,25 @@ async def test_a_forbidden_post_pauses_the_copy_and_alerts_each_admin_once(world
     assert len(copy_posts(world.fluxer, SUB)) == 1
     sub = await subscription(db, card_id, SUB)
     assert sub.paused is True and sub.message_id is None
-    alert = text.SUBSCRIPTION_PAUSED_ALERT.format(channel_id=SUB)
+    alert = text.SUBSCRIPTION_PAUSED_ALERT.format(slug="alpha", channel_id=SUB)
     assert [r.payload["content"] for r in admin_dms(world.fluxer)] == [alert, alert]
     assert len(posts(world.fluxer)) == 1          # the card's own message is still posted
+
+
+async def test_a_copy_whose_channel_is_gone_is_paused_and_its_admins_told_once(world: World, poller: Poller,
+                                                                              db: Database):
+    card_id = await seed(db, "alpha")
+    await subscribe(db, card_id, SUB)
+    world.fluxer.overrides[f"POST {SUB_MESSAGES}"] = Override(404, b'{"code": "UNKNOWN_CHANNEL", "message": "no"}')
+
+    await poller.tick()
+    await poller.tick()
+
+    assert len(copy_posts(world.fluxer, SUB)) == 1     # paused, so the next tick does not post it again
+    sub = await subscription(db, card_id, SUB)
+    assert sub.paused is True and sub.message_id is None
+    alert = text.SUBSCRIPTION_CHANNEL_GONE_ALERT.format(slug="alpha", channel_id=SUB)
+    assert [r.payload["content"] for r in admin_dms(world.fluxer)] == [alert, alert]
 
 
 async def test_a_forbidden_edit_pauses_the_copy_and_keeps_its_message_and_hash(
@@ -1510,13 +1526,21 @@ async def test_the_board_never_lists_a_copy(world: World, poller: Poller, db: Da
     assert card_id
 
 
-async def test_pausing_a_copy_that_is_already_paused_sends_no_second_alert(world: World, poller: Poller, db: Database):
+async def test_a_copy_refused_again_after_a_resume_alerts_the_admins_once_more(
+        world: World, poller: Poller, db: Database):
     card_id = await seed(db, "alpha")
     await subscribe(db, card_id, SUB)
-    # A tick never pauses a copy that is already paused, so the second pause is made directly.
-    await poller._pause_subscription(card_id, SUB)
-    await poller._pause_subscription(card_id, SUB)
+    world.fluxer.overrides[f"POST {SUB_MESSAGES}"] = Override(403, b'{"code": "X", "message": "no"}')
+
+    await poller.tick()
+    await poller.tick()     # the copy is paused, so this tick neither posts it nor alerts again
+    assert len(copy_posts(world.fluxer, SUB)) == 1
     assert len(admin_dms(world.fluxer)) == 2     # one per admin, from the first pause only
+
+    await db.run(lambda c: subscriptions.resume(c, card_id, SUB))
+    await poller.tick()     # refused again: that pause alerts each admin once more
+    assert len(copy_posts(world.fluxer, SUB)) == 2
+    assert len(admin_dms(world.fluxer)) == 4
 
 
 async def test_a_copy_whose_request_drops_is_logged_and_does_not_stop_the_other_copies(

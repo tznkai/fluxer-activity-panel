@@ -140,8 +140,12 @@ UNSUBSCRIBED_COPY_LEFT = ("Unsubscribed, but I couldn't remove the copy in <#{ch
                           "Delete it by hand.")
 SUBSCRIPTIONS_HEADING = "Subscribed channels:"
 SUBSCRIPTION_PAUSED_SUFFIX = " (paused)"
-SUBSCRIPTION_PAUSED_ALERT = ("Heads up: Fluxer refused the bot's card post in <#{channel_id}>, so that copy is paused. "
-                             "Run !card subscribe for that channel to resume it. !card show lists each card's channels.")
+# The two pause alerts take the card's slug (a-z, 0-9 and -) and the channel, shown as a mention. No other card text.
+SUBSCRIPTION_PAUSED_ALERT = ("Heads up: Fluxer refused the bot's post of card {slug} in <#{channel_id}>, so that copy is "
+                             "paused. Run !card subscribe for that channel to resume it. !card show lists each card's "
+                             "channels.")
+SUBSCRIPTION_CHANNEL_GONE_ALERT = ("Heads up: the channel <#{channel_id}> for card {slug}'s copy can't be found, so that "
+                                   "copy is paused. Run !card unsubscribe for that channel to remove it.")
 # The summary board: one message in the games channel. None of these strings contains user input.
 BOARD_TITLE = "Games"
 BOARD_EMPTY = "No games are live."
