@@ -246,6 +246,16 @@ channel ID.
 - Stretch goal, deferred: keep the board at the top of the channel. One option is to post the cards again after the
   board whenever the board is posted again. The pin DM stays as it is for now.
 
+### Copies in other channels
+
+- Subscribing a card to a channel where the bot cannot post was refused at subscribe time, with a reply.
+- With the send permission removed from a channel holding a copy, a change to the card still edited the copy. The bot
+  can edit its own message without the send permission, so no refusal and no DM. This is expected: the copy stays
+  current.
+- With the send permission removed, deleting the copy by hand made the bot post it again. Fluxer refused, the copy
+  was paused and each admin got one DM. After the permission was restored, `!card subscribe` resumed the copy.
+- Decision: no change. A 403 on an edit still pauses the copy, for example when the bot loses view access.
+
 ### GET /guilds for a community the bot isn't in
 
 - The HTTP status is 403.
