@@ -164,7 +164,8 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   in the board's channel, so the community is the one looked up for that channel. Board sends and edits use
   `allowed_mentions={"parse": []}`. With no board stored, the poller evaluates every card, posts the board, then
   publishes the cards, so the board sits above them. If that pre-card post fails, it is logged and the same tick's
-  `_board_after_cards` posts the board after the cards, so it then sits below them (not on the next tick). With a board stored, each card is published right after its own evaluation. Either way the
+  `_board_after_cards` posts the board after the cards, so it then sits below them (not on the next tick). With a
+  board stored, each card is published right after its own evaluation. Either way the
   board is edited after the cards when its hash changed. The poller sends the admins the pin request once per new
   message. A failed read of the stored board at the start of a tick is logged. The cards then publish as they would
   with a board stored, and no new board is posted in that tick (a stored board is still edited); the next tick
