@@ -25,7 +25,7 @@ from fluxer_panel.db import Database
 from fluxer_panel.poller import Poller
 from fluxer_panel.sources.base import PlayerCounts, ProbeDetails, ProbeResult
 from fluxer_panel.sources.registry import Sources
-from tests.fakes import FakeFluxerState, Override, Recorded, make_rest_app, wait_until
+from tests.fakes import FakeFluxerState, Override, Recorded, make_rest_app, settle, wait_until
 
 TOKEN = "SENTINEL-TOKEN-board-7c1e"
 INSTANCE = "https://fluxer.invalid"
@@ -677,7 +677,7 @@ async def test_at_most_poll_concurrency_cards_are_evaluated_at_once(world: World
     task = asyncio.create_task(world.poller(POLL_CONCURRENCY="2").tick())
     try:
         await wait_until(lambda: in_flight >= 2)
-        await _settle()
+        await settle()
         assert in_flight == 2
     finally:
         release.set()
@@ -705,7 +705,7 @@ async def test_at_most_poll_concurrency_cards_are_published_at_once(world: World
     task = asyncio.create_task(world.poller(POLL_CONCURRENCY="2").tick())
     try:
         await wait_until(lambda: len(world.fluxer.gated) >= 2)
-        await _settle()
+        await settle()
         assert len(world.fluxer.gated) == 2
     finally:
         release.set()
@@ -822,11 +822,3 @@ def fail_the_first_board_read(db: Database, monkeypatch: pytest.MonkeyPatch) -> 
 
 async def _fail_evaluation() -> None:
     raise RuntimeError("the probe failed")
-
-
-async def _settle() -> None:
-    """Lets the loop run every task that can run now, so a count taken after it is final."""
-    for _ in range(50):
-        await asyncio.sleep(0)
-
-

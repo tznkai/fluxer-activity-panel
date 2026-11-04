@@ -70,7 +70,7 @@ def channel_messages(channel: str) -> str:
     return f"/api/v1/channels/{channel}/messages"
 
 
-POSTED =f"{GAMES_MESSAGES}/5001"
+POSTED = f"{GAMES_MESSAGES}/5001"
 # The summary board already exists in these tests, so card message ids start at 5001 as they always did. The board's
 # own posting and sync are covered by tests/test_board_poller.py. Its edits are filtered out of `patches`.
 BOARD_MESSAGE = "4000"
@@ -1664,5 +1664,3 @@ async def test_copies_hold_the_cards_semaphore_slot(world: World, db: Database):
         release.set()
         await tick
     assert len(copy_posts(world.fluxer, SUB)) == 1 and len(copy_posts(world.fluxer, SUB2)) == 1
-
-
