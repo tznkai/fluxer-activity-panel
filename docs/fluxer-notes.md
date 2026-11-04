@@ -150,8 +150,8 @@ channel ID.
 
 ## Live card checks
 
-- Run date 2026-11-03. Server build as in the Version section: `X-Fluxer-Version=2026.1031.154542`,
-  `api_code_version=1`. Run by the operator with the live scripts in `tools/live/`.
+- Run date 2026-11-03, against the server build in the Version section. Run by the operator with the live scripts in
+  `tools/live/`.
 - Targets and servers are placeholders: `<server#N>` for Panel servers and `<target#N>` for probe targets.
   Hosts, ports, map names and server names are not recorded.
 
@@ -248,7 +248,9 @@ channel ID.
 
 ### Copies in other channels
 
-- Subscribing a card to a channel where the bot cannot post was refused at subscribe time, with a reply.
+- Subscribing a card to a channel the bot could not see (the channel lookup was refused) was refused at subscribe
+  time, with a reply. Subscribing does not check send permission: a copy in a channel where the bot cannot post is
+  paused on its first post, and each admin gets one direct message.
 - With the send permission removed from a channel holding a copy, a change to the card still edited the copy. The bot
   can edit its own message without the send permission, so no refusal and no DM. This is expected: the copy stays
   current.
