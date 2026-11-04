@@ -27,7 +27,8 @@ Core:
 - `FLUXER_GATEWAY_URL` (optional): the gateway URL (`ws` or `wss`). When it is unset, the API
   reports the gateway address.
 - `ADMIN_USER_IDS` (required): comma-separated user ids that may run admin and `!card` commands
-  in direct messages.
+  in direct messages. A command sent by a bot or in a guild channel is refused: the bot logs `admin_denied`
+  with the user and channel ids, and posts nothing in the channel.
 - `COMMAND_PREFIX` (default `!`).
 - `DATA_DIR` (default `data`): the directory for the database and the purge status file.
 - `DB_PATH` (default `DATA_DIR/panel.db`).

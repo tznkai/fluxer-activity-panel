@@ -47,11 +47,11 @@ class Bot:
             case events.GuildRolesChanged(guild_id=guild_id):
                 self.roles.invalidate(guild_id)
             case events.MessageCreate() as msg:
-                if msg.author_is_bot or msg.author_id == self.user_id:
-                    return
-                if msg.guild_id is None:
-                    await admin.handle(msg, self.config, self.rest, self.card_ctx)
-                # guild messages: nothing in phase 1
+                if msg.author_id == self.user_id:
+                    return  # the bot's own messages never reach a handler, so its replies cannot loop
+                # handle ignores what is not a command. A command from a bot or from a guild channel is refused by
+                # authorize: it logs admin_denied and posts nothing, so the guild channel gets no reply.
+                await admin.handle(msg, self.config, self.rest, self.card_ctx)
             case events.ReactionAdd() | events.ReactionRemove() as r:
                 log_event(log, "reaction", event_type=t, user_id=r.user_id, channel_id=r.channel_id,
                           message_id=r.message_id, guild_id=r.guild_id)

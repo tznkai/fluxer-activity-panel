@@ -100,7 +100,9 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   the token goes only in the `Authorization` header or the gateway identify/resume frames.
 - Admin: `admin.authorize` is the single check: DM only (no guild id), non-bot author, author id a valid snowflake, author id in
   `ADMIN_USER_IDS`. Every admin command goes through `handle`, which calls `authorize` first. Denials log `admin_denied`.
-  The bot ignores its own and other bots' messages before routing.
+  The bot skips its own messages only. Every other message goes to `handle`, which ignores anything that is not a
+  command. A command from a bot or from a guild channel reaches `authorize`, is refused and logged as `admin_denied`
+  (ids only), and gets no reply, so nothing is posted in a guild channel.
 - No code in `fluxer_panel` calls the role methods yet. Role changes are a privilege change: a future caller must
   check the role allowlist and hierarchy before the call, because Fluxer returns the same 403 for a hierarchy refusal
   and a missing permission.

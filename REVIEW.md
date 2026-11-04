@@ -50,7 +50,7 @@ Paths are relative to this directory.
 - `src/fluxer_panel/admin.py:28` `event.author_id in config.admin_user_ids` — exact membership in the configured admin list.
 - `src/fluxer_panel/admin.py:56` `if not authorize(event, config):` — every admin subcommand passes through this check in `handle`.
 - `src/fluxer_panel/admin.py:57` `log_event(log, "admin_denied"` — a refusal is logged with the user and channel ids only.
-- `src/fluxer_panel/bot.py:50` `if msg.author_is_bot or msg.author_id == self.user_id:` — the bot ignores its own messages and other bots' messages before routing. This prevents loops.
+- `src/fluxer_panel/bot.py:50` `if msg.author_id == self.user_id:` — the bot skips its own messages, so its replies cannot loop. Every other message, including a bot's and a guild's, reaches `admin.handle`, where `authorize` refuses a command from a bot or a guild channel.
 
 ## Role assignment
 

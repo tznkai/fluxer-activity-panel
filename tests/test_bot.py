@@ -23,7 +23,7 @@ from fluxer_client.events import MessageDelete
 from fluxer_client.gateway import Gateway
 from fluxer_client.rest import FluxerREST
 from fluxer_client.roles import RoleCache
-from fluxer_panel import text
+from fluxer_panel import cards, text
 from fluxer_panel.bot import Bot
 from fluxer_panel.card_commands import CardContext
 from fluxer_panel.config import Config
@@ -399,3 +399,72 @@ async def test_bot_without_a_card_context_sends_nothing_for_card_commands(fake, 
     await bot.on_dispatch("MESSAGE_CREATE", dm_message("!card list"))
 
     assert state.requests == []
+
+
+# --- AC7.2 through the gateway: a refused command is logged and silent; other guild messages are not logged ---
+
+NON_LOG_FIELDS = {"ts", "level", "logger", "event"}
+
+
+def log_events(stream: io.StringIO) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in stream.getvalue().splitlines()]
+
+
+def logged_fields(stream: io.StringIO, event: str) -> list[dict[str, Any]]:
+    """The fields of each logged `event`, without the envelope keys every line carries."""
+    return [{k: v for k, v in line.items() if k not in NON_LOG_FIELDS}
+            for line in log_events(stream) if line["event"] == event]
+
+
+def card_bot(session: aiohttp.ClientSession, base: str, db: Database) -> Bot:
+    rest = make_rest(session, base)
+    config = make_config("1001")
+    card_ctx = CardContext(db=db, rest=rest, config=config, sources=build_sources(session, config))
+    return Bot(rest=rest, config=config, roles=RoleCache(rest), card_ctx=card_ctx)
+
+
+async def test_guild_card_command_from_an_admin_is_refused_and_logged(captured, fake, session, card_db) -> None:
+    state, base = fake
+    bot = card_bot(session, base, card_db)
+    await bot.on_dispatch("READY", READY)
+    await bot.on_dispatch("MESSAGE_CREATE", guild_message(f"!card new x X {CONTENT}"))
+
+    assert state.requests == []
+    assert await card_db.run(lambda c: cards.list_cards(c)) == []
+    assert logged_fields(captured, "admin_denied") == [{"user_id": "1001", "channel_id": "3001"}]
+    assert_clean(captured.getvalue())
+
+
+async def test_dm_card_command_from_a_bot_author_is_refused_and_logged(captured, fake, session, card_db) -> None:
+    state, base = fake
+    bot = card_bot(session, base, card_db)
+    await bot.on_dispatch("READY", READY)
+    await bot.on_dispatch("MESSAGE_CREATE", dm_message(f"!card new x X {CONTENT}", bot=True))
+
+    assert state.requests == []
+    assert await card_db.run(lambda c: cards.list_cards(c)) == []
+    assert logged_fields(captured, "admin_denied") == [{"user_id": "1001", "channel_id": DM}]
+    assert_clean(captured.getvalue())
+
+
+async def test_guild_message_that_is_not_a_command_is_ignored_without_a_log(captured, fake, session, card_db) -> None:
+    state, base = fake
+    bot = card_bot(session, base, card_db)
+    await bot.on_dispatch("READY", READY)
+    logged_before = len(log_events(captured))
+    await bot.on_dispatch("MESSAGE_CREATE", guild_message(f"hello {CONTENT}"))
+
+    assert state.requests == []
+    assert await card_db.run(lambda c: cards.list_cards(c)) == []
+    assert log_events(captured)[logged_before:] == []
+
+
+async def test_own_card_command_is_skipped_without_a_denial_log(captured, fake, session, card_db) -> None:
+    state, base = fake
+    bot = card_bot(session, base, card_db)
+    await bot.on_dispatch("READY", READY)
+    logged_before = len(log_events(captured))
+    await bot.on_dispatch("MESSAGE_CREATE", dm_message("!card new x X", author="5000", bot=True))
+
+    assert state.requests == []
+    assert log_events(captured)[logged_before:] == []
