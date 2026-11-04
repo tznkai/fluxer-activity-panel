@@ -339,7 +339,7 @@ class Poller:
 
     async def _board_before_cards(self, evaluated: list[_Evaluated], channel_id: str) -> None:
         """Posts the board to the games channel before this tick's card messages. It runs only when no board is stored.
-        A failure is logged, and the board is posted again on the next tick."""
+        A failure is logged. The same tick's `_board_after_cards` then posts the board below the cards."""
         try:
             payload = await self._board_payload([(result.card, result.status) for result in evaluated], channel_id)
             await self._board_post(channel_id, payload)

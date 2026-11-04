@@ -180,7 +180,8 @@ last poll. When the card's message is in the board's channel, its status is a li
 message. The board is laid out for the desktop and web clients. Phones show the full cards as before.
 
 - **Posting:** when no board is stored, the board is posted before the cards on a fresh start, so it sits
-  above them. The first post may show plain status text for cards that are not posted yet. The next edit
+  above them. If that post fails, the same poll posts the board after the cards instead, so it sits below
+  them. The first post may show plain status text for cards that are not posted yet. The next edit
   adds the links.
   If the stored board cannot be read at the start of a poll, the cards are still posted, and no new board is
   posted in that poll. The next poll posts it.
