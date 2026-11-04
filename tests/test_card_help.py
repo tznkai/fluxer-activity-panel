@@ -9,7 +9,7 @@ import re
 
 import pytest
 
-from fluxer_panel import card_fields, text
+from fluxer_panel import card_fields, render, text
 from fluxer_panel.card_commands import PREVIEW_LIMIT, SETTABLE, help_fields_reply
 from fluxer_panel.sources import registry
 from fluxer_panel.sources.registry import PROBES, known_manager_kinds, manager_ref_hints
@@ -104,8 +104,8 @@ def test_a_manager_plugin_without_a_ref_hint_is_refused() -> None:
 
 
 def test_each_help_reply_fits_one_message() -> None:
-    assert len(text.HELP_COMMANDS) <= PREVIEW_LIMIT
-    assert len(help_fields_reply()) <= PREVIEW_LIMIT
+    assert render.units(text.HELP_COMMANDS) <= PREVIEW_LIMIT
+    assert render.units(help_fields_reply()) <= PREVIEW_LIMIT
 
 
 def test_the_usage_line_mentions_the_help_command() -> None:

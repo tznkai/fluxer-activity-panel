@@ -5,7 +5,10 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import asyncio
+import logging
+import time
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 
 import aiohttp
@@ -459,6 +462,76 @@ async def test_a_stopped_archive_leaves_the_card_live_and_the_poller_posts_the_c
     assert posts_to(games_world.state, CHANNELS[1]) == []     # the copy the stopped archive kept is not posted again
 
 
+# Commands during a tick: the card's lock makes a command wait for the tick that holds it ---------------
+
+async def wait_until(predicate: Callable[[], bool], timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() > deadline:
+            raise AssertionError("timed out waiting for the fake servers")
+        await asyncio.sleep(0.01)
+
+
+async def settle() -> None:
+    """Gives the running tasks time to reach their next wait, so a count taken after it does not change."""
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+
+
+async def tick_held_at_a_copy_post(world: World, poller: Poller, channel: str) -> tuple[asyncio.Event, asyncio.Task]:
+    """Starts a tick and holds its POST of the copy in `channel` in flight. The tick holds the card's lock meanwhile."""
+    key = f"POST /api/v1/channels/{channel}/messages"
+    gate = asyncio.Event()
+    world.state.gates[key] = gate
+    tick = asyncio.create_task(poller.tick())
+    await wait_until(lambda: key in world.state.gated)
+    return gate, tick
+
+
+async def test_an_unsubscribe_waits_for_a_copy_post_in_flight_and_then_deletes_that_copy(games_world: World) -> None:
+    card = await make_card(games_world)
+    await subscribe_by_ids(games_world, "mc", CHANNELS[0])
+    await games_world.run("!card publish mc")
+    poller = await poller_with_board(games_world)
+    gate, tick = await tick_held_at_a_copy_post(games_world, poller, CHANNELS[0])
+
+    unsubscribe = asyncio.create_task(games_world.run(f"!card unsubscribe mc {GUILD} {CHANNELS[0]}"))
+    await settle()
+    assert not unsubscribe.done()
+
+    gate.set()
+    await tick
+    await unsubscribe
+
+    [made] = [message_id for channel, message_id in games_world.state.messages if channel == CHANNELS[0]]
+    assert copy_path(CHANNELS[0], made) in deletes(games_world)
+    assert await stored(games_world, card.id, CHANNELS[0]) is None
+    assert games_world.last_reply() == text.UNSUBSCRIBED
+
+
+async def test_a_resume_waits_for_a_copy_post_in_flight_and_then_resumes_the_paused_copy(games_world: World) -> None:
+    card = await make_card(games_world)
+    await games_world.run("!card publish mc")
+    await subscribe_by_ids(games_world, "mc", CHANNELS[0])
+    await post_copy(games_world, card, CHANNELS[0])
+    await games_world.db.run(lambda c: subscriptions.pause(c, card.id, CHANNELS[0]))
+    await subscribe_by_ids(games_world, "mc", CHANNELS[1])
+    poller = await poller_with_board(games_world)
+    gate, tick = await tick_held_at_a_copy_post(games_world, poller, CHANNELS[1])
+
+    resume = asyncio.create_task(games_world.run(f"!card subscribe mc {GUILD} {CHANNELS[0]}"))
+    await settle()
+    assert not resume.done()
+
+    gate.set()
+    await tick
+    await resume
+
+    assert games_world.last_reply() == text.SUBSCRIPTION_RESUMED
+    sub = await stored(games_world, card.id, CHANNELS[0])
+    assert sub is not None and (sub.paused, sub.message_id) == (False, COPY)
+
+
 # show and help ---------------------------------------------------------------------------------------
 
 async def test_show_lists_the_subscribed_channels_with_paused_marked(world: World) -> None:
@@ -490,9 +563,11 @@ def test_the_help_lists_subscribe_and_unsubscribe_with_their_arguments() -> None
     assert "!card unsubscribe <slug> <channel>:" in text.HELP_COMMANDS
 
 
-def test_subscribe_and_unsubscribe_are_logged_as_known_subcommands() -> None:
-    assert "subscribe" in SUBCOMMANDS and "unsubscribe" in SUBCOMMANDS
-
-
-def test_the_help_still_fits_one_message() -> None:
-    assert len(text.HELP_COMMANDS) <= 2000
+async def test_subscribe_and_unsubscribe_are_logged_under_their_own_command_names(
+        world: World, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="fluxer_panel.card_commands")
+    await make_card(world)
+    await subscribe_by_ids(world, "mc", CHANNELS[0])
+    await world.run(f"!card unsubscribe mc {GUILD} {CHANNELS[0]}")
+    commands = [record.panel_fields["command"] for record in caplog.records if record.getMessage() == "admin_command"]
+    assert commands == ["card_new", "card_subscribe", "card_unsubscribe"]

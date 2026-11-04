@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import logging
 import random
 import time
@@ -242,6 +243,12 @@ async def _wait_until(predicate: Callable[[], bool], timeout: float = 5.0) -> No
     while not predicate():
         if time.monotonic() > deadline:
             raise AssertionError("timed out waiting for the fake servers")
+        await asyncio.sleep(0.01)
+
+
+async def settle() -> None:
+    """Gives the running tasks time to reach their next wait, so a count taken after it does not change."""
+    for _ in range(20):
         await asyncio.sleep(0.01)
 
 
@@ -1307,7 +1314,37 @@ async def test_a_changed_card_edits_each_copy_once_and_an_unchanged_card_edits_n
     assert edit.path == f"{SUB_MESSAGES}/{SUB_MESSAGE}"
     assert edit.payload["embeds"][0]["title"] == "Beta"
     assert "content" not in edit.payload
+    edited = await subscription(db, card_id, SUB)
+    assert (edited.message_id, edited.content_hash) == (SUB_MESSAGE, render.rendered_hash(edit.payload["embeds"][0]))
+
+    await poller.tick()     # the stored hash now matches the card, so this tick edits nothing
+    assert len(copy_patches(world.fluxer, SUB)) == 1
     assert_card_writes_safe(world.fluxer)
+
+
+async def test_a_copy_deleted_while_its_edit_is_in_flight_is_not_written_back(
+        world: World, poller: Poller, db: Database):
+    card_id = await seed(db, "alpha", title="Alpha")
+    await subscribe(db, card_id, SUB)
+    await poller.tick()
+    await set_title(db, card_id, "Beta")
+    key = f"PATCH {SUB_MESSAGES}/{SUB_MESSAGE}"
+    gate = asyncio.Event()
+    world.fluxer.gates[key] = gate
+    tick = asyncio.create_task(poller.tick())
+    await _wait_until(lambda: key in world.fluxer.gated)
+
+    await poller.on_message_delete(MessageDelete(SUB_MESSAGE, SUB, None))
+    gate.set()
+    await tick
+
+    # The edit that was in flight still succeeds, but the row no longer holds that message, so nothing is written back.
+    assert [r.status for r in copy_patches(world.fluxer, SUB)] == [200]
+    forgotten = await subscription(db, card_id, SUB)
+    assert (forgotten.message_id, forgotten.content_hash) == (None, None)
+    await poller.tick()     # so the next tick posts the copy again
+    assert len(copy_posts(world.fluxer, SUB)) == 2
+    assert (await subscription(db, card_id, SUB)).message_id is not None
 
 
 async def test_a_copy_gone_when_edited_is_posted_again_and_its_new_id_is_stored(
@@ -1503,6 +1540,39 @@ async def test_publishing_again_posts_every_active_copy_and_not_a_paused_one(
     assert copy_posts(world.fluxer, SUB2) == []
 
 
+async def test_startup_keeps_a_copy_whose_lookup_fails_with_a_server_error(
+        world: World, poller: Poller, db: Database, caplog: pytest.LogCaptureFixture):
+    caplog.set_level(logging.WARNING, logger="fluxer_panel.poller")
+    card_id = await seed(db, "alpha")
+    await subscribe(db, card_id, SUB)
+    await db.run(lambda c: subscriptions.set_message(c, card_id, SUB, SUB_MESSAGE, "0" * 64))
+    world.fluxer.overrides[f"GET {SUB_MESSAGES}/{SUB_MESSAGE}"] = Override(500, b'{"code": "X", "message": "boom"}')
+
+    await poller.reconcile()
+
+    kept = await subscription(db, card_id, SUB)
+    assert (kept.message_id, kept.content_hash) == (SUB_MESSAGE, "0" * 64)
+    [failed] = records(caplog, "subscription_reconcile_failed")
+    assert failed.panel_fields == {"card_id": card_id, "channel_id": SUB, "reason": "FluxerHTTPError"}
+
+
+async def test_startup_keeps_a_copy_whose_lookup_loses_its_connection(
+        world: World, poller: Poller, db: Database, caplog: pytest.LogCaptureFixture):
+    caplog.set_level(logging.WARNING, logger="fluxer_panel.poller")
+    card_id = await seed(db, "alpha")
+    await subscribe(db, card_id, SUB)
+    await db.run(lambda c: subscriptions.set_message(c, card_id, SUB, SUB_MESSAGE, "0" * 64))
+    world.fluxer.drops.add(f"GET {SUB_MESSAGES}/{SUB_MESSAGE}")
+
+    await poller.reconcile()
+
+    kept = await subscription(db, card_id, SUB)
+    assert (kept.message_id, kept.content_hash) == (SUB_MESSAGE, "0" * 64)
+    [failed] = records(caplog, "subscription_reconcile_failed")
+    assert failed.panel_fields["card_id"] == card_id and failed.panel_fields["channel_id"] == SUB
+    assert failed.panel_fields["reason"] == "ServerDisconnectedError"
+
+
 async def test_startup_recreates_a_copy_that_no_longer_exists(world: World, poller: Poller, db: Database):
     card_id = await seed(db, "alpha")
     await subscribe(db, card_id, SUB)
@@ -1530,17 +1600,20 @@ async def test_subscriptions_are_posted_when_no_games_channel_is_set(world: Worl
     assert len(copy_posts(world.fluxer, SUB)) == 1
 
 
-async def test_the_board_never_lists_a_copy(world: World, poller: Poller, db: Database):
-    card_id = await seed(db, "alpha")
+async def test_the_board_links_the_card_message_and_never_a_copy(world: World, poller: Poller, db: Database):
+    world.fluxer.channels[GAMES] = {"id": GAMES, "type": 0, "guild_id": GUILD, "name": "games"}
+    card_id = await seed(db, "alpha", probe=cards.ProbeRef("stub", HOST, PORT))
     await subscribe(db, card_id, SUB)
 
     await poller.tick()
 
     board_edits = requests_for(world.fluxer, "PATCH", f"{GAMES_MESSAGES}/{BOARD_MESSAGE}")
     assert board_edits
-    for edit in board_edits:
-        assert f"channels/{GUILD}/{SUB}" not in str(edit.payload)
-    assert card_id
+    links = [match.groups()[1:] for match in render.JUMP_LINK_RE.finditer(json.dumps(board_edits[-1].payload))]
+    card_message_id = (await load(db, card_id)).message_id
+    assert card_message_id is not None
+    assert links == [(GUILD, GAMES, card_message_id)]
+    assert f"channels/{GUILD}/{SUB}" not in json.dumps(board_edits[-1].payload)
 
 
 async def test_a_copy_refused_again_after_a_resume_alerts_the_admins_once_more(
@@ -1575,3 +1648,29 @@ async def test_a_copy_whose_request_drops_is_logged_and_does_not_stop_the_other_
     assert (await subscription(db, card_id, SUB2)).message_id is not None
     [failed] = records(caplog, "subscription_failed")
     assert failed.panel_fields["card_id"] == card_id and failed.panel_fields["channel_id"] == SUB
+
+
+async def test_copies_hold_the_cards_semaphore_slot(world: World, db: Database):
+    """With one poll slot, the first card's copy holds it, so the second card waits for the copy to finish."""
+    alpha = await seed(db, "alpha", title="Alpha")
+    beta = await seed(db, "beta", title="Beta")
+    await subscribe(db, alpha, SUB)
+    await subscribe(db, beta, SUB2)
+    release = asyncio.Event()
+    for channel in (SUB, SUB2):
+        world.fluxer.gates[f"POST {channel_messages(channel)}"] = release
+    poller = world.make_poller(config=config_for(POLL_CONCURRENCY="1"))
+    tick = asyncio.create_task(poller.tick())
+    try:
+        await _wait_until(lambda: len(world.fluxer.gated) == 1)
+        await settle()
+        assert len(world.fluxer.gated) == 1
+        assert len(posts(world.fluxer)) == 1      # the second card's own post waits for the first card's copy
+    finally:
+        release.set()
+        await tick
+    assert len(copy_posts(world.fluxer, SUB)) == 1 and len(copy_posts(world.fluxer, SUB2)) == 1
+
+
+def channel_messages(channel: str) -> str:
+    return f"/api/v1/channels/{channel}/messages"
