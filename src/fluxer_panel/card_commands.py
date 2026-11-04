@@ -26,8 +26,8 @@ from fluxer_panel.sources.registry import PROBES, Sources, known_manager_kinds, 
 log = logging.getLogger(__name__)
 
 VOICE_CHANNEL_TYPE = 2
-# Discord's text channel type. Not yet confirmed against Fluxer: `markup_live.py` prints the live type of the
-# posting channel, so the operator can check this value on a real instance.
+# The text channel type, the same value as Discord's. Confirmed on a live instance: `markup_live.py` printed type 0
+# for the posting channel.
 TEXT_CHANNEL_TYPE = 0
 _CHANNEL_KINDS = {VOICE_CHANNEL_TYPE: text.CHANNEL_KIND_VOICE, TEXT_CHANNEL_TYPE: text.CHANNEL_KIND_TEXT}
 CHANNEL_NAME_MAX = 100

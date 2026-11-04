@@ -223,6 +223,29 @@ channel ID.
 - The voice channel's `type` is `2`.
 - Decision: `card_commands.VOICE_CHANNEL_TYPE` is unchanged.
 
+### Text channel type
+
+- The posting channel's `type` is `0`, the same as Discord's.
+- Decision: `card_commands.TEXT_CHANNEL_TYPE` is unchanged.
+
+### Jump links
+
+- A message jump link (`H/channels/G/C/M`) opened the linked message on desktop and web.
+- Decision: the summary board links each status to its card with `render.jump_link`.
+
+### Summary board sample
+
+- The board sample (title and status cells, inline fields, three per row) was legible on desktop and web.
+- Phones are not a target for the board. The detailed cards serve them.
+
+### Pins
+
+- Pinning a message only adds it to the channel's pin menu. The message does not stay at the top of the channel.
+- So the board's pin DM does not keep the board on top. The bot still posts the board before the cards when no
+  board is stored, so in a new channel it starts at the top.
+- Stretch goal, deferred: keep the board at the top of the channel. One option is to post the cards again after the
+  board whenever the board is posted again. The pin DM stays as it is for now.
+
 ### GET /guilds for a community the bot isn't in
 
 - The HTTP status is 403.
