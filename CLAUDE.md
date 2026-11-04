@@ -3,7 +3,7 @@
 
 # Fluxer Activity Panel
 
-Last verified: 2026-11-03
+Last verified: 2026-11-04
 
 Standalone project with two packages under `src/`: `fluxer_client` (a panel-agnostic Fluxer REST and
 gateway client) and `fluxer_panel` (the activity panel bot built on it). `README.md` has the
@@ -114,6 +114,16 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
 
 ## Cards and sources rules
 
+- `!card` subcommands are `card_commands.SUBCOMMANDS` (new, set, clear, show, list, publish, archive, subscribe,
+  unsubscribe, help), routed by `admin.handle` after `authorize`. Fields are `SETTABLE` and `CLEARABLE`;
+  `README.md` documents syntax and fields. A card is `draft`, `live` or `archived` (`cards.CARD_STATES`); only a live
+  card is posted. Rows without a slug (v1 data) are never read or listed.
+- `!card help` lists the subcommands; `!card help fields` lists every field with limits, ranges and kinds taken from
+  the code that enforces them (`card_fields`, `sources/registry.py`). `tests/test_card_help.py` checks they match and
+  that each reply fits one message, so a new field or limit needs no hand edit of the help numbers but a new field
+  needs a line in `text.HELP_FIELDS`. A manager plugin must give a ref hint for the help.
+- Every send, edit and store for a card (its message, its copies) runs under that card's lock from
+  `card_commands.CardLocks`, which `!card archive` also takes, so a card cannot be posted after it is archived.
 - A plugin's `power_state` and `probe` never raise. `validate_ref` raises only `CardFieldError`, and
   `next_power_action` may raise `SourceError`, which the caller hides.
 - No library message, Panel body, player name or command payload leaves a plugin. Errors leave as fixed reason keys.
@@ -164,6 +174,11 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   and the write probe in `_connect` stays authoritative.
 - Primary codes READONLY, CANTOPEN, BUSY and PERM map to `DatabaseRefused("unavailable")` and leave the file alone.
   Only corruption codes quarantine. Quarantine moves files aside under new names and never overwrites.
+- Card tables (migrations 0002, 0003; `card_seats` is from 0001): `cards` gains `slug`, `state` and the base fields;
+  one slot table per optional field (`card_voice`, `card_text_channel` keyed by slot 1-3, `card_address` with
+  `public`, `card_location`, `card_seats`, `card_manager`, `card_probe`) and `card_runtime` (rendered hash, probe
+  alert state). Slot table names are fixed in `cards.SLOT_TABLES`, never built from input. Hosts are never logged,
+  and the outside text shows an address only when it is public (`render.outside_address`).
 - `card_subscription` (migration 0005) holds one row per card and channel, keyed by `(card_id, channel_id)`, and cascades
   with its card. `message_id` and `content_hash` are set together or not at all, and a hash only with a message.
   `paused` is 0 or 1. Its writes are keyed by card and channel: `set_hash_if` and `clear_message_if` are compare-and-set,
