@@ -668,6 +668,36 @@ async def test_the_poller_is_given_the_wake_requests_before_it_starts(aiohttp_se
         db.close()
 
 
+async def test_interactions_and_the_bot_get_the_same_wake_requests_the_poller_has(aiohttp_server, tmp_path, monkeypatch):
+    probe = _probe_poller(monkeypatch)
+    given: dict[str, Any] = {}
+    real_interactions = panel_main.Interactions
+    real_bot = panel_main.Bot
+
+    def recording_interactions(**kwargs: Any) -> Any:
+        given["interactions"] = kwargs["wake"]
+        return real_interactions(**kwargs)
+
+    def recording_bot(**kwargs: Any) -> Any:
+        given["bot"] = kwargs["card_ctx"].wake
+        return real_bot(**kwargs)
+
+    monkeypatch.setattr(panel_main, "Interactions", recording_interactions)
+    monkeypatch.setattr(panel_main, "Bot", recording_bot)
+    config, db = await _in_process_panel(aiohttp_server, tmp_path, _ready_gateway_script)
+    try:
+        task = asyncio.create_task(run(config, db))
+        await asyncio.wait_for(probe.started.wait(), BOUND)
+        assert isinstance(probe.wake, WakeRequests)
+        assert given["interactions"] is probe.wake
+        assert given["bot"] is probe.wake
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, BOUND)
+    finally:
+        db.close()
+
+
 async def test_purge_task_is_cancelled_when_run_is_cancelled_from_outside(
         aiohttp_server, tmp_path, monkeypatch, caplog):
     probe = _probe_purge_loop(monkeypatch)

@@ -10,9 +10,9 @@ from typing import Any
 
 from fluxer_client.events import MessageCreate
 from fluxer_panel import cards, text
-from fluxer_panel.card_commands import CardContext, _chunks
+from fluxer_panel.card_commands import CardContext, chunks
 from fluxer_panel.logs import log_event
-from fluxer_panel.wake import WakeRequests
+from fluxer_panel.wake import WakeRequests, people
 
 log = logging.getLogger(__name__)
 NO_MENTIONS = {"parse": []}
@@ -28,7 +28,7 @@ async def handle(args: str, event: MessageCreate, ctx: CardContext) -> None:
     sub = parts[0].lower() if parts else ""
     card_id: int | None = None
     if sub == "list" and len(parts) == 1:
-        replies = _chunks((await _list(wake)).split("\n"))
+        replies = chunks((await _list(wake)).split("\n"))
     elif sub == "clear" and len(parts) == 2:
         reply, card_id = await _clear(ctx, wake, parts[1])
         replies = [reply]
@@ -59,7 +59,7 @@ async def _clear(ctx: CardContext, wake: WakeRequests, slug: str) -> tuple[str, 
     closed = await wake.close(card.id, "cleared")
     if closed == 0:
         return text.REQUEST_NONE_OPEN.format(slug=card.slug), card.id
-    return text.REQUEST_CLEARED.format(slug=card.slug, n=closed), card.id
+    return text.REQUEST_CLEARED.format(slug=card.slug, people=people(closed)), card.id
 
 
 def _age(seconds: int) -> str:

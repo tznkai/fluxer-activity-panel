@@ -12,7 +12,8 @@ from pathlib import Path
 import aiohttp
 import pytest
 
-from fluxer_panel import cards, wake_requests
+from fluxer_panel import cards, render, wake_requests
+from fluxer_panel.card_commands import LIST_CHUNK
 from fluxer_panel.db import Database
 from fluxer_panel.logs import FIELDS_ATTR
 from fluxer_panel.request_commands import _age
@@ -102,6 +103,22 @@ async def test_list_gives_slug_count_and_age_per_card_in_slug_order(world: World
     assert replies(world) == ["ark: 1 requested, open for 1 h 5 min\nmc: 2 requested, open for 5 min"]
 
 
+async def test_a_long_list_is_sent_in_messages_that_each_fit_and_keep_their_order(world: World, db: Database) -> None:
+    slugs = [f"card{i:02d}".ljust(32, "x") for i in range(40)]   # 40 lines of about 60 units: past one message
+    for slug in slugs:
+        card = await seed_card(db, slug)
+        await seed_request(db, card, ALICE, NOW - 10)
+
+    await world.run("!request list")
+
+    sent = replies(world)
+    assert len(sent) > 1
+    for reply in sent:
+        assert render.units(reply) <= LIST_CHUNK
+    lines = "\n".join(sent).split("\n")
+    assert lines == [f"{slug}: 1 requested, open for <1 min" for slug in sorted(slugs)]
+
+
 async def test_list_is_sent_as_a_message_with_no_mentions(world: World, db: Database) -> None:
     card = await seed_card(db)
     await seed_request(db, card, ALICE, NOW - 10)
@@ -161,7 +178,7 @@ async def test_the_subcommand_is_case_insensitive(world: World, db: Database) ->
 
     await world.run("!request CLEAR mc")
 
-    assert replies(world) == ["Cleared the request for mc (1 people)."]
+    assert replies(world) == ["Cleared the request for mc (1 person)."]
 
 
 # --- usage and access --------------------------------------------------------------------------

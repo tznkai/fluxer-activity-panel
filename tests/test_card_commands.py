@@ -20,7 +20,7 @@ import pytest
 from fluxer_client.events import MessageCreate
 from fluxer_client.rest import FluxerREST
 from fluxer_panel import admin, cards, render, text
-from fluxer_panel.card_commands import LIST_CHUNK, CardContext, _chunks, help_fields_reply
+from fluxer_panel.card_commands import LIST_CHUNK, CardContext, chunks, help_fields_reply
 from fluxer_panel.cards import ChannelLink
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
@@ -594,18 +594,18 @@ async def test_new_address_keeps_an_existing_public_flag(world: World) -> None:
 def test_chunks_split_exactly_at_the_list_limit() -> None:
     assert LIST_CHUNK == 1900
     # 949 + 1 + 950 == 1900: a joined message at the limit is split.
-    assert _chunks(["a" * 949, "b" * 950]) == ["a" * 949, "b" * 950]
+    assert chunks(["a" * 949, "b" * 950]) == ["a" * 949, "b" * 950]
     # 948 + 1 + 950 == 1899: under the limit, so both lines share one message.
-    assert _chunks(["a" * 948, "b" * 950]) == ["a" * 948 + "\n" + "b" * 950]
+    assert chunks(["a" * 948, "b" * 950]) == ["a" * 948 + "\n" + "b" * 950]
 
 
 def test_chunks_count_astral_characters_as_two_units() -> None:
     # 600 and 350 astral characters are 951 characters joined, under the limit, but 1200 + 1 + 700 = 1901 units.
     first = "\U0001F600" * 600
     second = "\U0001F600" * 350
-    assert _chunks([first, second]) == [first, second]
+    assert chunks([first, second]) == [first, second]
     # 500 and 350 astral characters are 1000 + 1 + 700 = 1701 units: under the limit, so one message.
-    assert _chunks(["\U0001F600" * 500, second]) == ["\U0001F600" * 500 + "\n" + second]
+    assert chunks(["\U0001F600" * 500, second]) == ["\U0001F600" * 500 + "\n" + second]
 
 
 # AC7.8: clear ---------------------------------------------------------------------------------------------

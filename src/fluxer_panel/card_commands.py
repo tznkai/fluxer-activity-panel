@@ -383,25 +383,25 @@ async def _list(event: MessageCreate, ctx: CardContext, rest: str) -> _Result:
         await _say(ctx, event, text.NO_CARDS)
         return _Result()
     lines = [f"{card.slug} · {card.state} · {render.neutralise(card.title)}" for card in listed]
-    for chunk in _chunks(lines):
+    for chunk in chunks(lines):
         await _say(ctx, event, chunk)
     return _Result()
 
 
-def _chunks(lines: list[str]) -> list[str]:
+def chunks(lines: list[str]) -> list[str]:
     """Joins lines into messages of under LIST_CHUNK UTF-16 units each, keeping order."""
-    chunks: list[str] = []
+    out: list[str] = []
     current = ""
     for line in lines:
         candidate = line if not current else current + "\n" + line
         if current and render.units(candidate) >= LIST_CHUNK:
-            chunks.append(current)
+            out.append(current)
             current = line
         else:
             current = candidate
     if current:
-        chunks.append(current)
-    return chunks
+        out.append(current)
+    return out
 
 
 # publish, archive -------------------------------------------------------------------------------------

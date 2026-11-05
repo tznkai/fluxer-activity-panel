@@ -15,7 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
-from fluxer_panel import cards, notify, text, wake_requests
+from fluxer_panel import cards, notify, render, text, wake_requests
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.cards import Card
 from fluxer_panel.config import Config
@@ -28,6 +28,11 @@ from fluxer_panel.wake_requests import AdminDm
 
 log = logging.getLogger(__name__)
 NO_MENTIONS = {"parse": []}
+
+
+def people(n: int) -> str:
+    """A requester count in words: "1 person" or "2 people". It lives here, not in text.py, which holds constants only."""
+    return "1 person" if n == 1 else f"{n} people"
 
 
 def wake_capable(card: Card, sources: Sources) -> bool:
@@ -113,9 +118,13 @@ class WakeRequests:
 
     async def _dm_requester(self, card: Card, user_id: str, opens: bool, status: CardStatus | None,
                             capable: bool) -> None:
-        content = text.WAKE_SENT.format(card=card.title)
+        content = text.WAKE_SENT.format(card=render.escape(card.title))
         if not opens:
-            key = "no_manager" if not capable else ("none" if status is None else status.kind.value)
+            # "no_manager" only when the bot cannot see the card's server and has no status to report instead.
+            if not capable and (status is None or status.kind is StatusKind.ASLEEP):
+                key = "no_manager"
+            else:
+                key = "none" if status is None else status.kind.value
             content = f"{content} {text.WAKE_NOTES[key]}"
         await notify.dm_user(self._rest, user_id, content)
 
@@ -123,7 +132,8 @@ class WakeRequests:
     def _admin_content(card: Card, status: CardStatus | None, names: list[str], *, requested: bool) -> str:
         shown = "no status" if status is None else status_label(status)
         requesters = " ".join(f"<@{name}>" for name in names)
-        content = text.WAKE_ADMIN.format(card=card.title, slug=card.slug, status=shown, requesters=requesters)
+        content = text.WAKE_ADMIN.format(card=render.escape(card.title), slug=card.slug, status=shown,
+                                         requesters=requesters)
         return (content + text.WAKE_ADMIN_OPEN) if requested else content
 
     async def _edit_admin_dms(self, card: Card, dms: list[AdminDm], content: str, kind: str, now: int) -> None:
@@ -159,10 +169,13 @@ class WakeRequests:
             user_ids = await self._db.run(lambda c: wake_requests.close(c, card_id, status, now))
             if not user_ids:
                 return 0
+            title = render.escape(card.title)
             requester_text = text.WAKE_READY if status == "ready" else text.WAKE_GAVE_UP
             for user_id in user_ids:
-                await notify.dm_user(self._rest, user_id, requester_text.format(card=card.title))
-            admin_text = text.WAKE_ADMIN_CLOSED[status].format(card=card.title, slug=card.slug, n=len(user_ids))
+                await notify.dm_user(self._rest, user_id, requester_text.format(card=title))
+            admin_text = text.WAKE_ADMIN_CLOSED[status].format(card=title, slug=card.slug,
+                                                               people=people(len(user_ids)))
+            # A failed non-404 edit leaves that admin with the stale message, by design: it is logged, and nothing retries.
             for dm in await self._db.run(lambda c: wake_requests.get_dms(c, card_id)):
                 await self._patch_admin_dm(card, dm, admin_text)
             await self._db.run(lambda c: wake_requests.drop_dms(c, card_id))

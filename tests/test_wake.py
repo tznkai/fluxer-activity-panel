@@ -15,7 +15,7 @@ import aiohttp
 import pytest
 
 from fluxer_client.rest import FluxerREST
-from fluxer_panel import cards, notify, wake_requests
+from fluxer_panel import cards, notify, render, wake_requests
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.cards import ManagerRef
 from fluxer_panel.config import Config
@@ -101,9 +101,10 @@ async def harness(db: Database, fake, session: aiohttp.ClientSession) -> Harness
     return Harness(db=db, state=state, rest=rest, config=make_config(), clock=Clock())
 
 
-async def live_card(db: Database, slug: str = "mc", *, manager: bool = True, state: str = "live") -> int:
+async def live_card(db: Database, slug: str = "mc", *, manager: bool = True, state: str = "live",
+                    title: str = TITLE) -> int:
     def create(c) -> int:
-        card_id = cards.create_card(c, slug=slug, title=TITLE, author_id="1001", now=1)
+        card_id = cards.create_card(c, slug=slug, title=title, author_id="1001", now=1)
         cards.set_state(c, card_id, state, 1)
         cards.set_message(c, card_id, CHANNEL, MESSAGE_ID, None)
         if manager:
@@ -196,6 +197,10 @@ SIGNAL_CASES = [
     pytest.param(None, True, "no status", "It has no status yet.", id="no-status"),
     pytest.param(CardStatus(StatusKind.ASLEEP), False, "Asleep",
                  "The bot can't see its server, so the admins will check.", id="asleep-no-manager"),
+    # A probe-only card reports its real status: the no-manager note is for a card the bot cannot see into.
+    pytest.param(CardStatus(StatusKind.READY), False, "Ready", "It's already running.", id="ready-no-manager"),
+    pytest.param(CardStatus(StatusKind.NOT_RESPONDING), False, "Not responding",
+                 "It's running but not answering.", id="not-responding-no-manager"),
 ]
 
 
@@ -215,6 +220,41 @@ async def test_a_signal_opens_no_row_and_tells_the_requester_and_the_admins(
         assert f"Status: {shown}." in dm.payload["content"]
         assert dm.payload["allowed_mentions"] == {"parse": []}
     assert harness.kicks == []
+
+
+async def test_a_title_is_escaped_in_the_requester_and_admin_dms(db: Database, harness: Harness) -> None:
+    raw = "*Mine* <@1>"
+    card = await live_card(db, title=raw)
+    harness.statuses[card] = CardStatus(StatusKind.ASLEEP)
+
+    await harness.wake().press(card, ALICE)
+
+    escaped = render.escape(raw)
+    [requester] = sent_to(harness.state, ALICE)
+    assert requester.payload["content"] == f"Sending your request to the admins for {escaped}."
+    for admin in (ADMIN_A, ADMIN_B):
+        [dm] = sent_to(harness.state, admin)
+        assert escaped in dm.payload["content"]
+        assert raw not in dm.payload["content"]
+
+
+async def test_a_title_is_escaped_in_the_close_dms(db: Database, harness: Harness) -> None:
+    raw = "*Mine* <@1>"
+    card = await live_card(db, title=raw)
+    harness.statuses[card] = CardStatus(StatusKind.ASLEEP)
+    wake = harness.wake()
+    await wake.press(card, ALICE)
+    harness.statuses[card] = CardStatus(StatusKind.READY)
+
+    await wake.close_due()
+
+    escaped = render.escape(raw)
+    assert contents_to(harness.state, ALICE)[-1] == f"{escaped} is ready."
+    closes = patches(harness.state)
+    assert len(closes) == 2
+    for edit in closes:
+        assert escaped in edit.payload["content"]
+        assert raw not in edit.payload["content"]
 
 
 async def test_repeat_signals_inside_the_window_edit_the_admin_dm(db: Database, harness: Harness) -> None:
@@ -385,6 +425,33 @@ async def test_a_ready_card_closes_its_requests_and_tells_each_requester_once(db
     assert len(admin_edits(harness.state, READY_ADMIN)) == 2
     assert await db.run(lambda c: wake_requests.get_dms(c, card)) == []
     assert await open_counts(db) == {}
+
+
+CLOSE_COUNT_CASES = [
+    pytest.param(1, "ready", "Minecraft (mc) is ready. The request from 1 person is closed.", id="ready-one"),
+    pytest.param(2, "ready", "Minecraft (mc) is ready. The request from 2 people is closed.", id="ready-two"),
+    pytest.param(1, "expired", "Nobody started Minecraft (mc). The request from 1 person has expired.", id="expired-one"),
+    pytest.param(2, "expired", "Nobody started Minecraft (mc). The request from 2 people has expired.", id="expired-two"),
+]
+
+
+@pytest.mark.parametrize(("count", "outcome", "expected"), CLOSE_COUNT_CASES)
+async def test_the_close_text_says_one_person_or_people(db: Database, harness: Harness, count: int, outcome: str,
+                                                        expected: str) -> None:
+    card = await live_card(db)
+    harness.statuses[card] = CardStatus(StatusKind.ASLEEP)
+    wake = harness.wake()
+    await wake.press(card, ALICE)
+    if count == 2:
+        await wake.press(card, BOB)
+    if outcome == "ready":
+        harness.statuses[card] = CardStatus(StatusKind.READY)
+    else:
+        harness.clock.now += WINDOW + 1
+
+    await wake.close_due()
+
+    assert len(admin_edits(harness.state, expected)) == 2
 
 
 async def test_a_request_expires_after_the_window_and_tells_each_requester_once(db: Database, harness: Harness) -> None:

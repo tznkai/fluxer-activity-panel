@@ -229,9 +229,9 @@ REQUEST_USAGE = "Usage: !request list | !request clear <slug>"
 REQUEST_LIST_EMPTY = "No open requests."
 REQUEST_LIST_LINE = "{slug}: {n} requested, open for {age}"
 REQUEST_NONE_OPEN = "There's no open request for {slug}."
-REQUEST_CLEARED = "Cleared the request for {slug} ({n} people)."
+REQUEST_CLEARED = "Cleared the request for {slug} ({people})."
 WAKE_ADMIN_CLOSED = {
-    "ready": "{card} ({slug}) is ready. The request from {n} people is closed.",
-    "expired": "Nobody started {card} ({slug}). The request from {n} people has expired.",
-    "cleared": "The request for {card} ({slug}) from {n} people was cleared.",
+    "ready": "{card} ({slug}) is ready. The request from {people} is closed.",
+    "expired": "Nobody started {card} ({slug}). The request from {people} has expired.",
+    "cleared": "The request for {card} ({slug}) from {people} was cleared.",
 }
