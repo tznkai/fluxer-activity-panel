@@ -55,6 +55,17 @@ Cards and sources:
 - `PROBE_TIMEOUT_SECONDS` (default `3`): the timeout for one probe.
 - `PROBE_GRACE_SECONDS` (default `600`): how long a running server's failing probe is tolerated
   before its card shows Ready without counts. The admins then get one direct message.
+- `PLAY_NOW_CHANNEL_ID` (optional): the channel where play-now posts are made. It must differ from
+  `GAMES_CHANNEL_ID`, and the bot refuses to start when they are equal.
+- `FOLLOW_ROLE_PREFIX` (default `card_subscription_`): the prefix for follow-role names. It is 1 to 40
+  characters of `a-z`, `0-9`, `_` or `-`.
+- `WAKE_REQUEST_EXPIRY_SECONDS` (default `7200`): how long a wake request stays open before it expires.
+- `PLAY_NOW_EXPIRY_SECONDS` (default `3600`): how long a play-now post stays live before it expires.
+- `PLAY_NOW_COOLDOWN_SECONDS` (default `1800`): the wait between play-now posts for one card.
+- `BOARD_REPOST_MIN_INTERVAL_SECONDS` (default `300`): the least time between reposts of the summary board.
+- `PRESS_USER_WINDOW_SECONDS` (default `10`): the window in which one user's repeated presses are limited.
+- `PRESS_CARD_WINDOW_SECONDS` (default `10`): the window over which presses on one card are counted.
+- `PRESS_CARD_BURST` (default `10`): how many presses on one card are allowed within `PRESS_CARD_WINDOW_SECONDS`.
 
 Hand-run tools only (`tools/live/`, see `CLAUDE.md`): `LIVE_GUILD_ID`, `LIVE_CHANNEL_ID`,
 `LIVE_USER_ID`, `LIVE_ROLE_ID`, `LIVE_HIGH_ROLE_ID`, `LIVE_PTERO_SERVERS`, `LIVE_PROBES`,

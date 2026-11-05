@@ -15,6 +15,7 @@ LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 _ADMIN_ID = re.compile(r"[1-9][0-9]{0,24}")        # snowflake without leading zeros
 _POSITIVE_INT = re.compile(r"[1-9][0-9]{0,9}")
 _TOKEN = re.compile(r"[\x21-\x7e]{1,512}")          # printable ASCII, no spaces: it goes in a header
+_FOLLOW_ROLE_PREFIX = re.compile(r"[a-z0-9_-]{1,40}")   # becomes part of role names, which Fluxer shows
 INSTANCE_URL_MAX = 128   # longest FLUXER_INSTANCE_URL in UTF-16 units: Fluxer counts text in units, and a card's Channels field is 1024
 
 
@@ -69,6 +70,15 @@ class Config:
     poll_concurrency: int = 8
     probe_timeout_seconds: int = 3
     probe_grace_seconds: int = 600
+    play_now_channel_id: str | None = None
+    follow_role_prefix: str = "card_subscription_"
+    wake_request_expiry_seconds: int = 7200
+    play_now_expiry_seconds: int = 3600
+    play_now_cooldown_seconds: int = 1800
+    board_repost_min_interval_seconds: int = 300
+    press_user_window_seconds: int = 10
+    press_card_window_seconds: int = 10
+    press_card_burst: int = 10
 
     @property
     def pterodactyl_configured(self) -> bool:
@@ -102,6 +112,14 @@ class Config:
         games_channel_id = _opt(env, "GAMES_CHANNEL_ID")
         if games_channel_id is not None and not _ADMIN_ID.fullmatch(games_channel_id):
             raise ConfigError("GAMES_CHANNEL_ID must be a snowflake id")
+        play_now_channel_id = _opt(env, "PLAY_NOW_CHANNEL_ID")
+        if play_now_channel_id is not None and not _ADMIN_ID.fullmatch(play_now_channel_id):
+            raise ConfigError("PLAY_NOW_CHANNEL_ID must be a snowflake id")
+        if play_now_channel_id is not None and play_now_channel_id == games_channel_id:
+            raise ConfigError("PLAY_NOW_CHANNEL_ID must not be the games channel")
+        follow_role_prefix = _opt(env, "FOLLOW_ROLE_PREFIX") or "card_subscription_"
+        if not _FOLLOW_ROLE_PREFIX.fullmatch(follow_role_prefix):
+            raise ConfigError("FOLLOW_ROLE_PREFIX must be 1-40 of a-z, 0-9, _ or -")
         pterodactyl_url = _url(env, "PTERODACTYL_URL", ("http", "https"))
         pterodactyl_key = _opt(env, "PTERODACTYL_API_KEY")
         if pterodactyl_key is not None and not _TOKEN.fullmatch(pterodactyl_key):
@@ -126,4 +144,13 @@ class Config:
             poll_concurrency=_positive_int(env, "POLL_CONCURRENCY", "8"),
             probe_timeout_seconds=_positive_int(env, "PROBE_TIMEOUT_SECONDS", "3"),
             probe_grace_seconds=_positive_int(env, "PROBE_GRACE_SECONDS", "600"),
+            play_now_channel_id=play_now_channel_id,
+            follow_role_prefix=follow_role_prefix,
+            wake_request_expiry_seconds=_positive_int(env, "WAKE_REQUEST_EXPIRY_SECONDS", "7200"),
+            play_now_expiry_seconds=_positive_int(env, "PLAY_NOW_EXPIRY_SECONDS", "3600"),
+            play_now_cooldown_seconds=_positive_int(env, "PLAY_NOW_COOLDOWN_SECONDS", "1800"),
+            board_repost_min_interval_seconds=_positive_int(env, "BOARD_REPOST_MIN_INTERVAL_SECONDS", "300"),
+            press_user_window_seconds=_positive_int(env, "PRESS_USER_WINDOW_SECONDS", "10"),
+            press_card_window_seconds=_positive_int(env, "PRESS_CARD_WINDOW_SECONDS", "10"),
+            press_card_burst=_positive_int(env, "PRESS_CARD_BURST", "10"),
         )

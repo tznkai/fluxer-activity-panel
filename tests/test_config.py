@@ -150,6 +150,62 @@ def test_card_settings_parse_when_valid():
     assert config.probe_grace_seconds == 900
 
 
+REACTION_INTEGER_SETTINGS = {
+    "wake_request_expiry_seconds": ("WAKE_REQUEST_EXPIRY_SECONDS", 7200),
+    "play_now_expiry_seconds": ("PLAY_NOW_EXPIRY_SECONDS", 3600),
+    "play_now_cooldown_seconds": ("PLAY_NOW_COOLDOWN_SECONDS", 1800),
+    "board_repost_min_interval_seconds": ("BOARD_REPOST_MIN_INTERVAL_SECONDS", 300),
+    "press_user_window_seconds": ("PRESS_USER_WINDOW_SECONDS", 10),
+    "press_card_window_seconds": ("PRESS_CARD_WINDOW_SECONDS", 10),
+    "press_card_burst": ("PRESS_CARD_BURST", 10),
+}
+
+
+def test_reaction_settings_defaults_when_unset():
+    config = Config.from_env(env())
+    assert config.play_now_channel_id is None
+    assert config.follow_role_prefix == "card_subscription_"
+    for attribute, (_, default) in REACTION_INTEGER_SETTINGS.items():
+        assert getattr(config, attribute) == default, attribute
+
+
+def test_reaction_settings_parse_when_valid():
+    config = Config.from_env(env(
+        GAMES_CHANNEL_ID="1002",
+        PLAY_NOW_CHANNEL_ID="1003",
+        FOLLOW_ROLE_PREFIX="follow-role_9",
+        WAKE_REQUEST_EXPIRY_SECONDS="60",
+        PLAY_NOW_EXPIRY_SECONDS="120",
+        PLAY_NOW_COOLDOWN_SECONDS="180",
+        BOARD_REPOST_MIN_INTERVAL_SECONDS="240",
+        PRESS_USER_WINDOW_SECONDS="5",
+        PRESS_CARD_WINDOW_SECONDS="6",
+        PRESS_CARD_BURST="7",
+    ))
+    assert config.play_now_channel_id == "1003"
+    assert config.follow_role_prefix == "follow-role_9"
+    assert config.wake_request_expiry_seconds == 60
+    assert config.play_now_expiry_seconds == 120
+    assert config.play_now_cooldown_seconds == 180
+    assert config.board_repost_min_interval_seconds == 240
+    assert config.press_user_window_seconds == 5
+    assert config.press_card_window_seconds == 6
+    assert config.press_card_burst == 7
+
+
+def test_play_now_channel_may_be_set_without_a_games_channel():
+    config = Config.from_env(env(PLAY_NOW_CHANNEL_ID="1003"))
+    assert config.play_now_channel_id == "1003"
+    assert config.games_channel_id is None
+
+
+def test_play_now_channel_equal_to_games_channel_is_refused():
+    with pytest.raises(ConfigError) as info:
+        Config.from_env(env(GAMES_CHANNEL_ID="1002", PLAY_NOW_CHANNEL_ID="1002"))
+    assert str(info.value) == "PLAY_NOW_CHANNEL_ID must not be the games channel"
+    assert "1002" not in str(info.value)
+
+
 def test_repr_hides_the_pterodactyl_key_and_the_token():
     text = repr(Config.from_env(env(
         PTERODACTYL_URL="https://panel.invalid",
@@ -216,6 +272,18 @@ def test_repr_hides_the_pterodactyl_key_and_the_token():
         ("PROBE_GRACE_SECONDS", {"PROBE_GRACE_SECONDS": "-1"}, "-1"),
         ("PROBE_GRACE_SECONDS", {"PROBE_GRACE_SECONDS": "abc"}, "abc"),
         ("PROBE_GRACE_SECONDS", {"PROBE_GRACE_SECONDS": "SENTINEL"}, "SENTINEL"),
+        ("PLAY_NOW_CHANNEL_ID", {"PLAY_NOW_CHANNEL_ID": "12a"}, "12a"),
+        ("PLAY_NOW_CHANNEL_ID", {"PLAY_NOW_CHANNEL_ID": "0"}, "0"),
+        ("PLAY_NOW_CHANNEL_ID", {"PLAY_NOW_CHANNEL_ID": "SENTINEL"}, "SENTINEL"),
+        ("FOLLOW_ROLE_PREFIX", {"FOLLOW_ROLE_PREFIX": "Card_"}, "Card_"),
+        ("FOLLOW_ROLE_PREFIX", {"FOLLOW_ROLE_PREFIX": "a" * 41}, "a" * 41),
+        ("FOLLOW_ROLE_PREFIX", {"FOLLOW_ROLE_PREFIX": "card sub"}, "card sub"),
+        ("FOLLOW_ROLE_PREFIX", {"FOLLOW_ROLE_PREFIX": "SENTINEL"}, "SENTINEL"),
+        *[
+            (variable, {variable: value}, value)
+            for variable in (v for v, _ in REACTION_INTEGER_SETTINGS.values())
+            for value in ("0", "-1", "abc")
+        ],
     ],
 )
 def test_invalid_config_names_variable_not_value(variable, overrides, bad_value):
