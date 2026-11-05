@@ -312,9 +312,10 @@ def outside_text(card: Card, status: CardStatus | None, next_text: str | None) -
 # The play-now message. The content is our own wording with the card title escaped, and its one mention is the card's
 # follow role. The sender adds allowed_mentions, so nothing here can ping a user.
 
-def play_now_message(card: Card, *, role_id: str | None, playing: int, ended: bool,
+def play_now_message(card: Card, *, role_id: str | None, playing: int | None, ended: bool,
                      instance_url: str | None) -> dict[str, Any]:
-    """{"content": ..., "embeds": [embed]}; no allowed_mentions here (the sender adds it)."""
+    """{"content": ..., "embeds": [embed]}; no allowed_mentions here (the sender adds it). `playing` None leaves the
+    count line out: it is used when the count could not be read, so the message never shows a guess."""
     title = escape(card.title)
     if ended:
         content = text.PLAY_NOW_ENDED_CONTENT.format(card=title)
@@ -322,8 +323,9 @@ def play_now_message(card: Card, *, role_id: str | None, playing: int, ended: bo
         content = text.PLAY_NOW_CONTENT.format(card=title)
         if role_id is not None:
             content += f" <@&{require_snowflake(role_id)}>"
-    fields: list[dict[str, Any]] = [{"name": text.FIELD_STATUS, "value": text.PLAY_NOW_PLAYING.format(n=playing),
-                                     "inline": False}]
+    fields: list[dict[str, Any]] = []
+    if playing is not None:
+        fields.append({"name": text.FIELD_STATUS, "value": text.PLAY_NOW_PLAYING.format(n=playing), "inline": False})
     if card.address is not None and card.address.public:
         fields.append({"name": text.FIELD_ADDRESS, "value": code(host_port(card.address.host, card.address.port)),
                        "inline": False})

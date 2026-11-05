@@ -157,7 +157,11 @@ class Presses:
             return   # 6. Removals are never presses, in any channel
         surface = await self._surface(event, found.kind)
         if me_too:
-            await self._handler.me_too_changed(found.card_id, surface, event.user_id)
+            try:
+                await self._handler.me_too_changed(found.card_id, surface, event.user_id)
+            except Exception as exc:  # noqa: BLE001 - a failed me-too is logged, and never raised into the gateway
+                log_event(log, "play_now_edit_failed", level=logging.WARNING, card_id=found.card_id,
+                          reason=type(exc).__name__)
             return
         # 7. Rate limits.
         now = self._clock()

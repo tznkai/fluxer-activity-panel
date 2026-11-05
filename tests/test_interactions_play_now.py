@@ -6,7 +6,9 @@ as escapes (presses.PLAY_NOW_EMOJI and friends); the tests never contain a liter
 
 from __future__ import annotations
 
+import itertools
 import logging
+import sqlite3
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,9 +18,10 @@ import aiohttp
 import pytest
 
 from fluxer_client import events
-from fluxer_client.rest import FluxerREST
+from fluxer_client.rest import FluxerREST, ReactionUsersPage
 from fluxer_client.roles import RoleCache
-from fluxer_panel import cards, render, subscriptions, text
+from fluxer_panel import cards, play_now, render, subscriptions, text
+from fluxer_panel.logs import FIELDS_ATTR
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.cards import ChannelLink
 from fluxer_panel.config import Config
@@ -566,3 +569,241 @@ async def test_the_bulk_removal_is_not_held_under_the_card_lock(harness) -> None
     h.clock.now = 3700
     await h.interactions.expire_play_now()
     assert pacer.held and not any(pacer.held)
+
+
+# Reactor counting: paging, restarts and the failure paths ----------------------------------------------
+
+def event_names(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [record.getMessage() for record in panel_records(caplog)]
+
+
+def page_source(rest: FluxerREST, respond: Callable[[str | None], ReactionUsersPage],
+                monkeypatch: pytest.MonkeyPatch) -> list[str | None]:
+    """Replaces the reactor-page call with `respond(after)`. Returns the list of `after` cursors it was asked for."""
+    asked: list[str | None] = []
+
+    async def page(channel_id: str, message_id: str, emoji: str, *, limit: int = 100,
+                   after: str | None = None) -> ReactionUsersPage:
+        asked.append(after)
+        return respond(after)
+
+    monkeypatch.setattr(rest, "get_reaction_users_page", page)
+    return asked
+
+
+def restarted(h: Harness) -> Interactions:
+    """A new Interactions over the same database and client: no in-memory state carried over from before."""
+    old = h.interactions
+    return Interactions(db=old._db, rest=old._rest, config=old._config, locks=old._locks, games_guild=old._games_guild,
+                        seeder=old._seeder, pacer=old._pacer, identity=old._identity, roles=old._roles,
+                        clock=h.clock, wake=old._wake)
+
+
+def _live_rows(conn) -> int:
+    return conn.execute("SELECT COUNT(*) FROM play_now WHERE state = 'live'").fetchone()[0]
+
+
+def ended_status_fields(recorded: Recorded) -> list[str]:
+    return [f["name"] for f in recorded.payload["embeds"][0]["fields"]]
+
+
+def crowd(start: int, count: int) -> list[dict[str, Any]]:
+    return [{"id": str(start + i), "bot": False} for i in range(count)]
+
+
+async def test_after_a_restart_the_ended_message_counts_its_reactors(harness) -> None:
+    h = await harness()
+    h.clock.now = 100
+    mid = await post_play_now(h)
+    set_reactors(h.state, mid, [REACTOR_A, REACTOR_B])
+    h.clock.now = 3700
+    await restarted(h).expire_play_now()
+    [ended] = edits_to(h.state, mid)
+    assert status_field(ended) == text.PLAY_NOW_PLAYING.format(n=3)
+    assert len(deletes_all_reactions(h.state, mid)) == 1
+
+
+async def test_the_count_at_expiry_ignores_the_bot_and_counts_the_presser_once(harness) -> None:
+    h = await harness()
+    h.clock.now = 100
+    mid = await post_play_now(h)
+    set_reactors(h.state, mid, [REACTOR_A, PRESSER])
+    h.clock.now = 3700
+    await h.interactions.expire_play_now()
+    assert status_field(edits_to(h.state, mid)[-1]) == text.PLAY_NOW_PLAYING.format(n=2)
+
+
+async def test_a_reactor_list_that_ignores_after_terminates_with_one_hundred_and_one(harness, monkeypatch) -> None:
+    h = await harness()
+    h.clock.now = 100
+    mid = await post_play_now(h)
+    full = crowd(7000, 100)
+    asked = page_source(h.interactions._rest, lambda after: ReactionUsersPage(full, True, full[-1]["id"]), monkeypatch)
+    h.clock.now = 3700
+    await h.interactions.expire_play_now()
+    assert asked == [None, "7099"]
+    assert status_field(edits_to(h.state, mid)[-1]) == text.PLAY_NOW_PLAYING.format(n=101)
+
+
+async def test_a_short_page_with_has_more_continues_to_the_next_page(harness, monkeypatch) -> None:
+    h = await harness()
+    h.clock.now = 100
+    mid = await post_play_now(h)
+    first = ReactionUsersPage(crowd(7001, 3), True, "7003")
+    second = ReactionUsersPage(crowd(7004, 2), False, None)
+    asked = page_source(h.interactions._rest, lambda after: first if after is None else second, monkeypatch)
+    h.clock.now = 3700
+    await h.interactions.expire_play_now()
+    assert asked == [None, "7003"]
+    assert status_field(edits_to(h.state, mid)[-1]) == text.PLAY_NOW_PLAYING.format(n=6)
+
+
+async def test_a_cursor_that_does_not_advance_stops_the_count_and_is_logged(harness, monkeypatch, caplog) -> None:
+    caplog.set_level(logging.INFO, logger="fluxer_panel")
+    h = await harness()
+    h.clock.now = 100
+    mid = await post_play_now(h)
+    responses = {None: ReactionUsersPage(crowd(7001, 2), True, "7002"),
+                 "7002": ReactionUsersPage(crowd(7003, 1), True, "7002")}
+    asked = page_source(h.interactions._rest, lambda after: responses[after], monkeypatch)
+    h.clock.now = 3700
+    await h.interactions.expire_play_now()
+    assert asked == [None, "7002"]
+    assert status_field(edits_to(h.state, mid)[-1]) == text.PLAY_NOW_PLAYING.format(n=4)
+    assert "play_now_count_stalled" in event_names(caplog)
+
+
+async def test_the_page_cap_stops_the_count_and_logs_the_card_id_only(harness, monkeypatch, caplog) -> None:
+    caplog.set_level(logging.INFO, logger="fluxer_panel")
+    h = await harness()
+    h.clock.now = 100
+    mid = await post_play_now(h)
+    counter = itertools.count(7000)
+
+    def endless(after: str | None) -> ReactionUsersPage:
+        user_id = str(next(counter))
+        return ReactionUsersPage([{"id": user_id, "bot": False}], True, user_id)
+
+    asked = page_source(h.interactions._rest, endless, monkeypatch)
+    h.clock.now = 3700
+    await h.interactions.expire_play_now()
+    assert len(asked) == 20
+    assert status_field(edits_to(h.state, mid)[-1]) == text.PLAY_NOW_PLAYING.format(n=21)
+    [truncated] = [r for r in panel_records(caplog) if r.getMessage() == "play_now_count_truncated"]
+    assert set(getattr(truncated, FIELDS_ATTR)) == {"card_id"}
+
+
+async def test_a_failed_recount_at_expiry_omits_the_count_and_still_ends_the_message(harness, monkeypatch,
+                                                                                      caplog) -> None:
+    caplog.set_level(logging.INFO, logger="fluxer_panel")
+    h = await harness()
+    h.clock.now = 100
+    mid = await post_play_now(h)
+
+    async def unreachable(*args: Any, **kwargs: Any) -> ReactionUsersPage:
+        raise aiohttp.ClientError("dropped")
+
+    monkeypatch.setattr(h.interactions._rest, "get_reaction_users_page", unreachable)
+    h.clock.now = 3700
+    await h.interactions.expire_play_now()
+    [ended] = edits_to(h.state, mid)
+    assert text.FIELD_STATUS not in ended_status_fields(ended)
+    assert ended.payload["content"] == text.PLAY_NOW_ENDED_CONTENT.format(card=render.escape(CARD_TITLE))
+    assert len(deletes_all_reactions(h.state, mid)) == 1
+    assert "play_now_count_failed" in event_names(caplog)
+
+
+async def test_a_transport_error_on_the_ended_edit_still_removes_reactions_and_ends_the_next_message(
+        harness, monkeypatch, caplog) -> None:
+    caplog.set_level(logging.INFO, logger="fluxer_panel")
+    h = await harness()
+    h.clock.now = 100
+    first = await post_play_now(h)                                  # expires at 3700
+    h.clock.now = 100 + h.config.play_now_cooldown_seconds          # the cooldown has passed: a second post
+    await h.presses.on_reaction(play_press(user=PRESSER_2))
+    second = next(m for m in play_now_message_ids(h.state, PLAY_CH) if m != first)   # expires at 5500
+    real_edit = h.interactions._rest.edit_message
+
+    async def dropped_for_first(channel_id: str, message_id: str, **kwargs: Any) -> Any:
+        if message_id == first:
+            raise aiohttp.ClientError("dropped")
+        return await real_edit(channel_id, message_id, **kwargs)
+
+    monkeypatch.setattr(h.interactions._rest, "edit_message", dropped_for_first)
+    h.clock.now = 5500
+    await h.interactions.expire_play_now()
+    assert len(deletes_all_reactions(h.state, first)) == 1
+    assert len(deletes_all_reactions(h.state, second)) == 1
+    [ended] = edits_to(h.state, second)
+    assert ended.payload["content"] == text.PLAY_NOW_ENDED_CONTENT.format(card=render.escape(CARD_TITLE))
+    assert await h.db.run(_live_rows) == 0
+    assert "play_now_end_failed" in event_names(caplog)
+
+
+async def test_a_transport_error_on_the_me_too_edit_is_logged_and_not_raised(harness, monkeypatch, caplog) -> None:
+    caplog.set_level(logging.INFO, logger="fluxer_panel")
+    h = await harness()
+    mid = await post_play_now(h)
+    set_reactors(h.state, mid, [REACTOR_A])
+
+    async def dropped(*args: Any, **kwargs: Any) -> Any:
+        raise aiohttp.ClientError("dropped")
+
+    monkeypatch.setattr(h.interactions._rest, "edit_message", dropped)
+    await h.presses.on_reaction(me_too(REACTOR_A, mid))
+    assert edits_to(h.state, mid) == []
+    assert "play_now_edit_failed" in event_names(caplog)
+
+
+async def test_an_unexpected_failure_in_the_me_too_handler_is_logged_and_not_raised(harness, monkeypatch,
+                                                                                    caplog) -> None:
+    caplog.set_level(logging.INFO, logger="fluxer_panel")
+    h = await harness()
+    mid = await post_play_now(h)
+
+    async def broken(card_id: int, surface: Any, user_id: str) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(h.interactions, "me_too_changed", broken)
+    await h.presses.on_reaction(me_too(REACTOR_A, mid))
+    assert "play_now_edit_failed" in event_names(caplog)
+
+
+async def test_a_store_failure_after_the_send_deletes_the_message_and_tells_the_presser(harness, monkeypatch,
+                                                                                         caplog) -> None:
+    caplog.set_level(logging.INFO, logger="fluxer_panel")
+    h = await harness()
+    await set_card_play_channel(h, CARD_ID, GUILD, PLAY_CH)
+
+    def refused(*args: Any, **kwargs: Any) -> int:
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(play_now, "add", refused)
+    await h.presses.on_reaction(play_press())
+    [mid] = play_now_message_ids(h.state, PLAY_CH)
+    assert len(deletes_all_reactions(h.state, mid)) == 0
+    assert [r for r in h.state.requests if r.method == "DELETE" and r.path == f"{PLAY_PATH}/{mid}"]
+    assert (PLAY_CH, mid) in h.state.deleted
+    assert seeded(h.state, PLAY_CH, mid) == set()
+    assert dm_channel_texts(h.state, PRESSER) == [text.PRESS_FAILED]
+    assert await h.db.run(_play_now_rows) == 0
+    assert "play_now_store_failed" in event_names(caplog)
+
+
+async def test_a_failed_discard_after_a_store_failure_is_logged_and_the_presser_still_told(
+        harness, monkeypatch, caplog) -> None:
+    caplog.set_level(logging.INFO, logger="fluxer_panel")
+    h = await harness()
+    await set_card_play_channel(h, CARD_ID, GUILD, PLAY_CH)
+
+    def refused(*args: Any, **kwargs: Any) -> int:
+        raise sqlite3.OperationalError("disk I/O error")
+
+    async def dropped(*args: Any, **kwargs: Any) -> None:
+        raise aiohttp.ClientError("dropped")
+
+    monkeypatch.setattr(play_now, "add", refused)
+    monkeypatch.setattr(h.interactions._rest, "delete_message", dropped)
+    await h.presses.on_reaction(play_press())
+    assert dm_channel_texts(h.state, PRESSER) == [text.PRESS_FAILED]
+    assert "play_now_discard_failed" in event_names(caplog)

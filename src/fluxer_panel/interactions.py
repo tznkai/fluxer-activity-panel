@@ -34,6 +34,7 @@ from fluxer_panel.wake import WakeRequests
 log = logging.getLogger(__name__)
 
 REACTOR_PAGE = 100   # the largest page the reactor list returns
+MAX_REACTOR_PAGES = 20   # the most pages one count reads: at most 2000 reactors are counted
 
 
 class GamesChannelRefused(Exception):
@@ -50,6 +51,13 @@ def _role_in(card: Card, guild_id: str) -> str | None:
     """The card's follow role when it belongs to `guild_id`. A role is never mentioned in another community."""
     follow = card.follow_role
     return follow.role_id if follow is not None and follow.guild_id == guild_id else None
+
+
+def _failure_fields(exc: Exception) -> dict[str, Any]:
+    """The loggable part of a failure: the HTTP status, or else the exception's type name. Never its message text."""
+    if isinstance(exc, FluxerHTTPError):
+        return {"status": exc.status}
+    return {"reason": type(exc).__name__}
 
 
 class Interactions:
@@ -71,9 +79,6 @@ class Interactions:
         self._clock = clock
         self._kick = kick
         self._status_of = status_of
-        # The count last shown on each live play-now message, by message id. It is in memory only: after a restart an
-        # expiring message ends with the count it had at the post, which is 1 (the presser), until its next recount.
-        self._playing: dict[str, int] = {}
         self._follow_deps = follow_roles.FollowDeps(db=db, rest=rest, config=config, roles=roles, identity=identity)
         self._follow_alerted: set[tuple[int, str]] = set()   # (card id, reason) whose admin alert was sent
 
@@ -178,8 +183,7 @@ class Interactions:
         if cooling is not None:
             await self._dm_cooldown(press.user_id, card, cooling)
             return
-        if message_id is None:   # not reached: a post either stores its id or raises
-            return
+        assert message_id is not None   # a cooled-down press returned above, and a post either stores its id or raises
         await self._seeder.seed(channel_id, message_id, wanted)   # outside the lock: a 429 retry never stalls the card
         log_event(log, "play_now_posted", card_id=card.id, channel_id=channel_id)
 
@@ -216,11 +220,24 @@ class Interactions:
         sent = await self.send_play_now(channel_id, payload, role_id)
         message_id = str(sent["id"])
         expires_at = now + self._config.play_now_expiry_seconds
-        await self._db.run(lambda c: play_now.add(c, card_id=card.id, guild_id=guild_id, channel_id=channel_id,
-                                                  message_id=message_id, presser_id=presser_id,
-                                                  offers_wake=offers_wake, now=now, expires_at=expires_at))
-        self._playing[message_id] = 1   # the presser alone, until a recount
+        try:
+            await self._db.run(lambda c: play_now.add(c, card_id=card.id, guild_id=guild_id, channel_id=channel_id,
+                                                      message_id=message_id, presser_id=presser_id,
+                                                      offers_wake=offers_wake, now=now, expires_at=expires_at))
+        except Exception:
+            # With no row the message would never expire, so it is deleted; the press then fails as any other press does.
+            log_event(log, "play_now_store_failed", level=logging.WARNING, card_id=card.id)
+            await self._discard_unstored(channel_id, message_id, card.id)
+            raise
         return message_id
+
+    async def _discard_unstored(self, channel_id: str, message_id: str, card_id: int) -> None:
+        """Deletes a play-now message whose row could not be stored. Its reactions and buttons would otherwise stay up
+        on a message that nothing ever ends."""
+        try:
+            await self._rest.delete_message(channel_id, message_id)
+        except Exception as exc:  # noqa: BLE001 - a failed delete is logged; the press is still told it failed
+            log_event(log, "play_now_discard_failed", level=logging.WARNING, card_id=card_id, **_failure_fields(exc))
 
     async def send_play_now(self, channel_id: str, payload: dict[str, Any], role_id: str | None) -> dict[str, Any]:
         """The one send of a play-now message. A send aimed at the games channel is refused before the REST call."""
@@ -258,39 +275,68 @@ class Interactions:
             card = await self._db.run(lambda c: cards.get_by_id(c, card_id))
             if live is None or card is None:
                 return
-            self._playing[pn.message_id] = count
             try:
                 await self._edit_play_now(card, pn, playing=count, ended=False)
-            except FluxerHTTPError as exc:
-                log_event(log, "play_now_edit_failed", level=logging.WARNING, card_id=card_id, status=exc.status)
+            except Exception as exc:  # noqa: BLE001 - a failed edit leaves the message as it is, and is logged
+                log_event(log, "play_now_edit_failed", level=logging.WARNING, card_id=card_id, **_failure_fields(exc))
                 return
         log_event(log, "play_now_count", card_id=card_id, count=count)
 
     async def _count_playing(self, pn: play_now.PlayNow) -> int:
-        """The people on the message's play-now reaction: the distinct non-bot reactors plus the presser. Each page waits for the
-        channel's budget. The reactor ids are read here and kept nowhere: not stored, not logged."""
+        """The people on the message's play-now reaction: the distinct non-bot reactors plus the presser. Each page waits
+        for the channel's budget. Pages follow `has_more` and `next_after` (the last id when `next_after` is absent). The
+        count stops at the last page, when a page adds no new user, when the cursor does not advance, or after
+        MAX_REACTOR_PAGES pages. The last two are logged, and a capped count is a floor. The reactor ids are read here and
+        kept nowhere: not stored, not logged."""
         reactors: set[str] = set()
+        seen: set[str] = set()
         after: str | None = None
-        while True:
+        for _ in range(MAX_REACTOR_PAGES):
             await self._pacer.wait(pn.channel_id)
-            page = await self._rest.get_reaction_users(pn.channel_id, pn.message_id, PLAY_NOW_EMOJI,
-                                                       limit=REACTOR_PAGE, after=after)
-            reactors.update(user["id"] for user in page
-                            if user.get("bot") is not True and user["id"] != self._identity.user_id)
-            if len(page) < REACTOR_PAGE:
-                return len(reactors | {pn.presser_id})
-            after = page[-1]["id"]
+            page = await self._rest.get_reaction_users_page(pn.channel_id, pn.message_id, PLAY_NOW_EMOJI,
+                                                            limit=REACTOR_PAGE, after=after)
+            before = len(seen)
+            for user in page.users:
+                seen.add(user["id"])
+                if user.get("bot") is not True and user["id"] != self._identity.user_id:
+                    reactors.add(user["id"])
+            count = len(reactors | {pn.presser_id})
+            if not page.has_more:
+                return count
+            cursor = page.next_after or (page.users[-1]["id"] if page.users else None)
+            if cursor is None or cursor == after or len(seen) == before:
+                log_event(log, "play_now_count_stalled", level=logging.WARNING, card_id=pn.card_id)
+                return count
+            after = cursor
+        log_event(log, "play_now_count_truncated", level=logging.WARNING, card_id=pn.card_id)
+        return len(reactors | {pn.presser_id})
+
+    async def _count_for_end(self, pn: play_now.PlayNow) -> int | None:
+        """The count an ended message shows, or None when it cannot be read: the count line is then left out."""
+        try:
+            return await self._count_playing(pn)
+        except Exception as exc:  # noqa: BLE001 - a failed recount omits the count rather than showing a guess
+            log_event(log, "play_now_count_failed", level=logging.WARNING, card_id=pn.card_id,
+                      reason=type(exc).__name__)
+            return None
 
     async def expire_play_now(self) -> None:
-        """Ends each play-now message whose expiry has passed (AC4.10): one edit to the ended wording, then one bulk
-        removal of its reactions. Each message is expired once, under its card's lock. The removal runs after the lock is
-        released, through the channel's pacer. A failed edit or removal is logged, never raised."""
+        """Ends each play-now message whose expiry has passed (AC4.10): one recount, one edit to the ended wording, then one
+        bulk removal of its reactions. The recount runs before the card's lock, so the reactor reads never hold it. Each
+        message is expired once, under its card's lock, and its removal runs after the lock is released. A failure on one
+        message is logged, and the other due messages still end."""
         now = int(self._clock())
         for pn in await self._db.run(lambda c: play_now.due(c, now)):
-            async with self._locks.get(pn.card_id):
-                expired = await self._expire(pn.id)
-                if expired:
-                    await self._end_message(pn)
+            expired = False
+            try:
+                playing = await self._count_for_end(pn)
+                async with self._locks.get(pn.card_id):
+                    expired = await self._expire(pn.id)
+                    if expired:
+                        await self._end_message(pn, playing)
+            except Exception as exc:  # noqa: BLE001 - one message's failure must not stop the others
+                log_event(log, "play_now_expire_failed", level=logging.WARNING, card_id=pn.card_id,
+                          **_failure_fields(exc))
             if expired:
                 await self._remove_all_reactions(pn)
 
@@ -298,17 +344,16 @@ class Interactions:
         """Expires one row if it is still live. Returns whether this call expired it."""
         return await self._db.run(lambda c: play_now.expire_if(c, play_now_id))
 
-    async def _end_message(self, pn: play_now.PlayNow) -> None:
-        """Edits an expiring message to the ended wording, with the count it last had. Runs under the card's lock."""
-        playing = self._playing.pop(pn.message_id, 1)
+    async def _end_message(self, pn: play_now.PlayNow, playing: int | None) -> None:
+        """Edits an expiring message to the ended wording, with the count read just before the lock. Runs under the lock."""
         card = await self._db.run(lambda c: cards.get_by_id(c, pn.card_id))
         if card is None:
             return
         try:
             await self._edit_play_now(card, pn, playing=playing, ended=True)
-        except FluxerHTTPError as exc:
+        except Exception as exc:  # noqa: BLE001 - a failed edit is logged; the reactions are removed all the same
             log_event(log, "play_now_end_failed", level=logging.WARNING, card_id=pn.card_id, channel_id=pn.channel_id,
-                      status=exc.status)
+                      **_failure_fields(exc))
 
     async def _remove_all_reactions(self, pn: play_now.PlayNow) -> None:
         await self._pacer.wait(pn.channel_id)
@@ -321,7 +366,7 @@ class Interactions:
             log_event(log, "play_now_reactions_not_removed", level=logging.WARNING, channel_id=pn.channel_id,
                       reason=type(exc).__name__)
 
-    async def _edit_play_now(self, card: Card, pn: play_now.PlayNow, *, playing: int, ended: bool) -> None:
+    async def _edit_play_now(self, card: Card, pn: play_now.PlayNow, *, playing: int | None, ended: bool) -> None:
         """Rewrites the message from the card's current render. The edit allows no mention, so it never re-pings."""
         role_id = None if ended else _role_in(card, pn.guild_id)
         payload = render.play_now_message(card, role_id=role_id, playing=playing, ended=ended,
