@@ -174,11 +174,10 @@ class Poller:
             log_event(log, "board_reconcile_failed", level=logging.WARNING, reason=type(exc).__name__)
 
     async def tick(self) -> None:
-        """Keeps the cards and the board up to date. When no board message is stored, every card is evaluated first, then
-        the board is posted, then the cards are published, so a new board sits above them. When a board is stored, each
-        card is published as soon as its own evaluation ends, so one slow card does not hold back the others. Either way
-        the board is brought up to date after the cards. When this tick's read of the stored board fails, the cards
-        publish as they would with a board stored, and no new board is posted in this tick."""
+        """Keeps the cards and the board up to date. Each card is published as soon as its own evaluation ends, so one slow
+        card does not hold back the others. The board is brought up to date after the cards, so a board posted here sits
+        below them. When this tick's read of the stored board fails, the cards publish as they would with a board stored,
+        and no new board is posted in this tick."""
         self._requested = await self._db.run(wake_requests.open_counts)
         await self._tick_cards()
         await self._after_tick()
@@ -193,14 +192,7 @@ class Poller:
             await asyncio.gather(*(self._evaluate_and_publish(card, sem) for card in live))
             return
         stored = await self._read_board()
-        if stored is not None and stored.message_id is None:
-            evaluated = await asyncio.gather(*(self._evaluate_guarded(card, sem) for card in live))
-            await self._board_before_cards(evaluated, channel_id)
-            await asyncio.gather(*(self._publish_guarded(result, sem) for result in evaluated
-                                   if result.embed is not None))
-            results = evaluated
-        else:
-            results = await asyncio.gather(*(self._evaluate_and_publish(card, sem) for card in live))
+        results = await asyncio.gather(*(self._evaluate_and_publish(card, sem) for card in live))
         await self._board_after_cards({result.card.id: result.status for result in results}, channel_id,
                                       may_post=stored is not None)
 
@@ -371,18 +363,6 @@ class Poller:
             log_event(log, "board_read_failed", level=logging.WARNING, reason=type(exc).__name__)
             return None
 
-    async def _board_before_cards(self, evaluated: list[_Evaluated], channel_id: str) -> None:
-        """Posts the board to the games channel before this tick's card messages. It runs only when no board is stored.
-        A failure is logged. The same tick's `_board_after_cards` then posts the board below the cards."""
-        try:
-            payload = await self._board_payload([(result.card, result.status) for result in evaluated], channel_id)
-            await self._board_post(channel_id, payload)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - a failed board post must not stop the cards of this tick
-            log_event(log, "board_post_failed", level=logging.WARNING, channel_id=channel_id,
-                      reason=type(exc).__name__)
-
     async def _board_after_cards(self, statuses: dict[int, CardStatus | None], games_channel_id: str, *,
                                  may_post: bool) -> None:
         """Brings the board up to date with the cards as they are now: posts it if none is stored, and edits it when its
@@ -425,9 +405,8 @@ class Poller:
         rendered = render.rendered_hash(payload)
         await self._db.run(lambda c: board.set_message(c, channel_id, message_id, rendered))
         if await self._undo_if_deleted(channel_id, message_id):
-            return  # deleted before its id was stored: forgotten, so no pin request for it
+            return  # deleted before its id was stored: forgotten, so it is posted again
         log_event(log, "board_posted")
-        await self._dm_admins(text.BOARD_PIN_ALERT, failed_event="board_alert_failed")
 
     async def _board_edit(self, channel_id: str, message_id: str, payload: dict[str, Any], rendered: str) -> None:
         try:

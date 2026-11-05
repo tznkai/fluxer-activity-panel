@@ -17,7 +17,7 @@ import aiohttp
 import pytest
 
 from fluxer_client.events import MessageDelete
-from fluxer_client.rest import FluxerREST
+from fluxer_client.rest import FluxerHTTPError, FluxerREST
 from fluxer_panel import board, cards, text
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.config import Config
@@ -36,7 +36,6 @@ OTHER_GUILD = "1002"                  # the community of OTHER_GAMES, which is n
 AUTHOR = "1001"
 GAMES_MESSAGES = f"/api/v1/channels/{GAMES}/messages"
 OTHER_MESSAGES = f"/api/v1/channels/{OTHER_GAMES}/messages"
-BOARD = "5001"                        # the first message the fake creates, which the first board post takes
 OPEN_DM = "/api/v1/users/@me/channels"
 DM_CHANNEL_ONE = "/api/v1/channels/9000/messages"
 DM_CHANNEL_TWO = "/api/v1/channels/9001/messages"
@@ -155,6 +154,27 @@ async def card_message(db: Database, card_id: int) -> str:
     return card.message_id
 
 
+async def board_id(world: World) -> str:
+    """The stored board's message id. Cards post before the board, so the board takes no fixed fake id."""
+    state = await board_row(world.db)
+    assert state.message_id is not None
+    return state.message_id
+
+
+def fail_the_board_post(world: World, monkeypatch: pytest.MonkeyPatch) -> Callable[[], None]:
+    """Makes each board post raise a 500 as the REST client would, and lets the cards through. The fake's overrides
+    cannot do this: cards and the board share the POST route. Returns the function that restores the real post."""
+    real_send = world.rest.send_message
+
+    async def send(channel_id: str, **kwargs: Any) -> Any:
+        if kwargs["embeds"][0].get("title") == text.BOARD_TITLE:
+            raise FluxerHTTPError(500, None, "SENTINEL")
+        return await real_send(channel_id, **kwargs)
+
+    monkeypatch.setattr(world.rest, "send_message", send)
+    return lambda: monkeypatch.setattr(world.rest, "send_message", real_send)
+
+
 def posted(state: FakeFluxerState, path: str = GAMES_MESSAGES) -> list[Recorded]:
     return [r for r in state.requests if r.method == "POST" and r.path == path]
 
@@ -196,40 +216,38 @@ def records(captured: pytest.LogCaptureFixture, event: str) -> list[logging.LogR
 
 # The position above the cards and the first edit ---------------------------------------------------
 
-async def test_the_board_is_posted_before_the_cards_it_lists_on_a_fresh_start(world: World, db: Database) -> None:
+async def test_the_cards_are_posted_before_the_board_on_a_fresh_start(world: World, db: Database) -> None:
     await seed(db, "alpha", title="Alpha", probe=True)
 
     await world.poller().tick()
 
     order = [r.payload["embeds"][0].get("title") for r in posted(world.fluxer)]
-    assert order == [text.BOARD_TITLE, "Alpha"]
+    assert order == ["Alpha", text.BOARD_TITLE]
     assert_board_writes_safe(world.fluxer)
 
 
-async def test_the_first_board_post_has_plain_status_and_the_next_edit_adds_the_jump_link(world: World,
-                                                                                           db: Database) -> None:
+async def test_the_first_board_post_has_the_jump_links_and_no_edit_follows(world: World, db: Database) -> None:
     card_id = await seed(db, "alpha", title="Alpha", probe=True)
 
     await world.poller().tick()
 
     [first] = board_posts(world.fluxer)
-    assert cells(first.payload) == [("Alpha", "Ready · 1 / 4")]
-    [edit] = patches_to(world.fluxer, BOARD)
-    assert cells(edit.payload) == [("Alpha", link_to("Ready · 1 / 4", await card_message(db, card_id)))]
-    assert (await board_row(db)).message_id == BOARD
+    assert cells(first.payload) == [("Alpha", link_to("Ready · 1 / 4", await card_message(db, card_id)))]
+    assert patches_to(world.fluxer, await board_id(world)) == []
+    # The card takes the first fake id, so the board, posted after it, takes the second.
+    assert (await board_row(db)).message_id == "5002"
 
 
-async def test_a_card_with_no_message_yet_is_not_linked_on_the_first_post_only(world: World, db: Database) -> None:
+async def test_every_card_is_linked_on_the_first_board_post(world: World, db: Database) -> None:
     alpha = await seed(db, "alpha", title="Alpha", probe=True)
     beta = await seed(db, "beta", title="Beta", probe=True, sort=1)
 
     await world.poller().tick()
 
     [first] = board_posts(world.fluxer)
-    assert cells(first.payload) == [("Alpha", "Ready · 1 / 4"), ("Beta", "Ready · 1 / 4")]
-    [edit] = patches_to(world.fluxer, BOARD)
-    assert cells(edit.payload) == [("Alpha", link_to("Ready · 1 / 4", await card_message(db, alpha))),
-                                   ("Beta", link_to("Ready · 1 / 4", await card_message(db, beta)))]
+    assert cells(first.payload) == [("Alpha", link_to("Ready · 1 / 4", await card_message(db, alpha))),
+                                    ("Beta", link_to("Ready · 1 / 4", await card_message(db, beta)))]
+    assert patches_to(world.fluxer, await board_id(world)) == []
 
 
 async def test_a_card_with_no_manager_and_no_probe_shows_the_dash(world: World, db: Database) -> None:
@@ -237,8 +255,8 @@ async def test_a_card_with_no_manager_and_no_probe_shows_the_dash(world: World, 
 
     await world.poller().tick()
 
-    [edit] = patches_to(world.fluxer, BOARD)
-    assert cells(edit.payload) == [("Alpha", link_to(text.BOARD_NO_STATUS, await card_message(db, card_id)))]
+    [first] = board_posts(world.fluxer)
+    assert cells(first.payload) == [("Alpha", link_to(text.BOARD_NO_STATUS, await card_message(db, card_id)))]
 
 
 async def test_cards_are_listed_in_sort_order_then_id(world: World, db: Database) -> None:
@@ -266,11 +284,11 @@ async def test_nothing_is_posted_to_the_games_channel_when_it_is_not_configured(
     await world.poller(GAMES_CHANNEL_ID=None).tick()
 
     assert posted(world.fluxer) == []
-    assert patches_to(world.fluxer, BOARD) == []
+    assert [r for r in world.fluxer.requests if r.method == "PATCH"] == []
     assert await board_row(db) == board.BoardState(None, None, None)
     # No board request of any kind: no lookup of the games channel, and no message in it.
     assert [r for r in world.fluxer.requests if GAMES in r.path] == []
-    for event in ("board_post_failed", "board_sync_failed", "games_channel_lookup_failed"):
+    for event in ("board_sync_failed", "games_channel_lookup_failed"):
         assert records(captured, event) == [], event
 
 
@@ -297,7 +315,7 @@ async def test_a_status_change_edits_the_board_once_and_does_not_repost_it(world
     await poller.tick()
 
     assert board_posts(world.fluxer) == []
-    [edit] = patches_to(world.fluxer, BOARD)
+    [edit] = patches_to(world.fluxer, await board_id(world))
     assert cells(edit.payload) == [("Alpha", link_to("Ready · 2 / 4", await card_message(db, card_id)))]
 
 
@@ -310,46 +328,23 @@ async def test_a_title_change_edits_the_board(world: World, db: Database) -> Non
 
     await poller.tick()
 
-    [edit] = patches_to(world.fluxer, BOARD)
+    [edit] = patches_to(world.fluxer, await board_id(world))
     assert cells(edit.payload)[0][0] == "Omega"
 
 
-# The admin DM, once per new message ---------------------------------------------------------------
+# No admin DM on a board post --------------------------------------------------------------------------
 
-async def test_each_admin_gets_the_pin_request_once_for_the_new_board_message(world: World, db: Database) -> None:
+async def test_a_board_post_sends_no_admin_dm_and_the_pin_request_is_gone(world: World, db: Database) -> None:
     await seed(db, "alpha", title="Alpha", probe=True)
     poller = world.poller()
 
     await poller.tick()
     await poller.tick()
 
-    sends = dm_sends(world.fluxer)
-    assert [r.payload["content"] for r in sends] == [text.BOARD_PIN_ALERT, text.BOARD_PIN_ALERT]
-    assert all(r.payload["allowed_mentions"] == {"parse": []} for r in sends)
-
-
-async def test_a_reposted_board_sends_the_pin_request_again_for_the_new_message(world: World, db: Database) -> None:
-    await seed(db, "alpha", title="Alpha", probe=True)
-    poller = world.poller()
-    await poller.tick()
-    await poller.on_message_delete(MessageDelete(BOARD, GAMES, None))
-
-    await poller.tick()
-
-    assert len(board_posts(world.fluxer)) == 2
-    assert len(dm_sends(world.fluxer)) == 4
-
-
-async def test_a_failed_admin_dm_is_logged_and_the_board_is_still_stored(world: World, db: Database,
-                                                                         captured: pytest.LogCaptureFixture) -> None:
-    world.fluxer.overrides[f"POST {OPEN_DM}"] = Override(500, b'{"code": "SENTINEL"}')
-
-    await world.poller().tick()
-
-    assert (await board_row(db)).message_id == BOARD
-    failed = records(captured, "board_alert_failed")
-    assert [r.panel_fields for r in failed] == [{"user_id": "1001", "reason": "FluxerHTTPError"},
-                                                 {"user_id": "1002", "reason": "FluxerHTTPError"}]
+    assert len(board_posts(world.fluxer)) == 1
+    assert world.fluxer.requests_to(OPEN_DM) == []
+    assert dm_sends(world.fluxer) == []
+    assert not hasattr(text, "BOARD_PIN_ALERT")
 
 
 # Hand deletion and the startup check ----------------------------------------------------------------
@@ -365,7 +360,7 @@ async def test_a_deleted_board_message_is_forgotten_and_reposted_without_waiting
         # delete must come once the loop is waiting, or the repost would come from that tick and not from the kick.
         await wait_until(lambda: len(world.probe.calls) == 2)
         await asyncio.sleep(0.1)
-        await poller.on_message_delete(MessageDelete(BOARD, GAMES, None))
+        await poller.on_message_delete(MessageDelete(await board_id(world), GAMES, None))
         await wait_until(lambda: len(board_posts(world.fluxer)) == 2)
     finally:
         task.cancel()
@@ -380,7 +375,7 @@ async def test_a_delete_of_another_message_leaves_the_board_alone(world: World, 
 
     await poller.on_message_delete(MessageDelete("4000", GAMES, None))
 
-    assert (await board_row(db)).message_id == BOARD
+    assert (await board_row(db)).message_id == await board_id(world)
     assert len(board_posts(world.fluxer)) == 1
 
 
@@ -430,7 +425,7 @@ async def test_a_changed_games_channel_keeps_the_board_and_the_cards_where_they_
 
     # No board is posted to the new channel, and the stored board is edited where it is. Only the new card goes there.
     assert [r.payload["embeds"][0].get("title") for r in posted(world.fluxer, OTHER_MESSAGES)] == ["Beta"]
-    [edit] = patches_to(world.fluxer, BOARD)
+    [edit] = patches_to(world.fluxer, await board_id(world))
     # Alpha's message is in the stored board's channel, so it links. Beta's message is in the new channel, so it does not.
     assert cells(edit.payload) == [("Alpha", link_to("Ready \u00b7 1 / 4", await card_message(db, alpha))),
                                    ("Beta", "Ready \u00b7 1 / 4")]
@@ -445,7 +440,7 @@ async def test_a_board_deleted_by_hand_is_posted_to_the_new_games_channel(world:
     await world.poller().tick()
     world.fluxer.channels[OTHER_GAMES] = {"id": OTHER_GAMES, "name": "other", "type": 0, "guild_id": GUILD}
     poller = world.poller(GAMES_CHANNEL_ID=OTHER_GAMES)
-    await poller.on_message_delete(MessageDelete(BOARD, GAMES, None))
+    await poller.on_message_delete(MessageDelete(await board_id(world), GAMES, None))
     world.fluxer.requests.clear()
 
     await poller.tick()
@@ -466,7 +461,7 @@ async def test_a_board_reposted_in_another_channel_looks_up_that_channels_commun
     poller = world.poller(GAMES_CHANNEL_ID=OTHER_GAMES)
     await poller.tick()
     # Deleted by hand, so the next tick posts a new board to the new games channel with that channel's community.
-    await poller.on_message_delete(MessageDelete(BOARD, GAMES, None))
+    await poller.on_message_delete(MessageDelete(await board_id(world), GAMES, None))
     world.fluxer.requests.clear()
 
     await poller.tick()
@@ -488,12 +483,12 @@ async def test_a_board_whose_community_is_unknown_shows_plain_text_until_the_loo
     assert cells(first.payload) == [("Alpha", "Ready · 1 / 4")]
     assert {r.panel_fields["reason"] for r in records(captured, "games_channel_lookup_failed")} == {
         "FluxerHTTPError"}
-    assert patches_to(world.fluxer, BOARD) == []
+    assert patches_to(world.fluxer, await board_id(world)) == []
 
     world.fluxer.channels[GAMES] = dict(GAMES_CHANNEL)
     await poller.tick()
 
-    [edit] = patches_to(world.fluxer, BOARD)
+    [edit] = patches_to(world.fluxer, await board_id(world))
     assert cells(edit.payload) == [("Alpha", link_to("Ready · 1 / 4", await card_message(db, 1)))]
 
 
@@ -522,24 +517,26 @@ async def test_the_community_is_looked_up_once_after_it_is_known(world: World, d
 # Failures ---------------------------------------------------------------------------------------------
 
 async def test_a_failed_board_post_is_logged_and_retried_on_the_next_tick(world: World, db: Database,
-                                                                          captured: pytest.LogCaptureFixture) -> None:
+                                                                          captured: pytest.LogCaptureFixture,
+                                                                          monkeypatch: pytest.MonkeyPatch) -> None:
     await seed(db, "alpha", title="Alpha", probe=True)
-    world.fluxer.overrides[f"POST {GAMES_MESSAGES}"] = Override(500, b'{"code": "SENTINEL"}')
+    restore = fail_the_board_post(world, monkeypatch)
     poller = world.poller()
 
     await poller.tick()
 
     assert (await board_row(db)).message_id is None
-    # The post before the cards fails. The card still posts, and the sync after the cards tries the board again and fails.
-    [failed] = records(captured, "board_post_failed")
-    assert failed.panel_fields == {"channel_id": GAMES, "reason": "FluxerHTTPError"}
+    # The card posts first and is stored. The board's post after it fails and is logged, with nothing else.
+    assert card_titles(world.fluxer) == ["Alpha"]
+    assert board_posts(world.fluxer) == []
     [synced] = records(captured, "board_sync_failed")
     assert synced.panel_fields == {"reason": "FluxerHTTPError"}
-    assert len(posted(world.fluxer)) == 3  # the board, the card, and the board again
+    assert records(captured, "board_post_failed") == []
 
-    world.fluxer.overrides.clear()
+    restore()
     await poller.tick()
 
+    assert len(board_posts(world.fluxer)) == 1
     assert (await board_row(db)).message_id is not None
 
 
@@ -548,7 +545,7 @@ async def test_a_failed_board_edit_is_logged_and_retried_on_the_next_tick(world:
     card_id = await seed(db, "alpha", title="Alpha", probe=True)
     poller = world.poller()
     await poller.tick()
-    world.fluxer.overrides[f"PATCH {GAMES_MESSAGES}/{BOARD}"] = Override(500, b'{"code": "SENTINEL"}')
+    world.fluxer.overrides[f"PATCH {GAMES_MESSAGES}/{await board_id(world)}"] = Override(500, b'{"code": "SENTINEL"}')
     await db.run(lambda c: cards.update_fields(c, card_id, 0, title="Omega"))
 
     await poller.tick()
@@ -559,8 +556,8 @@ async def test_a_failed_board_edit_is_logged_and_retried_on_the_next_tick(world:
 
     await poller.tick()
 
-    # The linking edit on the first tick, the failed edit, and the retried edit.
-    assert len(patches_to(world.fluxer, BOARD)) == 3
+    # The failed edit and the retried one. The first tick posts the board with its links, so it has no edit.
+    assert len(patches_to(world.fluxer, await board_id(world))) == 2
     assert (await board_row(db)).content_hash is not None
 
 
@@ -569,27 +566,34 @@ async def test_a_board_message_deleted_before_its_edit_is_posted_again(world: Wo
     card_id = await seed(db, "alpha", title="Alpha", probe=True)
     poller = world.poller()
     await poller.tick()
-    world.fluxer.deleted.add((GAMES, BOARD))
+    world.fluxer.deleted.add((GAMES, await board_id(world)))
     await db.run(lambda c: cards.update_fields(c, card_id, 0, title="Omega"))
     world.fluxer.requests.clear()
+    old_board = await board_id(world)
 
     await poller.tick()
 
     assert len(records(captured, "board_message_recreated")) == 1
     [reposted] = board_posts(world.fluxer)
     assert cells(reposted.payload) == [("Omega", link_to("Ready · 1 / 4", await card_message(db, card_id)))]
-    assert (await board_row(db)).message_id != BOARD
+    assert (await board_row(db)).message_id != old_board
 
 
 async def test_a_board_message_deleted_before_its_id_is_stored_is_posted_again(world: World, db: Database) -> None:
     await seed(db, "alpha", title="Alpha", probe=True)
     poller = world.poller()
-    await poller.on_message_delete(MessageDelete(BOARD, GAMES, None))
+    # The card takes 5001 and the board 5002. The delete comes before the first tick, so no board is stored yet.
+    await poller.on_message_delete(MessageDelete("5002", GAMES, None))
+
+    await poller.tick()
+
+    # The board was posted and then forgotten by its delete, so none is stored after the first tick.
+    assert len(board_posts(world.fluxer)) == 1
+    assert (await board_row(db)).message_id is None
 
     await poller.tick()
 
     assert len(board_posts(world.fluxer)) == 2
-    assert len(dm_sends(world.fluxer)) == 2
     assert (await board_row(db)).message_id == "5003"
 
 
@@ -603,19 +607,20 @@ async def test_a_card_added_during_the_tick_is_not_listed_until_the_next_tick(wo
     world.probe.on_call = publish_beta
     await world.poller().tick()
 
-    [edit] = patches_to(world.fluxer, BOARD)
-    assert [name for name, _ in cells(edit.payload)] == ["Alpha"]
+    [first] = board_posts(world.fluxer)
+    assert [name for name, _ in cells(first.payload)] == ["Alpha"]
+    assert patches_to(world.fluxer, await board_id(world)) == []
 
 
 async def test_titles_and_statuses_never_reach_the_log(world: World, db: Database,
                                                        captured: pytest.LogCaptureFixture) -> None:
     await seed(db, "alpha", title=SENTINEL_TITLE, probe=True)
-    world.fluxer.overrides[f"PATCH {GAMES_MESSAGES}/{BOARD}"] = Override(500, b'{"code": "SENTINEL"}')
     poller = world.poller()
     await poller.tick()
+    world.fluxer.overrides[f"PATCH {GAMES_MESSAGES}/{await board_id(world)}"] = Override(500, b'{"code": "SENTINEL"}')
     await db.run(lambda c: cards.set_probe(c, 1, cards.ProbeRef("stub", SENTINEL_HOST, 25565)))
     await poller.tick()
-    await poller.on_message_delete(MessageDelete(BOARD, GAMES, None))
+    await poller.on_message_delete(MessageDelete(await board_id(world), GAMES, None))
 
     assert SENTINEL_TITLE not in captured.text
     assert SENTINEL_HOST not in captured.text
@@ -651,8 +656,8 @@ async def test_with_a_board_stored_a_stalled_card_does_not_hold_back_another_car
     assert sorted(card_titles(world.fluxer)) == ["Alpha", "Beta"]
 
 
-# Both phases of a tick, with a board stored and with none. With no board stored the tick is the barrier path: every card is
-# evaluated, the board is posted, then the cards are published. The barrier path's own bound is what these cases hold.
+# Both phases of a tick, with a board stored and with none. With no board stored, the cards are posted and then the board,
+# so the same bounds hold either way.
 @pytest.mark.parametrize("board_stored", [True, False], ids=["board-stored", "no-board"])
 async def test_at_most_poll_concurrency_cards_are_evaluated_at_once(world: World, db: Database,
                                                                     board_stored: bool) -> None:
@@ -686,7 +691,7 @@ async def test_at_most_poll_concurrency_cards_are_evaluated_at_once(world: World
     assert len(board_posts(world.fluxer)) == 1
     assert len(card_posts(world.fluxer)) == 5
     if not board_stored:
-        assert posted(world.fluxer)[0].payload["embeds"][0].get("title") == text.BOARD_TITLE
+        assert posted(world.fluxer)[-1].payload["embeds"][0].get("title") == text.BOARD_TITLE
 
 
 @pytest.mark.parametrize("board_stored", [True, False], ids=["board-stored", "no-board"])
@@ -700,7 +705,7 @@ async def test_at_most_poll_concurrency_cards_are_published_at_once(world: World
     key = f"POST {GAMES_MESSAGES}"
     world.fluxer.gates[key] = release
     if not board_stored:
-        # The board's post is the first POST of the tick and goes through; each card's post after it is held.
+        # The first card's post is the tick's first POST and goes through; each card's post after it is held.
         world.fluxer.gate_passes[key] = 1
     task = asyncio.create_task(world.poller(POLL_CONCURRENCY="2").tick())
     try:
@@ -713,7 +718,7 @@ async def test_at_most_poll_concurrency_cards_are_published_at_once(world: World
     assert len(board_posts(world.fluxer)) == 1
     assert len(card_posts(world.fluxer)) == 5
     if not board_stored:
-        assert posted(world.fluxer)[0].payload["embeds"][0].get("title") == text.BOARD_TITLE
+        assert posted(world.fluxer)[-1].payload["embeds"][0].get("title") == text.BOARD_TITLE
 
 
 async def test_a_card_whose_evaluation_fails_stays_on_the_board_with_the_dash(world: World, db: Database,
@@ -728,11 +733,11 @@ async def test_a_card_whose_evaluation_fails_stays_on_the_board_with_the_dash(wo
 
     await poller.tick()
 
-    [edit] = patches_to(world.fluxer, BOARD)
+    [edit] = patches_to(world.fluxer, await board_id(world))
     assert cells(edit.payload) == [("Alpha", link_to(text.BOARD_NO_STATUS, await card_message(db, alpha))),
                                    ("Beta", link_to(text.BOARD_NO_STATUS, await card_message(db, beta)))]
     # A failed card is not published, so its message is not edited.
-    assert [r for r in world.fluxer.requests if r.method == "PATCH" and r.path != f"{GAMES_MESSAGES}/{BOARD}"] == []
+    assert [r for r in world.fluxer.requests if r.method == "PATCH" and r.path != f"{GAMES_MESSAGES}/{await board_id(world)}"] == []
     assert {r.panel_fields["reason"] for r in records(captured, "card_poll_failed")} == {"RuntimeError"}
 
 
@@ -800,7 +805,7 @@ async def test_a_failed_first_board_read_still_edits_a_stored_board(world: World
 
     # A stored board is only edited, never posted again, so its edit goes ahead despite the failed first read.
     assert board_posts(world.fluxer) == []
-    [edit] = patches_to(world.fluxer, BOARD)
+    [edit] = patches_to(world.fluxer, await board_id(world))
     assert cells(edit.payload)[0][0] == "Omega"
 
 

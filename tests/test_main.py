@@ -220,8 +220,8 @@ async def test_a_live_card_is_posted_by_the_running_process_and_sigterm_exits_ze
     assert "shutting_down" in events
     assert "poller_tick_failed" not in events
     assert "Traceback" not in err.decode()
-    # The board takes 5001 and the pin request to the one admin takes 5002, so the card is 5003.
-    assert _stored_message_id(db_path) == "5003"
+    # The card posts first and takes 5001. The board takes 5002, and no pin request is sent.
+    assert _stored_message_id(db_path) == "5001"
 
 
 def _seed_draft_card(conn: sqlite3.Connection) -> None:
@@ -294,7 +294,7 @@ async def test_a_message_delete_in_the_running_process_reposts_the_card(aiohttp_
         # Delete only once the id is stored, so the compare-and-clear sees the message the poller posted.
         while not _games_posts(rest_state) or _stored_message_id(db_path) is None:
             await asyncio.sleep(0.05)
-        await send(ws, 0, message_delete("5003", GAMES_CHANNEL), t="MESSAGE_DELETE", s=2)   # the card
+        await send(ws, 0, message_delete("5001", GAMES_CHANNEL), t="MESSAGE_DELETE", s=2)   # the card
         await hold(ws)
 
     gateway_server = await aiohttp_server(make_gateway_app(gateway_script))
@@ -314,7 +314,7 @@ async def test_a_message_delete_in_the_running_process_reposts_the_card(aiohttp_
         async def reposted() -> None:
             while len(_games_posts(rest_state)) < 2:
                 await asyncio.sleep(0.05)
-            while _stored_message_id(db_path) != "5004":
+            while _stored_message_id(db_path) != "5003":
                 await asyncio.sleep(0.05)
 
         await asyncio.wait_for(reposted(), BOUND)
@@ -332,7 +332,7 @@ async def test_a_message_delete_in_the_running_process_reposts_the_card(aiohttp_
 
 
 def _games_posts(state: FakeFluxerState) -> list[Any]:
-    """The card posts in the games channel. The summary board is posted there too, first, and is not a card."""
+    """The card posts in the games channel. The summary board is posted there too, after the cards, and is not a card."""
     return [r for r in state.requests if r.method == "POST" and r.path == GAMES_POSTS
             and r.payload["embeds"][0].get("title") != panel_text.BOARD_TITLE]
 

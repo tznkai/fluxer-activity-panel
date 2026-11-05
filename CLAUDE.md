@@ -175,12 +175,9 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   UTF-16 code units (`render.units`). Its statuses are the cards' own status lines from the resolver, and a card whose
   evaluation failed shows the dash. A status is a link only through `jump_link`, and only for a card whose message is
   in the board's channel, so the community is the one looked up for that channel. Board sends and edits use
-  `allowed_mentions={"parse": []}`. With no board stored, the poller evaluates every card, posts the board, then
-  publishes the cards, so the board sits above them. If that pre-card post fails, it is logged and the same tick's
-  `_board_after_cards` posts the board after the cards, so it then sits below them (not on the next tick). With a
-  board stored, each card is published right after its own evaluation. Either way the
-  board is edited after the cards when its hash changed. The poller sends the admins the pin request once per new
-  message. A failed read of the stored board at the start of a tick is logged. The cards then publish as they would
+  `allowed_mentions={"parse": []}`. Cards always post first: each card is published right after its own evaluation,
+  and the board is brought up to date after them, so a board posted with no stored message sits below them. A stored
+  board is edited when its hash changed. No admin is sent a pin request, and no DM goes out on a board post. A failed read of the stored board at the start of a tick is logged. The cards then publish as they would
   with a board stored, and no new board is posted in that tick (a stored board is still edited); the next tick
   posts it. The poller logs the board's ids and exception types only: never a title, a status or a link.
 

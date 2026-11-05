@@ -192,11 +192,9 @@ card with no manager and no probe shows a dash, and so does a card whose status 
 last poll. When the card's message is in the board's channel, its status is a link to the card's
 message. The board is laid out for the desktop and web clients. Phones show the full cards as before.
 
-- **Posting:** when no board is stored, the board is posted before the cards on a fresh start, so it sits
-  above them. If that post fails, the same poll posts the board after the cards instead, so it sits below
-  them. The first post may show plain status text for cards that are not posted yet. The next edit
-  adds the links.
-  If the stored board cannot be read at the start of a poll, the cards are still posted, and no new board is
+- **Posting:** the cards are posted first in each poll, and the board is posted after them, so a new board
+  sits below them. A new board links every card that is already posted in the board's channel. If the
+  stored board cannot be read at the start of a poll, the cards are still posted, and no new board is
   posted in that poll. The next poll posts it.
 - **The board's channel:** the board is posted in the games channel and then stays there. A stored board
   is edited where it was posted, whatever `GAMES_CHANNEL_ID` is now. Its links go to the channel's own
@@ -205,9 +203,7 @@ message. The board is laid out for the desktop and web clients. Phones show the 
 - **Edits:** the board is edited when its content changes, for example when a status or a title changes.
   When a board is stored, each card is posted as soon as its own check ends, so a slow check does not hold
   back the other cards. The board is brought up to date after all the cards.
-- **Pinning is manual.** When the bot posts a new board message, it sends each admin one direct message:
-  "I posted the summary board in the games channel. Pin it so it stays at the top." Pin it in the channel
-  where the board was posted. The bot does not pin it, and it sends that message once per new board message.
+- **No pin request.** The bot does not pin the board and sends no admin a DM when it posts one.
 - **Size:** the board shows at most 240 cards. The bot keeps the whole board message under 6000 characters of
   text, which is Fluxer's limit on embed text. The count is in UTF-16 code units, so an emoji counts two. A
   board with long titles, long links or many cards shows only the cards that fit, and a note at the bottom

@@ -185,7 +185,6 @@ BOARD_TITLE = "Games"
 BOARD_EMPTY = "No games are live."
 BOARD_NO_STATUS = "—"    # a card with no manager and no probe has no live status
 BOARD_TRUNCATED = "Some games are not shown. Ask an admin for the full list."
-BOARD_PIN_ALERT = "I posted the summary board in the games channel. Pin it so it stays at the top."
 # Reactions. The presser's DM after a press fails, and the admins' alert when a channel refuses removals. The alert
 # takes a channel id only.
 PRESS_FAILED = "Something went wrong with that. Try again in a moment."
