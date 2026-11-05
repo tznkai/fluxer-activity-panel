@@ -282,6 +282,47 @@ class FluxerREST:
         path = f"/channels/{require_snowflake(channel_id)}/messages/{require_snowflake(message_id)}"
         await self.request("DELETE", path)
 
+    REACTION_USERS_SUFFIX = "/users"   # the reactor-list path, per the design; Task 9 amends it if the live run disagrees
+
+    async def create_role(self, guild_id: str, *, name: str, mentionable: bool,
+                          reason: str | None = None) -> dict[str, Any]:
+        """Create a role with no permissions (always "0"), not hoisted, colour 0. There is deliberately no
+        permissions parameter: this client never creates a role that grants anything."""
+        if not name or len(name) > 100 or not name.isprintable():
+            raise ValueError("role name must be 1-100 printable characters")
+        body = {"name": name, "permissions": "0", "color": 0, "hoist": False, "mentionable": bool(mentionable)}
+        headers = _check_reason(reason)
+        return await self.request("POST", f"/guilds/{require_snowflake(guild_id)}/roles",
+                                  json_body=body, headers=headers)
+
+    async def get_messages(self, channel_id: str, *, limit: int) -> list[dict[str, Any]]:
+        """Newest-first messages of a channel (GET /channels/{id}/messages?limit=N, 1 <= N <= 100)."""
+        if not 1 <= limit <= 100:
+            raise ValueError("limit must be 1-100")
+        result = await self.request("GET", f"/channels/{require_snowflake(channel_id)}/messages?limit={limit}")
+        return result if isinstance(result, list) else []
+
+    async def get_reaction_users(self, channel_id: str, message_id: str, emoji: str, *,
+                                 limit: int = 100, after: str | None = None) -> list[dict[str, Any]]:
+        if not 1 <= limit <= 100:
+            raise ValueError("limit must be 1-100")
+        path = (f"/channels/{require_snowflake(channel_id)}/messages/{require_snowflake(message_id)}"
+                f"/reactions/{encode_emoji(emoji)}{self.REACTION_USERS_SUFFIX}?limit={limit}")
+        if after is not None:
+            path += f"&after={require_snowflake(after)}"
+        result = await self.request("GET", path)
+        if isinstance(result, dict):          # Fluxer documents a paged object for /users
+            result = result.get("users")
+        return result if isinstance(result, list) else []
+
+    async def remove_emoji_reactions(self, channel_id: str, message_id: str, emoji: str) -> None:
+        await self.request("DELETE", f"/channels/{require_snowflake(channel_id)}/messages/"
+                                     f"{require_snowflake(message_id)}/reactions/{encode_emoji(emoji)}")
+
+    async def remove_all_reactions(self, channel_id: str, message_id: str) -> None:
+        await self.request("DELETE", f"/channels/{require_snowflake(channel_id)}/messages/"
+                                     f"{require_snowflake(message_id)}/reactions")
+
 
 async def resolve_endpoints(
     session: aiohttp.ClientSession,

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections.abc import Awaitable, Callable
 
 import aiohttp
@@ -247,6 +248,14 @@ CALLS: list[tuple[str, Callable[[FluxerREST, str], Awaitable[object]]]] = [
     ("get_message message", lambda r, v: r.get_message("1", v)),
     ("delete_message channel", lambda r, v: r.delete_message(v, "2")),
     ("delete_message message", lambda r, v: r.delete_message("1", v)),
+    ("create_role guild", lambda r, v: r.create_role(v, name="x", mentionable=False)),
+    ("get_messages channel", lambda r, v: r.get_messages(v, limit=1)),
+    ("get_reaction_users channel", lambda r, v: r.get_reaction_users(v, "2", "\U0001F64B")),
+    ("get_reaction_users message", lambda r, v: r.get_reaction_users("1", v, "\U0001F64B")),
+    ("remove_emoji_reactions channel", lambda r, v: r.remove_emoji_reactions(v, "2", "\U0001F64B")),
+    ("remove_emoji_reactions message", lambda r, v: r.remove_emoji_reactions("1", v, "\U0001F64B")),
+    ("remove_all_reactions channel", lambda r, v: r.remove_all_reactions(v, "2")),
+    ("remove_all_reactions message", lambda r, v: r.remove_all_reactions("1", v)),
 ]
 
 
@@ -524,3 +533,163 @@ async def test_dropped_connections_raise_client_errors_and_change_no_state(fake,
     assert {r.status for r in state.requests} == {0}
     assert set(attempts) == {("GET", "/api/v1/guilds/1001"), ("POST", "/api/v1/channels/1/messages")}
     assert attempts.count(("POST", "/api/v1/channels/1/messages")) == 1
+
+
+# Live-capability groundwork: role creation, channel message lists, reactor lists and bulk reaction removal
+
+WARNING_EMOJI = "⚠️"
+PLAY_EMOJI = "▶️"
+RAISED_HAND = "\U0001F64B"
+
+
+async def test_create_role_sends_fixed_permissions_and_returns_the_role(fake, session):
+    state, base = fake
+    role = await make_rest(session, base).create_role("1", name="live_ping_test", mentionable=True)
+    (rec,) = state.requests
+    assert rec.method == "POST"
+    assert rec.path == "/api/v1/guilds/1/roles"
+    assert rec.payload == {
+        "name": "live_ping_test", "permissions": "0", "color": 0, "hoist": False, "mentionable": True,
+    }
+    assert role["id"] == "7001"
+    assert role["name"] == "live_ping_test"
+    assert role["permissions"] == "0"
+    assert role["mentionable"] is True
+
+
+async def test_create_role_has_no_permissions_parameter():
+    assert "permissions" not in inspect.signature(FluxerREST.create_role).parameters
+
+
+async def test_create_role_sends_audit_reason_header(fake, session):
+    state, base = fake
+    await make_rest(session, base).create_role("1", name="x", mentionable=False, reason="fluxer panel live test")
+    assert state.requests[0].headers["x-audit-log-reason"] == "fluxer panel live test"
+
+
+@pytest.mark.parametrize("name", ["", "x" * 101, "bad\tname"], ids=["blank", "too-long", "non-printable"])
+async def test_create_role_bad_name_raises_before_any_request(fake, session, name):
+    state, base = fake
+    with pytest.raises(ValueError):
+        await make_rest(session, base).create_role("1", name=name, mentionable=False)
+    assert state.requests == []
+
+
+async def test_get_messages_limit_one_returns_only_the_newest_surviving_message(fake, session):
+    state, base = fake
+    rest = make_rest(session, base)
+    older = (await rest.send_message("1", content="older"))["id"]
+    newer = (await rest.send_message("1", content="newer"))["id"]
+    await rest.delete_message("1", newer)
+    newest = await rest.get_messages("1", limit=1)
+    assert [m["id"] for m in newest] == [older]
+    assert newest[0]["content"] == "older"
+    assert state.requests[-1].method == "GET"
+
+
+async def test_get_messages_is_newest_first_across_the_limit(fake, session):
+    _, base = fake
+    rest = make_rest(session, base)
+    ids = [(await rest.send_message("1", content=str(n)))["id"] for n in range(3)]
+    assert [m["id"] for m in await rest.get_messages("1", limit=2)] == [ids[2], ids[1]]
+
+
+@pytest.mark.parametrize("limit", [0, 101])
+async def test_get_messages_limit_out_of_range_raises_without_request(fake, session, limit):
+    state, base = fake
+    with pytest.raises(ValueError):
+        await make_rest(session, base).get_messages("1", limit=limit)
+    assert state.requests == []
+
+
+async def test_get_reaction_users_hits_users_path_and_returns_id_order(fake, session):
+    state, base = fake
+    state.reactions[("1", "2")] = {RAISED_HAND: ["1003", "1001", "1002"]}
+    users = await make_rest(session, base).get_reaction_users("1", "2", RAISED_HAND)
+    (rec,) = state.requests
+    assert rec.path == "/api/v1/channels/1/messages/2/reactions/" + RAISED_HAND + "/users"
+    assert [u["id"] for u in users] == ["1001", "1002", "1003"]
+
+
+async def test_get_reaction_users_flags_the_bot(fake, session):
+    state, base = fake
+    await make_rest(session, base).add_reaction("1", "2", RAISED_HAND)
+    state.reactions[("1", "2")][RAISED_HAND].insert(0, "1001")
+    users = await make_rest(session, base).get_reaction_users("1", "2", RAISED_HAND)
+    assert users == [{"id": "1001", "bot": False}, {"id": state.bot_user_id, "bot": True}]
+
+
+async def test_get_reaction_users_respects_limit_and_after(fake, session):
+    state, base = fake
+    state.reactions[("1", "2")] = {RAISED_HAND: ["1001", "1002", "1003", "1004"]}
+    rest = make_rest(session, base)
+    assert [u["id"] for u in await rest.get_reaction_users("1", "2", RAISED_HAND, limit=2)] == ["1001", "1002"]
+    assert [u["id"] for u in await rest.get_reaction_users("1", "2", RAISED_HAND, after="1002")] == ["1003", "1004"]
+    page = await rest.get_reaction_users("1", "2", RAISED_HAND, limit=1, after="1001")
+    assert [u["id"] for u in page] == ["1002"]
+
+
+async def test_get_reaction_users_unwraps_a_paged_object(fake, session):
+    state, base = fake
+    state.overrides[f"GET /api/v1/channels/1/messages/2/reactions/{RAISED_HAND}/users"] = Override(
+        200, b'{"users": [{"id": "1001", "bot": false}]}'
+    )
+    users = await make_rest(session, base).get_reaction_users("1", "2", RAISED_HAND)
+    assert users == [{"id": "1001", "bot": False}]
+
+
+async def test_get_reaction_users_encodes_play_emoji_with_variation_selector(fake, session):
+    state, base = fake
+    await make_rest(session, base).get_reaction_users("1", "2", PLAY_EMOJI)
+    assert "/reactions/%E2%96%B6%EF%B8%8F/users" in state.requests[0].raw_path
+
+
+async def test_remove_emoji_reactions_clears_only_that_emoji(fake, session):
+    _, base = fake
+    rest = make_rest(session, base)
+    mid = (await rest.send_message("1", content="x"))["id"]
+    await rest.add_reaction("1", mid, PLAY_EMOJI)
+    await rest.add_reaction("1", mid, RAISED_HAND)
+    assert await rest.remove_emoji_reactions("1", mid, PLAY_EMOJI) is None
+    left = (await rest.get_message("1", mid))["reactions"]
+    assert [r["emoji"]["name"] for r in left] == [RAISED_HAND]
+
+
+async def test_remove_all_reactions_clears_every_emoji(fake, session):
+    _, base = fake
+    rest = make_rest(session, base)
+    mid = (await rest.send_message("1", content="x"))["id"]
+    await rest.add_reaction("1", mid, PLAY_EMOJI)
+    await rest.add_reaction("1", mid, RAISED_HAND)
+    assert await rest.remove_all_reactions("1", mid) is None
+    assert "reactions" not in await rest.get_message("1", mid)
+
+
+async def test_bulk_removal_leaves_other_messages_alone(fake, session):
+    _, base = fake
+    rest = make_rest(session, base)
+    first = (await rest.send_message("1", content="a"))["id"]
+    second = (await rest.send_message("1", content="b"))["id"]
+    await rest.add_reaction("1", first, RAISED_HAND)
+    await rest.add_reaction("1", second, RAISED_HAND)
+    await rest.remove_all_reactions("1", first)
+    assert "reactions" not in await rest.get_message("1", first)
+    assert [r["emoji"]["name"] for r in (await rest.get_message("1", second))["reactions"]] == [RAISED_HAND]
+
+
+@pytest.mark.parametrize("method, path, call", [
+    ("POST", "/api/v1/guilds/1/roles", lambda r: r.create_role("1", name="x", mentionable=False)),
+    ("GET", "/api/v1/channels/1/messages", lambda r: r.get_messages("1", limit=1)),
+    ("GET", f"/api/v1/channels/1/messages/2/reactions/{RAISED_HAND}/users",
+     lambda r: r.get_reaction_users("1", "2", RAISED_HAND)),
+    ("DELETE", f"/api/v1/channels/1/messages/2/reactions/{RAISED_HAND}",
+     lambda r: r.remove_emoji_reactions("1", "2", RAISED_HAND)),
+    ("DELETE", "/api/v1/channels/1/messages/2/reactions", lambda r: r.remove_all_reactions("1", "2")),
+], ids=["create_role", "get_messages", "get_reaction_users", "remove_emoji_reactions", "remove_all_reactions"])
+async def test_new_calls_surface_a_403(fake, session, method, path, call):
+    state, base = fake
+    state.overrides[f"{method} {path}"] = Override(403, b'{"code":"MISSING_PERMISSIONS","message":"x"}')
+    with pytest.raises(FluxerHTTPError) as info:
+        await call(make_rest(session, base))
+    assert info.value.status == 403
+    assert info.value.code == "MISSING_PERMISSIONS"
