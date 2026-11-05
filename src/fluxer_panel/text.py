@@ -207,3 +207,25 @@ FOLLOW_REASON = {
     "hierarchy": "the follow role is no longer below the bot's top role",
     "forbidden": "Fluxer refused the role change",
 }
+# Wake requests: the requester's DM, with a note after it when no request opens; the admins' DM; and the close DMs.
+# The note's key is the status kind, or "none" (no status yet), or "no_manager" (the card has no Pterodactyl manager).
+WAKE_SENT = "Sending your request to the admins for {card}."
+WAKE_NOTES = {
+    "ready": "It's already running.",
+    "waking": "It's already starting.",
+    "going_to_sleep": "It's shutting down right now.",
+    "not_responding": "It's running but not answering.",
+    "unavailable": "It's unavailable right now.",
+    "unknown": "Its status is unknown.",
+    "none": "It has no status yet.",
+    "no_manager": "The bot can't see its server, so the admins will check.",
+}
+WAKE_ADMIN = "Someone wants {card} ({slug}). Status: {status}. Asked by: {requesters}"
+WAKE_ADMIN_OPEN = " · open request"
+WAKE_READY = "{card} is ready."
+WAKE_GAVE_UP = "Nobody could start {card} right now."
+WAKE_ADMIN_CLOSED = {
+    "ready": "{card} ({slug}) is ready. The request from {n} people is closed.",
+    "expired": "Nobody started {card} ({slug}). The request from {n} people has expired.",
+    "cleared": "The request for {card} ({slug}) from {n} people was cleared.",
+}
