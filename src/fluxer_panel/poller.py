@@ -29,6 +29,7 @@ from fluxer_panel.logs import log_event
 from fluxer_panel.resolver import CardStatus, next_action_text, resolve
 from fluxer_panel.sources.base import HostManager, PowerAction, PowerState, ProbeFailed, ProbeResult
 from fluxer_panel.sources.registry import Sources
+from fluxer_panel.wake import WakeRequests
 
 log = logging.getLogger(__name__)
 
@@ -69,12 +70,17 @@ class Poller:
         self._names_checked: dict[int, float] = {}
         self._statuses: dict[int, CardStatus | None] = {}   # each card's latest evaluated status, for wake requests
         self._requested: dict[int, int] = {}                 # each card's open wake request count, read per tick
+        self._wake: WakeRequests | None = None               # set by set_wake, before the loop starts
         self._deleted: OrderedDict[tuple[str, str], None] = OrderedDict()
         self._warned_no_channel = False
         self._games_guild = games_guild if games_guild is not None else GamesGuild(rest, config)
 
     def kick(self) -> None:
         self._kick.set()
+
+    def set_wake(self, wake: WakeRequests) -> None:
+        """Given the wake requests once, after both are built: the requests read this poller's statuses, so it comes first."""
+        self._wake = wake
 
     def status_of(self, card_id: int) -> CardStatus | None:
         """The card's status at its last evaluation, or None when it has none (never evaluated, or its evaluation failed)."""
@@ -166,6 +172,11 @@ class Poller:
         the board is brought up to date after the cards. When this tick's read of the stored board fails, the cards
         publish as they would with a board stored, and no new board is posted in this tick."""
         self._requested = await self._db.run(wake_requests.open_counts)
+        await self._tick_cards()
+        await self._after_tick()
+
+    async def _tick_cards(self) -> None:
+        """The card and board passes. Without a games channel there is no board, so only the cards are published."""
         live = await self._db.run(lambda c: cards.list_cards(c, "live"))
         self._forget_cards_not_in({card.id for card in live})
         sem = asyncio.Semaphore(self._config.poll_concurrency)
@@ -184,6 +195,12 @@ class Poller:
             results = await asyncio.gather(*(self._evaluate_and_publish(card, sem) for card in live))
         await self._board_after_cards({result.card.id: result.status for result in results}, channel_id,
                                       may_post=stored is not None)
+
+    async def _after_tick(self) -> None:
+        """The passes that run on every tick, with or without a games channel. A request that is ready or expired closes
+        here. Closing kicks the poller, so the next loop renders the card without the suffix."""
+        if self._wake is not None:
+            await self._wake.close_due()
 
     def _forget_cards_not_in(self, live_ids: set[int]) -> None:
         """Drops the cached schedule, channel name check and status of every card not in `live_ids`, the live set of this

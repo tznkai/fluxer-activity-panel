@@ -3,7 +3,7 @@
 """The press handler used in production. `Presses` has already filtered, rate limited and logged each press, and
 `Interactions` does what the press asks.
 
-The action methods are stubs in this phase: each logs that the press is unhandled. Later phases fill them in.
+The play-now action is still a stub in this phase: it logs that the press is unhandled. Later phases fill it in.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.logs import log_event
 from fluxer_panel.presses import Action, Press, Surface
 from fluxer_panel.seeding import Seeder
+from fluxer_panel.wake import WakeRequests
 
 log = logging.getLogger(__name__)
 
@@ -31,8 +32,9 @@ log = logging.getLogger(__name__)
 class Interactions:
     def __init__(self, *, db: Database, rest: FluxerREST, config: Config, locks: CardLocks, games_guild: GamesGuild,
                  seeder: Seeder, identity: BotIdentity, roles: RoleCache, clock: Callable[[], float] = time.time,
-                 kick: Callable[[], None] = lambda: None) -> None:
+                 kick: Callable[[], None] = lambda: None, wake: WakeRequests | None = None) -> None:
         self._db = db
+        self._wake = wake
         self._rest = rest
         self._config = config
         self._locks = locks
@@ -55,7 +57,10 @@ class Interactions:
                 await self.play_now(press)
 
     async def wake(self, press: Press) -> None:
-        log_event(log, "press_unhandled", card_id=press.card_id, action=press.action.value)
+        """A wake press on any surface (card, copy or play-now post) wakes the card (AC4.8)."""
+        if self._wake is None:
+            return
+        await self._wake.press(press.card_id, press.user_id)
 
     async def follow(self, press: Press) -> None:
         card = await self._db.run(lambda c: cards.get_by_id(c, press.card_id))

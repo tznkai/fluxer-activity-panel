@@ -32,6 +32,7 @@ user-facing description, the purge status file format and the "Exit 3" recovery 
   `notify.py` (DMs to the admins and to one user), `interaction_settings.py` (the global switch, the per-card off
   switch and the degraded channels) and `follow_roles.py` (the only module that changes a role: the 🔔 follow toggle
   and each card's follow role).
+  `wake.py` (wake presses, and closing a request on ready or expiry), `wake_requests.py` (the request store).
 - `src/fluxer_panel/sources/`: `base.py` (result types and the `HostManager`/`Probe` protocols), `registry.py`
   (the kind-to-plugin map), `pterodactyl.py` (host manager), `minecraft.py` (Bedrock and Java probes), `a2s.py`
   (A2S probe), `_probe_util.py` (the shared guard and limits).

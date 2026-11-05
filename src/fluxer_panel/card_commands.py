@@ -10,7 +10,7 @@ import logging
 import time
 from collections.abc import Callable, Container
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import aiohttp
 
@@ -26,6 +26,10 @@ from fluxer_panel.logs import log_event
 from fluxer_panel.presses import FOLLOW_EMOJI, PLAY_NOW_EMOJI, WAKE_EMOJI
 from fluxer_panel.seeding import Seeder, has_play_now_target, wanted_emoji
 from fluxer_panel.sources.registry import PROBES, Sources, known_manager_kinds, manager_ref_hints
+
+if TYPE_CHECKING:
+    # wake.py imports CardLocks from this module, so the wake requests are named for type checking only.
+    from fluxer_panel.wake import WakeRequests
 
 log = logging.getLogger(__name__)
 
@@ -83,6 +87,7 @@ class CardContext:
     games_guild: GamesGuild | None = None
     seeder: Seeder | None = None
     identity: BotIdentity | None = None
+    wake: WakeRequests | None = None
 
 
 @dataclass(frozen=True)

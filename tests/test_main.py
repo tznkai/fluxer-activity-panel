@@ -31,6 +31,7 @@ from fluxer_panel import text as panel_text
 from fluxer_panel.__main__ import IDENTIFY_PROPERTIES, purge_once, run
 from fluxer_panel.config import Config
 from fluxer_panel.db import LATEST_VERSION, Database
+from fluxer_panel.wake import WakeRequests
 from tests.fakes import (
     GATEWAY_STATE,
     FakeFluxerState,
@@ -562,6 +563,7 @@ class _PollerProbe:
         self.started = asyncio.Event()
         self.cancelled = False
         self.rest_answered: bool | None = None
+        self.wake: Any = None           # what `set_wake` was given, before the loop started
 
 
 def _probe_poller(monkeypatch: pytest.MonkeyPatch) -> _PollerProbe:
@@ -573,6 +575,12 @@ def _probe_poller(monkeypatch: pytest.MonkeyPatch) -> _PollerProbe:
 
         def kick(self) -> None:
             pass
+
+        def set_wake(self, wake: Any) -> None:
+            probe.wake = wake
+
+        def status_of(self, card_id: int) -> None:
+            return None
 
         async def on_message_delete(self, event: Any) -> None:
             pass
@@ -644,6 +652,20 @@ async def _ready_gateway_script(ws, index, state):
     await expect(ws, 2)
     await send(ws, 0, {"session_id": "S1", "user": {"id": "5000"}}, t="READY", s=1)
     await hold(ws)
+
+
+async def test_the_poller_is_given_the_wake_requests_before_it_starts(aiohttp_server, tmp_path, monkeypatch):
+    probe = _probe_poller(monkeypatch)
+    config, db = await _in_process_panel(aiohttp_server, tmp_path, _ready_gateway_script)
+    try:
+        task = asyncio.create_task(run(config, db))
+        await asyncio.wait_for(probe.started.wait(), BOUND)
+        assert isinstance(probe.wake, WakeRequests)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, BOUND)
+    finally:
+        db.close()
 
 
 async def test_purge_task_is_cancelled_when_run_is_cancelled_from_outside(

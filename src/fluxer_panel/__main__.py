@@ -33,6 +33,7 @@ from fluxer_panel.presses import Presses
 from fluxer_panel.purge import purge_loop, run_purge
 from fluxer_panel.seeding import Seeder
 from fluxer_panel.sources.registry import build_sources
+from fluxer_panel.wake import WakeRequests
 
 log = logging.getLogger("fluxer_panel")
 
@@ -82,9 +83,14 @@ async def run(config: Config, db: Database) -> None:
             poller = Poller(db=db, rest=rest, sources=sources, config=config, locks=card_ctx.locks,
                             games_guild=games_guild)
             card_ctx.kick = poller.kick
+            # The wake requests read the poller's statuses, so they are built after the poller and handed to it here.
+            wake = WakeRequests(db=db, rest=rest, config=config, sources=sources, locks=card_ctx.locks,
+                                status_of=poller.status_of, kick=poller.kick)
+            poller.set_wake(wake)
+            card_ctx.wake = wake
             interactions = Interactions(db=db, rest=rest, config=config, locks=card_ctx.locks,
                                         games_guild=games_guild, seeder=seeder, identity=identity, roles=roles,
-                                        kick=poller.kick)
+                                        kick=poller.kick, wake=wake)
             presses = Presses(db=db, rest=rest, config=config, handler=interactions, games_guild=games_guild,
                               pacer=pacer, identity=identity)
             bot = Bot(rest=rest, config=config, roles=roles, card_ctx=card_ctx,

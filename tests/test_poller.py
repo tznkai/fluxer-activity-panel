@@ -31,12 +31,18 @@ from fluxer_panel.bot import Bot
 from fluxer_panel.card_commands import CardContext, CardLocks
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
+from fluxer_panel.games import BotIdentity, GamesGuild
+from fluxer_panel.interactions import Interactions
 from fluxer_panel.logs import setup_logging
+from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.poller import _DELETED_CAP, Poller
+from fluxer_panel.presses import WAKE_EMOJI, Presses
 from fluxer_panel.resolver import StatusKind
+from fluxer_panel.seeding import Seeder
 from fluxer_panel.sources.base import PlayerCounts, ProbeDetails, ProbeFailed, ProbeResult
 from fluxer_panel.sources.pterodactyl import PterodactylManager
 from fluxer_panel.sources.registry import Sources
+from fluxer_panel.wake import WakeRequests
 from tests.fake_ptero import FakePanelState, FakeServer, Scripted, make_panel_app
 from tests.fake_ptero import schedule as panel_schedule
 from tests.fake_ptero import task as panel_task
@@ -1717,3 +1723,126 @@ async def test_status_of_returns_the_last_evaluated_status_and_none_once_the_car
     await db.run(lambda c: cards.set_state(c, card_id, "archived", 0))
     await poller.tick()
     assert poller.status_of(card_id) is None
+
+
+# Wake requests in the poller's ticks (AC2.1, AC2.8) -----------------------------------------------
+
+WAKE_BOT = "5000"          # the bot's own user id in these tests
+WAKER = "2101"             # a member who presses the wake emoji
+CARD_MESSAGE = "5001"      # the first card message the fake posts in the games channel
+CARD_TITLE = "Alpha"
+WAKE_EXPIRY = 7200         # WAKE_REQUEST_EXPIRY_SECONDS is not set in these tests, so the default applies
+
+
+class RecordingWake:
+    """Stands in for WakeRequests where only the tick's close pass matters."""
+
+    def __init__(self) -> None:
+        self.closes = 0
+
+    async def close_due(self) -> int:
+        self.closes += 1
+        return 0
+
+
+def no_games_config() -> Config:
+    return replace(config_for(), games_channel_id=None)
+
+
+def wire_wake(world: World, poller: Poller) -> WakeRequests:
+    """The wake requests the way `__main__` builds them, handed to the poller."""
+    wake = WakeRequests(db=world.db, rest=world.rest, config=world.config, sources=world.sources, locks=world.locks,
+                        status_of=poller.status_of, clock=world.clock, kick=poller.kick)
+    poller.set_wake(wake)
+    return wake
+
+
+def press_bot(world: World, poller: Poller, wake: WakeRequests) -> Bot:
+    """A bot whose wake presses reach `wake`, through the same presses and interactions as the running process."""
+    identity = BotIdentity(user_id=WAKE_BOT)
+    pacer = ChannelPacer(max_calls=1000)
+    games = GamesGuild(world.rest, world.config)
+    interactions = Interactions(db=world.db, rest=world.rest, config=world.config, locks=world.locks, games_guild=games,
+                                seeder=Seeder(rest=world.rest, pacer=pacer, db=world.db), identity=identity,
+                                roles=RoleCache(world.rest), kick=poller.kick, wake=wake)
+    presses = Presses(db=world.db, rest=world.rest, config=world.config, handler=interactions, games_guild=games,
+                      pacer=pacer, identity=identity, clock=world.clock)
+    return Bot(rest=world.rest, config=world.config, roles=RoleCache(world.rest), presses=presses, identity=identity)
+
+
+async def press_wake(bot: Bot, message: str) -> None:
+    await bot.on_dispatch("MESSAGE_REACTION_ADD", {"user_id": WAKER, "channel_id": GAMES, "message_id": message,
+                                                   "guild_id": GUILD, "emoji": {"name": WAKE_EMOJI}})
+
+
+async def open_counts_of(db: Database) -> dict[int, int]:
+    return await db.run(lambda c: wake_requests.open_counts(c))
+
+
+def dm_text(state: FakeFluxerState) -> str:
+    return json.dumps([r.payload for r in dm_messages(state)], ensure_ascii=False)
+
+
+async def test_a_wake_press_shows_requested_on_the_next_tick_and_closes_when_the_server_runs(
+        world: World, poller: Poller, db: Database):
+    world.panel.servers[SERVER].current_state = "offline"
+    card_id = await seed(db, "alpha", title=CARD_TITLE, manager=cards.ManagerRef("pterodactyl", SERVER))
+    wake = wire_wake(world, poller)
+    bot = press_bot(world, poller, wake)
+    await poller.tick()
+    [posted] = posts(world.fluxer)
+    assert fields_of(posted.payload["embeds"][0])[text.FIELD_STATUS] == "Asleep"
+
+    await press_wake(bot, CARD_MESSAGE)
+    assert await open_counts_of(db) == {card_id: 1}
+    assert text.WAKE_SENT.format(card=CARD_TITLE) in dm_text(world.fluxer)
+
+    await poller.tick()
+    [suffixed] = requests_for(world.fluxer, "PATCH", POSTED)
+    assert fields_of(suffixed.payload["embeds"][0])[text.FIELD_STATUS] == "Asleep · Requested · 1"
+
+    world.panel.servers[SERVER].current_state = "running"
+    await poller.tick()                 # the server runs: this tick's close pass closes the request
+    assert await open_counts_of(db) == {}
+    assert text.WAKE_READY.format(card=CARD_TITLE) in dm_text(world.fluxer)
+
+    await poller.tick()                 # the tick after the close renders the card without the suffix
+    last = requests_for(world.fluxer, "PATCH", POSTED)[-1]
+    assert "Requested" not in fields_of(last.payload["embeds"][0])[text.FIELD_STATUS]
+
+
+async def test_without_a_games_channel_an_expired_request_closes_and_the_copy_drops_the_suffix(
+        world: World, db: Database):
+    world.panel.servers[SERVER].current_state = "offline"
+    card_id = await seed(db, "alpha", title=CARD_TITLE, manager=cards.ManagerRef("pterodactyl", SERVER))
+    await subscribe(db, card_id, SUB)
+    await open_requests(db, card_id, WAKER)           # opened at clock 0
+    poller = world.make_poller(config=no_games_config())
+    wire_wake(world, poller)
+
+    await poller.tick()
+    [copy_post] = copy_posts(world.fluxer, SUB)
+    assert fields_of(copy_post.payload["embeds"][0])[text.FIELD_STATUS] == "Asleep · Requested · 1"
+
+    world.clock.now = WAKE_EXPIRY + 1.0
+    await poller.tick()                 # the close pass runs on the copies-only path too
+    assert await open_counts_of(db) == {}
+    assert text.WAKE_GAVE_UP.format(card=CARD_TITLE) in dm_text(world.fluxer)
+
+    await poller.tick()
+    assert "Requested" not in fields_of(copy_patches(world.fluxer, SUB)[-1].payload["embeds"][0])[text.FIELD_STATUS]
+
+
+async def test_each_tick_runs_the_close_pass_with_a_games_channel(world: World, poller: Poller):
+    wake = RecordingWake()
+    poller.set_wake(wake)
+    await poller.tick()
+    assert wake.closes == 1
+
+
+async def test_each_tick_runs_the_close_pass_without_a_games_channel(world: World):
+    poller = world.make_poller(config=no_games_config())
+    wake = RecordingWake()
+    poller.set_wake(wake)
+    await poller.tick()
+    assert wake.closes == 1
