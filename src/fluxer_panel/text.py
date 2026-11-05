@@ -149,6 +149,14 @@ PLAY_NOW_IS_GAMES = "Play-now messages can't go in the games channel."
 PLAY_NOW_CONTENT = "Someone wants to play {card} now"
 PLAY_NOW_ENDED_CONTENT = "The call to play {card} has ended."
 PLAY_NOW_PLAYING = "{n} playing"
+# The presser's DMs for a play-now press that is refused or cannot post. The card title goes through render.escape.
+# The cooldown's link is a jump link to the earlier play-now message, labelled with our own wording (JUMP_LABEL_MESSAGE).
+JUMP_LABEL_MESSAGE = "open it"
+PLAY_NOW_ELSEWHERE = ("Play now only works in the main community. Tap \U0001F64B on the card in the games channel.")
+PLAY_NOW_UNAVAILABLE = "Play now isn't available for {card} right now."
+PLAY_NOW_NO_CHANNEL = "Play now isn't set up for {card}."
+PLAY_NOW_COOLDOWN = "Someone already called for {card}: {link}"
+PLAY_NOW_COOLDOWN_NO_LINK = "Someone already called for {card} a moment ago."
 PROBE_ALERT = "Heads up: card {slug} reports its server running, but the game isn't answering queries."
 # Card subscriptions: a copy of a card in another text channel. The channel is shown as a mention, the only input here.
 SUBSCRIPTION_USAGE = ("Usage: !card subscribe <slug> <channel>, where <channel> is a channel link or "

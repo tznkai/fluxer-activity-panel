@@ -3,7 +3,8 @@
 """The press handler used in production. `Presses` has already filtered, rate limited and logged each press, and
 `Interactions` does what the press asks.
 
-The play-now action is still a stub in this phase: it logs that the press is unhandled. Later phases fill it in.
+The play-now message goes out through `send_play_now`, the one place that sends it. It is refused before any REST call
+when aimed at the games channel, and it mentions only the card's follow role, through `play_now_mentions`.
 """
 
 from __future__ import annotations
@@ -11,10 +12,12 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
+from typing import Any
 
-from fluxer_client.rest import FluxerREST
+from fluxer_client.ids import is_snowflake
+from fluxer_client.rest import FluxerHTTPError, FluxerREST
 from fluxer_client.roles import RoleCache
-from fluxer_panel import cards, follow_roles, notify, render, text
+from fluxer_panel import cards, follow_roles, notify, play_now, render, text
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.cards import Card
 from fluxer_panel.config import Config
@@ -22,17 +25,35 @@ from fluxer_panel.db import Database
 from fluxer_panel.follow_roles import Toggle
 from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.logs import log_event
-from fluxer_panel.presses import Action, Press, Surface
+from fluxer_panel.presses import PLAY_NOW_EMOJI, WAKE_EMOJI, Action, Press, Surface
+from fluxer_panel.resolver import CardStatus, StatusKind
 from fluxer_panel.seeding import Seeder
 from fluxer_panel.wake import WakeRequests
 
 log = logging.getLogger(__name__)
 
 
+class GamesChannelRefused(Exception):
+    """A play-now message was aimed at the games channel. Raised before any REST call (AC4.5)."""
+
+
+def play_now_mentions(role_id: str | None) -> dict[str, Any]:
+    if role_id is None:
+        return {"parse": []}
+    return {"parse": [], "roles": [role_id], "replied_user": False}   # ALLOWED_PLAY_NOW (see the Phase 1 note)
+
+
+def _role_in(card: Card, guild_id: str) -> str | None:
+    """The card's follow role when it belongs to `guild_id`. A role is never mentioned in another community."""
+    follow = card.follow_role
+    return follow.role_id if follow is not None and follow.guild_id == guild_id else None
+
+
 class Interactions:
     def __init__(self, *, db: Database, rest: FluxerREST, config: Config, locks: CardLocks, games_guild: GamesGuild,
                  seeder: Seeder, identity: BotIdentity, roles: RoleCache, clock: Callable[[], float] = time.time,
-                 kick: Callable[[], None] = lambda: None, wake: WakeRequests | None = None) -> None:
+                 kick: Callable[[], None] = lambda: None, wake: WakeRequests | None = None,
+                 status_of: Callable[[int], CardStatus | None] = lambda _id: None) -> None:
         self._db = db
         self._wake = wake
         self._rest = rest
@@ -44,6 +65,7 @@ class Interactions:
         self._roles = roles
         self._clock = clock
         self._kick = kick
+        self._status_of = status_of
         self._follow_deps = follow_roles.FollowDeps(db=db, rest=rest, config=config, roles=roles, identity=identity)
         self._follow_alerted: set[tuple[int, str]] = set()   # (card id, reason) whose admin alert was sent
 
@@ -111,7 +133,102 @@ class Interactions:
         await notify.dm_admins(self._rest, self._config, content, failed_event="admin_alert_failed")
 
     async def play_now(self, press: Press) -> None:
-        log_event(log, "press_unhandled", card_id=press.card_id, action=press.action.value)
+        card = await self._db.run(lambda c: cards.get_by_id(c, press.card_id))
+        if card is None or card.state != "live":
+            return
+        if not press.surface.home_community:
+            await notify.dm_user(self._rest, press.user_id, text.PLAY_NOW_ELSEWHERE)
+            return
+        target = await self._play_now_target(press, card)
+        if target is None:
+            return
+        channel_id, guild_id = target
+        role_id = _role_in(card, guild_id)
+        status = self._status_of(card.id)
+        offers_wake = status is not None and status.kind is StatusKind.ASLEEP
+        wanted = [PLAY_NOW_EMOJI] + ([WAKE_EMOJI] if offers_wake else [])
+        now = int(self._clock())
+        cooling = None
+        message_id = None
+        try:
+            # The cooldown check and the post share the card's lock, so two presses cannot both post (AC4.7).
+            async with self._locks.get(card.id):
+                last = await self._db.run(lambda c: play_now.latest_for_card(c, card.id))
+                if last is not None and now - last.created_at < self._config.play_now_cooldown_seconds:
+                    cooling = last
+                else:
+                    message_id = await self._send_and_store(card, channel_id, guild_id, role_id, press.user_id,
+                                                            offers_wake=offers_wake, now=now)
+        except GamesChannelRefused:
+            log_event(log, "play_now_refused", level=logging.WARNING, card_id=card.id, reason="games_channel")
+            return
+        except FluxerHTTPError as exc:
+            log_event(log, "play_now_failed", level=logging.WARNING, card_id=card.id, channel_id=channel_id,
+                      status=exc.status)
+            await self._dm_presser(press.user_id, text.PLAY_NOW_UNAVAILABLE, card)
+            return
+        if cooling is not None:
+            await self._dm_cooldown(press.user_id, card, cooling)
+            return
+        if message_id is None:   # not reached: a post either stores its id or raises
+            return
+        await self._seeder.seed(channel_id, message_id, wanted)   # outside the lock: a 429 retry never stalls the card
+        log_event(log, "play_now_posted", card_id=card.id, channel_id=channel_id)
+
+    async def _play_now_target(self, press: Press, card: Card) -> tuple[str, str] | None:
+        """(channel id, community id) for the play-now message, or None after the presser has been told why not. The
+        order is fixed: a copy at home, then the card's own verified channel, then PLAY_NOW_CHANNEL_ID."""
+        if press.surface.kind == "copy" and press.surface.guild_id is not None:
+            return press.surface.channel_id, press.surface.guild_id
+        own = card.play_now_channel
+        if own is not None and own.verified:
+            return own.channel_id, own.guild_id
+        configured = self._config.play_now_channel_id
+        if configured is None:
+            await self._dm_presser(press.user_id, text.PLAY_NOW_NO_CHANNEL, card)
+            return None
+        try:
+            channel = await self._rest.get_channel(configured)
+        except Exception as exc:  # noqa: BLE001 - an unreachable channel is refused by DM, never raised
+            log_event(log, "play_now_failed", level=logging.WARNING, channel_id=configured,
+                      reason=type(exc).__name__)
+            await self._dm_presser(press.user_id, text.PLAY_NOW_UNAVAILABLE, card)
+            return None
+        guild_id = channel.get("guild_id")
+        if not is_snowflake(guild_id):
+            await self._dm_presser(press.user_id, text.PLAY_NOW_UNAVAILABLE, card)
+            return None
+        return configured, guild_id
+
+    async def _send_and_store(self, card: Card, channel_id: str, guild_id: str, role_id: str | None, presser_id: str,
+                              *, offers_wake: bool, now: int) -> str:
+        """Sends the play-now message and stores its row. Runs under the card's lock. Returns the new message's id."""
+        payload = render.play_now_message(card, role_id=role_id, playing=1, ended=False,
+                                          instance_url=self._config.instance_url)
+        sent = await self.send_play_now(channel_id, payload, role_id)
+        message_id = str(sent["id"])
+        expires_at = now + self._config.play_now_expiry_seconds
+        await self._db.run(lambda c: play_now.add(c, card_id=card.id, guild_id=guild_id, channel_id=channel_id,
+                                                  message_id=message_id, presser_id=presser_id,
+                                                  offers_wake=offers_wake, now=now, expires_at=expires_at))
+        return message_id
+
+    async def send_play_now(self, channel_id: str, payload: dict[str, Any], role_id: str | None) -> dict[str, Any]:
+        """The one send of a play-now message. A send aimed at the games channel is refused before the REST call."""
+        if channel_id == self._config.games_channel_id:
+            raise GamesChannelRefused
+        return await self._rest.send_message(channel_id, content=payload["content"], embeds=payload["embeds"],
+                                             allowed_mentions=play_now_mentions(role_id))
+
+    async def _dm_cooldown(self, user_id: str, card: Card, last: play_now.PlayNow) -> None:
+        title = render.escape(card.title)
+        if self._config.instance_url is None:
+            content = text.PLAY_NOW_COOLDOWN_NO_LINK.format(card=title)
+        else:
+            link = render.jump_link(text.JUMP_LABEL_MESSAGE, self._config.instance_url, last.guild_id,
+                                    last.channel_id, last.message_id)
+            content = text.PLAY_NOW_COOLDOWN.format(card=title, link=link)
+        await notify.dm_user(self._rest, user_id, content)
 
     async def me_too_changed(self, card_id: int, surface: Surface, user_id: str) -> None:
         log_event(log, "press_unhandled", card_id=card_id, action=Action.PLAY_NOW.value, surface=surface.kind)
