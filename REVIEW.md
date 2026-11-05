@@ -36,8 +36,8 @@ Paths are relative to this directory.
 - `src/fluxer_panel/logs.py:150` `logging.captureWarnings(True)` — Python warnings go through logging, so they are JSON lines and are redacted too.
 - `src/fluxer_client/events.py:26` `session_id: str = field(repr=False)` — the gateway session id from `Ready`, which with the token enables a session resume, is kept out of reprs.
 - `src/fluxer_client/events.py:42` `content: str = field(repr=False)` — message text is kept out of reprs and therefore out of debug output.
-- `src/fluxer_client/events.py:250` `log.warning("malformed %s payload: field %s", t, exc.field_name)` — a malformed payload is logged with the field name only.
-- `src/fluxer_client/events.py:254` `field "?"` — the catch-all logs a placeholder, not the exception text, which may carry the value.
+- `src/fluxer_client/events.py:263` `log.warning("malformed %s payload: field %s", t, exc.field_name)` — a malformed payload is logged with the field name only.
+- `src/fluxer_client/events.py:267` `field "?"` — the catch-all logs a placeholder, not the exception text, which may carry the value.
 - `src/fluxer_client/gateway.py:76` `log.warning("gateway connection failed: %r", exc)` — a plain-text `fluxer_client` record. Its repr can include the instance host in stdout logs. That is acceptable because logs are not tracked, but reviewers should know it is there. Token redaction still applies.
 - `src/fluxer_panel/poller.py:577` `log_event(log, "subscription_failed", level=logging.WARNING, card_id=card_id, channel_id=channel_id,` — a failed copy is logged with its card id, channel id and exception type only. No title, slug, channel name or message text is logged.
 
@@ -339,13 +339,13 @@ This section compares the phase 1 brief and plan with what the investigation and
 
 - **Brief assumed:** the brief says reactions act as buttons and that DM flows stand in for modals. It does not say what DM reaction events carry.
 - **True:** DM reactions have no `guild_id` and no `member`, so there are no roles. They carry an undocumented 32-character `session_id`.
-- **Consequence:** DM reactions cannot be role-gated, so treat DMs as having no guild roles. The DM `session_id` is not parsed into any event. The reaction dataclasses have no field for it, and the reaction parser builds them from named fields only (`src/fluxer_client/events.py:171` `return ReactionAdd(`). Panel code never sees it. Any future parser that reads it must keep it `repr=False` and must not log it.
+- **Consequence:** DM reactions cannot be role-gated, so treat DMs as having no guild roles. The DM `session_id` is not parsed into any event. The reaction dataclasses have no field for it, and the reaction parser builds them from named fields only (`src/fluxer_client/events.py:182` `return ReactionAdd(`). Panel code never sees it. Any future parser that reads it must keep it `repr=False` and must not log it.
 
 ### Bulk reaction events
 
 - **Brief assumed:** the phase 1 plan asked for the `MESSAGE_REACTION_ADD_MANY` shape.
 - **True:** it was not observed. The live run also did not observe `MESSAGE_REACTION_REMOVE_ALL` or `MESSAGE_REACTION_REMOVE_EMOJI`.
-- **Consequence:** `parse` returns `None` for `ADD_MANY` without logging, so a bulk add is silently dropped (`src/fluxer_client/events.py:243` `MESSAGE_REACTION_ADD_MANY`). Capture the shape before any feature depends on bulk reactions.
+- **Consequence:** `parse` returns `None` for `ADD_MANY` without logging, so a bulk add is silently dropped (`src/fluxer_client/events.py:256` `MESSAGE_REACTION_ADD_MANY`). Capture the shape before any feature depends on bulk reactions.
 
 ### Event parser
 

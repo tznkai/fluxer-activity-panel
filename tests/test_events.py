@@ -501,3 +501,55 @@ def test_message_delete_bad_id_names_field_not_value(caplog) -> None:
         assert parse("MESSAGE_DELETE", {"id": "x", "channel_id": "2001"}) is None
     [record] = warnings_for(caplog)
     assert record.getMessage() == "malformed MESSAGE_DELETE payload: field id"
+
+
+# Bot flag on reaction events: user_is_bot is True only for member.user.bot is True in a guild
+
+
+BOT_MEMBER = {"roles": ["4001"], "user": {"id": "1001", "bot": True}}
+HUMAN_MEMBER = {"roles": ["4001"], "user": {"id": "1001"}}
+
+
+@pytest.mark.parametrize("event_type", ["MESSAGE_REACTION_ADD", "MESSAGE_REACTION_REMOVE"])
+def test_reaction_from_guild_bot_member_sets_user_is_bot(event_type: str) -> None:
+    event = parse(event_type, {
+        "user_id": "1001", "channel_id": "3001", "message_id": "5001", "guild_id": "2001",
+        "emoji": {"name": "👍"}, "member": BOT_MEMBER,
+    })
+    assert event.user_is_bot is True
+
+
+@pytest.mark.parametrize("event_type", ["MESSAGE_REACTION_ADD", "MESSAGE_REACTION_REMOVE"])
+def test_reaction_from_guild_human_member_is_not_bot(event_type: str) -> None:
+    event = parse(event_type, {
+        "user_id": "1001", "channel_id": "3001", "message_id": "5001", "guild_id": "2001",
+        "emoji": {"name": "👍"}, "member": HUMAN_MEMBER,
+    })
+    assert event.user_is_bot is False
+
+
+@pytest.mark.parametrize("event_type", ["MESSAGE_REACTION_ADD", "MESSAGE_REACTION_REMOVE"])
+def test_reaction_with_string_bot_flag_is_not_bot(event_type: str) -> None:
+    member = {"roles": ["4001"], "user": {"id": "1001", "bot": "true"}}
+    event = parse(event_type, {
+        "user_id": "1001", "channel_id": "3001", "message_id": "5001", "guild_id": "2001",
+        "emoji": {"name": "👍"}, "member": member,
+    })
+    assert event.user_is_bot is False
+
+
+@pytest.mark.parametrize("event_type", ["MESSAGE_REACTION_ADD", "MESSAGE_REACTION_REMOVE"])
+def test_dm_reaction_is_not_bot(event_type: str) -> None:
+    event = parse(event_type, {
+        "user_id": "1001", "channel_id": "3002", "message_id": "5002", "emoji": {"name": "👍"},
+    })
+    assert event.user_is_bot is False
+
+
+@pytest.mark.parametrize("event_type", ["MESSAGE_REACTION_ADD", "MESSAGE_REACTION_REMOVE"])
+def test_reaction_with_member_without_user_is_not_bot(event_type: str) -> None:
+    event = parse(event_type, {
+        "user_id": "1001", "channel_id": "3001", "message_id": "5001", "guild_id": "2001",
+        "emoji": {"name": "👍"}, "member": {"roles": ["4001"]},
+    })
+    assert event.user_is_bot is False

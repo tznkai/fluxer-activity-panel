@@ -50,6 +50,7 @@ class ReactionAdd:
     guild_id: str | None
     emoji: Emoji
     member_role_ids: frozenset[str] | None
+    user_is_bot: bool = False
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,7 @@ class ReactionRemove:
     guild_id: str | None
     emoji: Emoji
     member_role_ids: frozenset[str] | None
+    user_is_bot: bool = False
 
 
 @dataclass(frozen=True)
@@ -128,6 +130,15 @@ def _roles(d: dict[str, Any]) -> frozenset[str] | None:
     return frozenset(roles)
 
 
+def _user_is_bot(d: dict[str, Any]) -> bool:
+    # Only a guild member whose user is marked bot with the boolean True. A DM has no member.
+    member = d.get("member")
+    if not isinstance(member, dict):
+        return False
+    user = member.get("user")
+    return isinstance(user, dict) and user.get("bot") is True
+
+
 def _emoji(d: dict[str, Any]) -> Emoji:
     e = _obj(d.get("emoji"), "emoji")
     name = e.get("name")
@@ -175,6 +186,7 @@ def _parse_reaction_add(raw: Any) -> ReactionAdd:
         guild_id=_opt_id(d, "guild_id"),
         emoji=_emoji(d),
         member_role_ids=_roles(d),
+        user_is_bot=_user_is_bot(d),
     )
 
 
@@ -187,6 +199,7 @@ def _parse_reaction_remove(raw: Any) -> ReactionRemove:
         guild_id=_opt_id(d, "guild_id"),
         emoji=_emoji(d),
         member_role_ids=_roles(d),
+        user_is_bot=_user_is_bot(d),
     )
 
 
