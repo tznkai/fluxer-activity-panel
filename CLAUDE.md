@@ -29,8 +29,9 @@ user-facing description, the purge status file format and the "Exit 3" recovery 
   Reactions: `presses.py` (filters, rate limits and removals for presses; the only module that knows presses are
   reactions), `interactions.py` (the press handler), `seeding.py` (adds and removes the bot's own reactions),
   `pacer.py` (the per-channel reaction budget), `games.py` (the games community lookup and the bot's identity),
-  `notify.py` (DMs to the admins and to one user) and `interaction_settings.py` (the global switch, the per-card off
-  switch and the degraded channels).
+  `notify.py` (DMs to the admins and to one user), `interaction_settings.py` (the global switch, the per-card off
+  switch and the degraded channels) and `follow_roles.py` (the only module that changes a role: the 🔔 follow toggle
+  and each card's follow role).
 - `src/fluxer_panel/sources/`: `base.py` (result types and the `HostManager`/`Probe` protocols), `registry.py`
   (the kind-to-plugin map), `pterodactyl.py` (host manager), `minecraft.py` (Bedrock and Java probes), `a2s.py`
   (A2S probe), `_probe_util.py` (the shared guard and limits).
@@ -108,9 +109,11 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   The bot skips its own messages only. Every other message goes to `handle`, which ignores anything that is not a
   command. A command from a bot or from a guild channel reaches `authorize`, is refused and logged as `admin_denied`
   (ids only), and gets no reply, so nothing is posted in a guild channel.
-- No code in `fluxer_panel` calls the role methods yet. Role changes are a privilege change: a future caller must
-  check the role allowlist and hierarchy before the call, because Fluxer returns the same 403 for a hierarchy refusal
-  and a missing permission.
+- Only `follow_roles.py` calls the role methods (`add_member_role`, `remove_member_role`, `create_role`,
+  `set_role_mentionable`), enforced by `tests/test_role_callers.py`. Each call is preceded by the allowlist check
+  (`cards.follow_role_ids`) and the hierarchy check against freshly fetched roles, because Fluxer returns the same 403
+  for a hierarchy refusal and a missing permission. The bot never deletes roles and never creates a role with
+  permissions.
 
 - Card config: `GAMES_CHANNEL_ID` (a snowflake, optional). `PTERODACTYL_URL` and `PTERODACTYL_API_KEY` are both or
   neither, and setting one refuses to start with exit 2. `POLL_INTERVAL_SECONDS`, `SCHEDULE_REFRESH_SECONDS`,

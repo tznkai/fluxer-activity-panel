@@ -54,7 +54,7 @@ Paths are relative to this directory.
 
 ## Role assignment
 
-No code in `src/fluxer_panel` calls `add_member_role` or `remove_member_role` in phase 1. The only callers are the live tool.
+`src/fluxer_panel/follow_roles.py` is the only code in `fluxer_panel` that calls the role methods (`add_member_role`, `remove_member_role`, `create_role`, `set_role_mentionable`). A role change is a privilege change, so every check lives in that one module, and `tests/test_role_callers.py` fails if another module makes one of these calls. Fluxer answers a hierarchy refusal and a missing permission with the same 403, so the checks run before the call, never as a reaction to the 403.
 
 - `src/fluxer_client/rest.py:66` `def _check_reason(` — the audit reason is fixed, printable ASCII, and at most 128 characters. Caller text must never reach it.
 - `src/fluxer_client/rest.py:71` `audit reason must be 1-128 printable ASCII characters` — the refusal happens before any request is sent.
@@ -63,6 +63,14 @@ No code in `src/fluxer_panel` calls `add_member_role` or `remove_member_role` in
 - `src/fluxer_client/rest.py:248` `async def add_member_role(` — a PUT that grants a role. This is a privilege change, so the role allowlist and the role hierarchy must be checked before the call. Fluxer answers both a hierarchy refusal and a missing permission with the same 403 code.
 - `src/fluxer_client/rest.py:252` `async def remove_member_role(` — a DELETE that removes a role. The same checks apply.
 - `tools/live/roles.py:32` `await rest.add_member_role(guild, user, role, reason=REASON)` — the live tool's call, which runs only in the private guild.
+- `src/fluxer_panel/follow_roles.py:98` `stored.role_id not in allow` — `toggle_follow` re-reads the card's stored role and the allowlist at press time. A role not in the allowlist is refused before any REST call.
+- `src/fluxer_panel/follow_roles.py:114` `not manageable(` — the hierarchy check in `toggle_follow`, against freshly fetched roles and the bot's own member record, runs before the add or remove.
+- `src/fluxer_panel/follow_roles.py:221` `if not zero_permissions(target):` — the adopt branch of `ensure_follow_role` refuses any role with permissions other than 0, so the bot never writes to a role that grants something.
+- `src/fluxer_panel/follow_roles.py:229` `await deps.rest.set_role_mentionable(` — an adopted role is made mentionable only after every check passes, and nothing is stored if the call fails.
+- `src/fluxer_panel/follow_roles.py:241` `deps.rest.create_role(` — the only role creation in the bot. The REST client fixes its permissions at 0.
+- `src/fluxer_panel/follow_roles.py:250` `await deps.rest.set_role_mentionable(` — a created role is made mentionable and checked before its id is stored.
+- `src/fluxer_client/rest.py:296` `"permissions": "0"` — every role the client creates has no permissions, and there is no parameter that changes it.
+- `tests/test_role_callers.py:33` `assert files == {"follow_roles.py"}` — the structural test that fails when any module other than `follow_roles.py` uses a role method.
 
 ## Reaction removal
 
