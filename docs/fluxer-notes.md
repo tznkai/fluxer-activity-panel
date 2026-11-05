@@ -349,7 +349,8 @@ channel ID.
   `.../reactions/{emoji}` path was also seen, and the client still accepts it.
 - Each user object carries `bot` true for the bot.
 - The operator added U+270B instead of U+1F64B, so the list for U+1F64B held only the bot.
-- A stored reaction the bot did not add has `me` null, not false. Treat a missing `me` as unknown.
+- A stored reaction the bot did not add has `me` null or absent, not false. The script reads both as the same
+  value, so treat null and absent as unknown.
 - Removing one emoji's reactions passed. `MESSAGE_REACTION_REMOVE_EMOJI` arrived, and the other reactions stayed.
 - Removing all reactions passed. `MESSAGE_REACTION_REMOVE_ALL` arrived, and the reactions list was empty.
 
