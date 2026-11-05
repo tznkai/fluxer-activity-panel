@@ -177,7 +177,14 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   in the board's channel, so the community is the one looked up for that channel. Board sends and edits use
   `allowed_mentions={"parse": []}`. Cards always post first: each card is published right after its own evaluation,
   and the board is brought up to date after them, so a board posted with no stored message sits below them. A stored
-  board is edited when its hash changed. No admin is sent a pin request, and no DM goes out on a board post. A failed read of the stored board at the start of a tick is logged. The cards then publish as they would
+  board is edited when its hash changed. The board stays the games channel's newest message: a board check runs at the
+  end of each games-channel tick when it is armed, by a post in the board's channel, by a MESSAGE_CREATE there (the
+  bot only arms it, `Poller.on_games_message`, and never kicks), and by startup. An armed check reads the newest message
+  with `GET messages?limit=1`. When that isn't the board, a re-post is due `BOARD_REPOST_MIN_INTERVAL_SECONDS` after the
+  last one, and the run loop's wait is cut short to reach it (`_wait_timeout`). The re-post posts the new board in the
+  stored board's channel, stores it, then deletes the old one. The old message's own MESSAGE_DELETE causes no post. A
+  failed delete is retried by each later check. Edits never arm the check. No admin is sent a pin request, and no DM
+  goes out on a board post. A failed read of the stored board at the start of a tick is logged. The cards then publish as they would
   with a board stored, and no new board is posted in that tick (a stored board is still edited); the next tick
   posts it. The poller logs the board's ids and exception types only: never a title, a status or a link.
 

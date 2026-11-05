@@ -183,6 +183,10 @@ def board_posts(state: FakeFluxerState) -> list[Recorded]:
     return [r for r in posted(state) if r.payload["embeds"][0].get("title") == text.BOARD_TITLE]
 
 
+def deletes_of(state: FakeFluxerState, message: str) -> list[Recorded]:
+    return [r for r in state.requests if r.method == "DELETE" and r.path == f"{GAMES_MESSAGES}/{message}"]
+
+
 def card_posts(state: FakeFluxerState) -> list[Recorded]:
     return [r for r in posted(state) if r.payload["embeds"][0].get("title") != text.BOARD_TITLE]
 
@@ -274,7 +278,8 @@ async def test_zero_live_cards_still_post_the_board_with_the_empty_description(w
 
     [only] = board_posts(world.fluxer)
     assert only.payload["embeds"][0]["description"] == text.BOARD_EMPTY
-    assert len(world.fluxer.requests_to(GAMES_MESSAGES)) == 1
+    # Only the POSTs: the startup board check also reads the newest message, a GET on the same path.
+    assert len([r for r in world.fluxer.requests_to(GAMES_MESSAGES) if r.method == "POST"]) == 1
 
 
 async def test_nothing_is_posted_to_the_games_channel_when_it_is_not_configured(world: World, db: Database,
@@ -661,8 +666,10 @@ async def test_with_a_board_stored_a_stalled_card_does_not_hold_back_another_car
 @pytest.mark.parametrize("board_stored", [True, False], ids=["board-stored", "no-board"])
 async def test_at_most_poll_concurrency_cards_are_evaluated_at_once(world: World, db: Database,
                                                                     board_stored: bool) -> None:
+    old = ""
     if board_stored:
         await world.poller().tick()
+        old = await board_id(world)
     for n in range(5):
         await seed(db, f"card-{n}", title=f"Card {n}", probe=True, sort=n)
     release = asyncio.Event()
@@ -688,17 +695,23 @@ async def test_at_most_poll_concurrency_cards_are_evaluated_at_once(world: World
         release.set()
         await task
     assert peak == 2
-    assert len(board_posts(world.fluxer)) == 1
     assert len(card_posts(world.fluxer)) == 5
-    if not board_stored:
+    if board_stored:
+        # The five cards land below the stored board, so this tick re-posts it once and deletes the old one.
+        assert len(board_posts(world.fluxer)) == 2
+        assert len(deletes_of(world.fluxer, old)) == 1
+    else:
+        assert len(board_posts(world.fluxer)) == 1
         assert posted(world.fluxer)[-1].payload["embeds"][0].get("title") == text.BOARD_TITLE
 
 
 @pytest.mark.parametrize("board_stored", [True, False], ids=["board-stored", "no-board"])
 async def test_at_most_poll_concurrency_cards_are_published_at_once(world: World, db: Database,
                                                                     board_stored: bool) -> None:
+    old = ""
     if board_stored:
         await world.poller().tick()
+        old = await board_id(world)
     for n in range(5):
         await seed(db, f"card-{n}", title=f"Card {n}", probe=True, sort=n)
     release = asyncio.Event()
@@ -715,9 +728,13 @@ async def test_at_most_poll_concurrency_cards_are_published_at_once(world: World
     finally:
         release.set()
         await task
-    assert len(board_posts(world.fluxer)) == 1
     assert len(card_posts(world.fluxer)) == 5
-    if not board_stored:
+    if board_stored:
+        # The five cards land below the stored board, so this tick re-posts it once and deletes the old one.
+        assert len(board_posts(world.fluxer)) == 2
+        assert len(deletes_of(world.fluxer, old)) == 1
+    else:
+        assert len(board_posts(world.fluxer)) == 1
         assert posted(world.fluxer)[-1].payload["embeds"][0].get("title") == text.BOARD_TITLE
 
 
@@ -764,8 +781,9 @@ async def test_a_failed_board_read_is_logged_and_the_cards_still_post(world: Wor
     assert card_titles(world.fluxer) == ["Alpha"]
     # The stored state is unknown, so no board is posted.
     assert board_posts(world.fluxer) == []
-    [read] = records(captured, "board_read_failed")
-    assert read.panel_fields == {"reason": "OperationalError"}
+    # The tick's read and the board check's read both fail: each is logged, and the check then re-arms.
+    reads = records(captured, "board_read_failed")
+    assert [r.panel_fields for r in reads] == [{"reason": "OperationalError"}] * 2
     [synced] = records(captured, "board_sync_failed")
     assert synced.panel_fields == {"reason": "OperationalError"}
 

@@ -469,7 +469,8 @@ async def test_archive_counts_a_copy_already_gone_as_removed(world: World) -> No
     assert world.last_reply() == text.CARD_ARCHIVED
 
 
-BOARD_MESSAGE = "4000"
+# kept above every fake id, so the stored board stays the newest message and never triggers a re-post
+BOARD_MESSAGE = "8999999"
 
 
 async def poller_with_board(world: World) -> Poller:

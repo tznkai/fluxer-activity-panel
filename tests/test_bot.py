@@ -69,8 +69,9 @@ def make_rest(session: aiohttp.ClientSession, base: str) -> FluxerREST:
     return FluxerREST(session, f"{base}/api", TOKEN)
 
 
-def make_bot(rest: FluxerREST, admins: str = "1001", on_message_delete=None) -> Bot:
-    return Bot(rest=rest, config=make_config(admins), roles=RoleCache(rest), on_message_delete=on_message_delete)
+def make_bot(rest: FluxerREST, admins: str = "1001", on_message_delete=None, on_games_message=None) -> Bot:
+    return Bot(rest=rest, config=make_config(admins), roles=RoleCache(rest), on_message_delete=on_message_delete,
+               on_games_message=on_games_message)
 
 
 def dm_message(content: str, author: str = "1001", *, bot: bool = False) -> dict[str, Any]:
@@ -312,6 +313,25 @@ async def test_message_delete_without_hook_is_ignored(fake, session) -> None:
 
 
 # --- AC3.3 at bot level: the gateway resumes or re-identifies, the process keeps running ---
+
+async def test_a_message_from_another_user_calls_the_games_hook_with_its_channel(fake, session) -> None:
+    _, base = fake
+    heard: list[str] = []
+    bot = make_bot(make_rest(session, base), on_games_message=heard.append)
+    await bot.on_dispatch("READY", READY)
+    await bot.on_dispatch("MESSAGE_CREATE", guild_message("hello"))
+    assert heard == ["3001"]
+
+
+async def test_the_bots_own_message_does_not_call_the_games_hook(fake, session) -> None:
+    _, base = fake
+    heard: list[str] = []
+    bot = make_bot(make_rest(session, base), on_games_message=heard.append)
+    await bot.on_dispatch("READY", READY)
+    own = {**guild_message("hello"), "author": {"id": "5000"}}
+    await bot.on_dispatch("MESSAGE_CREATE", own)
+    assert heard == []
+
 
 def reconnect_script(second: Callable[[Any, FakeFluxerState], Awaitable[None]]):
     """Connection 0: READY then a 4000 close. Connection 1 is handled by `second`."""

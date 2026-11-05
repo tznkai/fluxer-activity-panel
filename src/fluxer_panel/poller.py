@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+import aiohttp
+
 from fluxer_client.events import MessageDelete
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
 from fluxer_panel import board, cards, notify, render, subscriptions, text, wake_requests
@@ -78,6 +80,12 @@ class Poller:
         self._deleted: OrderedDict[tuple[str, str], None] = OrderedDict()
         self._warned_no_channel = False
         self._games_guild = games_guild if games_guild is not None else GamesGuild(rest, config)
+        # The board check. Startup arms it, so the first tick checks the board once.
+        self._board_armed = True
+        self._board_channel: str | None = None   # the stored board's channel, once read: a moved GAMES_CHANNEL_ID never moves it
+        self._repost_due: float | None = None
+        self._last_repost = float("-inf")
+        self._stale_boards: list[tuple[str, str]] = []   # replaced boards whose delete failed, retried by each check
 
     def kick(self) -> None:
         self._kick.set()
@@ -89,6 +97,13 @@ class Poller:
     def set_interactions(self, interactions: Interactions) -> None:
         """Given the interactions once, after both are built: each tick ends the play-now messages that are due."""
         self._interactions = interactions
+
+    def on_games_message(self, channel_id: str) -> None:
+        """Arms the board check when a message lands in the board's channel. It does not kick the loop: a kick runs a
+        whole tick, and a busy channel would probe every server on every message. The check runs on the next scheduled
+        tick, which `_wait_timeout` brings forward once a re-post is due."""
+        if self._is_board_channel(channel_id):
+            self._board_armed = True
 
     def status_of(self, card_id: int) -> CardStatus | None:
         """The card's status at its last evaluation, or None when it has none (never evaluated, or its evaluation failed)."""
@@ -118,9 +133,16 @@ class Poller:
             except Exception as exc:  # noqa: BLE001 - nothing watches this task: it must never end on its own
                 log_event(log, "poller_tick_failed", level=logging.ERROR, reason=type(exc).__name__)
             try:
-                await asyncio.wait_for(self._kick.wait(), self._config.poll_interval_seconds)
+                await asyncio.wait_for(self._kick.wait(), self._wait_timeout())
             except TimeoutError:
                 pass
+
+    def _wait_timeout(self) -> float:
+        """How long the run loop waits before its next tick: the poll interval, or less when a re-post is due sooner."""
+        timeout = float(self._config.poll_interval_seconds)
+        if self._repost_due is not None:
+            timeout = min(timeout, max(0.0, self._repost_due - self._clock()))
+        return timeout
 
     async def reconcile(self) -> None:
         """Checks each stored message once. A message that is gone is forgotten, so the next tick posts a new one."""
@@ -195,6 +217,7 @@ class Poller:
         results = await asyncio.gather(*(self._evaluate_and_publish(card, sem) for card in live))
         await self._board_after_cards({result.card.id: result.status for result in results}, channel_id,
                                       may_post=stored is not None)
+        await self._board_check()
 
     async def _after_tick(self) -> None:
         """The passes that run on every tick, with or without a games channel. A request that is ready or expired closes
@@ -356,12 +379,92 @@ class Poller:
         """The stored board state, read at the start of a tick. A failed read is logged and gives None: the cards then
         publish as they would with a board stored, and no new board is posted in this tick."""
         try:
-            return await self._db.run(board.get)
+            state = await self._db.run(board.get)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - a failed read must not stop the cards of this tick
             log_event(log, "board_read_failed", level=logging.WARNING, reason=type(exc).__name__)
             return None
+        self._board_channel = state.channel_id
+        return state
+
+    def _is_board_channel(self, channel_id: str) -> bool:
+        """Whether a message in `channel_id` concerns the board: the stored board's channel, or the games channel when no
+        board is stored (or none has been read yet)."""
+        board_channel = self._board_channel if self._board_channel is not None else self._config.games_channel_id
+        return channel_id == board_channel
+
+    async def _board_check(self) -> None:
+        """Runs at the end of each games-channel tick. A check is armed by a post in the board's channel, by a message
+        there, and by startup. An armed check reads the newest message; when that isn't the board, a re-post is due
+        `BOARD_REPOST_MIN_INTERVAL_SECONDS` after the last one, and a re-post already due is not moved. Once due, the
+        re-post goes ahead. Each check also retries the deletes of replaced boards that failed."""
+        now = self._clock()
+        await self._retry_stale_deletes()
+        if self._board_armed:
+            self._board_armed = False
+            state = await self._read_board()
+            if state is None:
+                self._board_armed = True          # the read failed: the next tick checks again
+                return
+            if state.message_id is None or state.channel_id is None:
+                return                             # no board stored: the board post arms the next check
+            try:
+                newest = await self._rest.get_messages(state.channel_id, limit=1)
+            except (FluxerHTTPError, aiohttp.ClientError, TimeoutError) as exc:
+                log_event(log, "board_check_failed", level=logging.WARNING, channel_id=state.channel_id,
+                          reason=type(exc).__name__)
+                self._board_armed = True
+                return
+            if newest and str(newest[0].get("id")) != state.message_id and self._repost_due is None:
+                self._repost_due = max(now, self._last_repost + self._config.board_repost_min_interval_seconds)
+        if self._repost_due is not None and now >= self._repost_due:
+            self._repost_due = None
+            self._last_repost = now
+            try:
+                await self._board_repost()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - the re-post is retried by the next check, never lost
+                log_event(log, "board_repost_failed", level=logging.WARNING, reason=type(exc).__name__)
+                self._board_armed = True          # the next tick checks again; the debounce still holds
+
+    async def _board_repost(self) -> None:
+        """Posts the board again in its channel, then deletes the one it replaces. The new board is stored before the old
+        one goes, so a failed delete leaves the old message to be retried, never a second stored board."""
+        state = await self._read_board()
+        if state is None or state.message_id is None or state.channel_id is None:
+            return
+        live = await self._db.run(lambda c: cards.list_cards(c, "live"))
+        entries = [(card, self._statuses[card.id]) for card in live if card.id in self._statuses]
+        payload = await self._board_payload(entries, state.channel_id)
+        old_id = state.message_id
+        await self._board_post(state.channel_id, payload)
+        if not await self._delete_old_board(state.channel_id, old_id):
+            self._stale_boards.append((state.channel_id, old_id))
+
+    async def _retry_stale_deletes(self) -> None:
+        for channel_id, message_id in list(self._stale_boards):
+            if await self._delete_old_board(channel_id, message_id):
+                self._stale_boards.remove((channel_id, message_id))
+
+    async def _delete_old_board(self, channel_id: str, message_id: str) -> bool:
+        """Deletes a board message the poller replaced. Its own delete event is remembered first, so the event does not
+        cause a post. A 404 means it is gone already. Returns whether it is gone."""
+        self._remember_deleted(channel_id, message_id)
+        try:
+            await self._rest.delete_message(channel_id, message_id)
+        except asyncio.CancelledError:
+            raise
+        except FluxerHTTPError as exc:
+            if exc.status == 404:
+                return True
+            log_event(log, "board_old_delete_failed", level=logging.WARNING, reason=type(exc).__name__)
+            return False
+        except Exception as exc:  # noqa: BLE001 - kept for the next check, which retries it
+            log_event(log, "board_old_delete_failed", level=logging.WARNING, reason=type(exc).__name__)
+            return False
+        return True
 
     async def _board_after_cards(self, statuses: dict[int, CardStatus | None], games_channel_id: str, *,
                                  may_post: bool) -> None:
@@ -398,15 +501,18 @@ class Poller:
         return render.board_message(entries, games_channel_id=channel_id, games_guild_id=guild_id,
                                     instance_url=self._config.instance_url, requested=self._requested)
 
-    async def _board_post(self, channel_id: str, payload: dict[str, Any]) -> None:
+    async def _board_post(self, channel_id: str, payload: dict[str, Any]) -> str:
         sent = await self._rest.send_message(channel_id, embeds=payload["embeds"],
                                              allowed_mentions=payload["allowed_mentions"])
         message_id = sent["id"]
+        self._board_channel = channel_id
+        self._board_armed = True                # the new board is checked too: a message below it is noticed
         rendered = render.rendered_hash(payload)
         await self._db.run(lambda c: board.set_message(c, channel_id, message_id, rendered))
         if await self._undo_if_deleted(channel_id, message_id):
-            return  # deleted before its id was stored: forgotten, so it is posted again
+            return message_id  # deleted before its id was stored: forgotten, so it is posted again
         log_event(log, "board_posted")
+        return message_id
 
     async def _board_edit(self, channel_id: str, message_id: str, payload: dict[str, Any], rendered: str) -> None:
         try:
@@ -491,6 +597,8 @@ class Poller:
         sent = await self._rest.send_message(channel_id, embeds=payload["embeds"],
                                              allowed_mentions=payload["allowed_mentions"])
         message_id = sent["id"]
+        if self._is_board_channel(channel_id):
+            self._board_armed = True            # a card posted below the board: the next check looks at the newest message
         if subscription:
             await self._db.run(lambda c: subscriptions.set_message(c, card_id, channel_id, message_id, rendered))
         else:

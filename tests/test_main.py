@@ -583,6 +583,9 @@ def _probe_poller(monkeypatch: pytest.MonkeyPatch) -> _PollerProbe:
         def set_interactions(self, interactions: Any) -> None:
             probe.interactions = interactions
 
+        def on_games_message(self, channel_id: str) -> None:
+            pass
+
         def status_of(self, card_id: int) -> None:
             return None
 

@@ -196,6 +196,11 @@ message. The board is laid out for the desktop and web clients. Phones show the 
   sits below them. A new board links every card that is already posted in the board's channel. If the
   stored board cannot be read at the start of a poll, the cards are still posted, and no new board is
   posted in that poll. The next poll posts it.
+- **Staying the newest message:** the board is kept as the newest message in its channel. When a card or
+  another message lands below it, the bot checks at the next poll and, if the board is no longer the newest,
+  posts a new board and then deletes the old one. Several messages within `BOARD_REPOST_MIN_INTERVAL_SECONDS`
+  cause one re-post, and the next poll is brought forward to the time the re-post is due. Edits
+  never cause a re-post. A failed re-post is logged and tried again at the next check, after the interval.
 - **The board's channel:** the board is posted in the games channel and then stays there. A stored board
   is edited where it was posted, whatever `GAMES_CHANNEL_ID` is now. Its links go to the channel's own
   community, and a card is linked only when its message is in the same channel as the board. To move the

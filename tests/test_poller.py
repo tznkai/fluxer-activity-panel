@@ -80,7 +80,8 @@ def channel_messages(channel: str) -> str:
 POSTED = f"{GAMES_MESSAGES}/5001"
 # The summary board already exists in these tests, so card message ids start at 5001 as they always did. The board's
 # own posting and sync are covered by tests/test_board_poller.py. Its edits are filtered out of `patches`.
-BOARD_MESSAGE = "4000"
+# kept above every fake id, so the stored board stays the newest message and never triggers a re-post
+BOARD_MESSAGE = "8999999"
 SCHEDULES = f"/api/client/servers/{SERVER}/schedules"
 OPEN_DM = "/api/v1/users/@me/channels"
 FIRST_DM = "/api/v1/channels/9000/messages"    # the first DM channel the fake opens: admin 1001

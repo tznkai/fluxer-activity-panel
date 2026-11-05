@@ -95,7 +95,8 @@ async def run(config: Config, db: Database) -> None:
             presses = Presses(db=db, rest=rest, config=config, handler=interactions, games_guild=games_guild,
                               pacer=pacer, identity=identity)
             bot = Bot(rest=rest, config=config, roles=roles, card_ctx=card_ctx,
-                      on_message_delete=poller.on_message_delete, presses=presses, identity=identity)
+                      on_message_delete=poller.on_message_delete, presses=presses, identity=identity,
+                      on_games_message=poller.on_games_message)
             gateway = Gateway(session, gateway_url, config.token, bot.on_dispatch, properties=IDENTIFY_PROPERTIES)
             gw_task = asyncio.create_task(gateway.run())
             # Started only now: a stop that won discovery above never starts a purge or the poller. The purge loop

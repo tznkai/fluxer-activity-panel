@@ -32,6 +32,7 @@ class Bot:
         card_ctx: CardContext | None = None,
         presses: Presses | None = None,
         identity: BotIdentity | None = None,
+        on_games_message: Callable[[str], None] | None = None,
     ) -> None:
         self.rest = rest
         self.config = config
@@ -40,6 +41,7 @@ class Bot:
         self.card_ctx = card_ctx
         self.presses = presses
         self.identity = identity
+        self.on_games_message = on_games_message
         self.user_id: str | None = None
 
     async def on_dispatch(self, t: str, d: dict[str, Any]) -> None:
@@ -57,6 +59,8 @@ class Bot:
             case events.MessageCreate() as msg:
                 if msg.author_id == self.user_id:
                     return  # the bot's own messages never reach a handler, so its replies cannot loop
+                if self.on_games_message is not None:
+                    self.on_games_message(msg.channel_id)   # arms the board check when this is the board's channel
                 # handle ignores what is not a command. A command from a bot or from a guild channel is refused by
                 # authorize: it logs admin_denied and posts nothing, so the guild channel gets no reply.
                 await admin.handle(msg, self.config, self.rest, self.card_ctx)
