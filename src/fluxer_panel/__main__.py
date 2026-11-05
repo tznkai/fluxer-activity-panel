@@ -24,9 +24,14 @@ from fluxer_panel.bot import Bot
 from fluxer_panel.card_commands import CardContext
 from fluxer_panel.config import Config, ConfigError
 from fluxer_panel.db import Database, DatabaseRefused
+from fluxer_panel.games import BotIdentity, GamesGuild
+from fluxer_panel.interactions import Interactions
 from fluxer_panel.logs import log_event, setup_logging
+from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.poller import Poller
+from fluxer_panel.presses import Presses
 from fluxer_panel.purge import purge_loop, run_purge
+from fluxer_panel.seeding import Seeder
 from fluxer_panel.sources.registry import build_sources
 
 log = logging.getLogger("fluxer_panel")
@@ -64,12 +69,26 @@ async def run(config: Config, db: Database) -> None:
             log_event(log, "endpoints_resolved")             # URLs are instance details: not logged
             rest = FluxerREST(session, api, config.token)
             sources = build_sources(session, config)
-            card_ctx = CardContext(db=db, rest=rest, config=config, sources=sources)
+            # One identity, one role cache, one games-community lookup and one reaction pacer, shared by every part that
+            # needs them. The seeder and the presses use the same pacer, so each channel's reaction calls share a budget.
+            identity = BotIdentity()
+            roles = RoleCache(rest)
+            games_guild = GamesGuild(rest, config)
+            pacer = ChannelPacer()
+            seeder = Seeder(rest=rest, pacer=pacer, db=db)
+            card_ctx = CardContext(db=db, rest=rest, config=config, sources=sources, roles=roles,
+                                   games_guild=games_guild, seeder=seeder, identity=identity)
             # One lock registry for the commands and the poller, so an archive never interleaves with a post.
-            poller = Poller(db=db, rest=rest, sources=sources, config=config, locks=card_ctx.locks)
+            poller = Poller(db=db, rest=rest, sources=sources, config=config, locks=card_ctx.locks,
+                            games_guild=games_guild)
             card_ctx.kick = poller.kick
-            bot = Bot(rest=rest, config=config, roles=RoleCache(rest), card_ctx=card_ctx,
-                      on_message_delete=poller.on_message_delete)
+            interactions = Interactions(db=db, rest=rest, config=config, locks=card_ctx.locks,
+                                        games_guild=games_guild, seeder=seeder, identity=identity, roles=roles,
+                                        kick=poller.kick)
+            presses = Presses(db=db, rest=rest, config=config, handler=interactions, games_guild=games_guild,
+                              pacer=pacer, identity=identity)
+            bot = Bot(rest=rest, config=config, roles=roles, card_ctx=card_ctx,
+                      on_message_delete=poller.on_message_delete, presses=presses, identity=identity)
             gateway = Gateway(session, gateway_url, config.token, bot.on_dispatch, properties=IDENTIFY_PROPERTIES)
             gw_task = asyncio.create_task(gateway.run())
             # Started only now: a stop that won discovery above never starts a purge or the poller. The purge loop

@@ -16,11 +16,14 @@ import aiohttp
 
 from fluxer_client.events import MessageCreate
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
+from fluxer_client.roles import RoleCache
 from fluxer_panel import card_fields, cards, render, subscriptions, text
 from fluxer_panel.cards import SHOW_ITEMS, CardFieldError, ChannelLink
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
+from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.logs import log_event
+from fluxer_panel.seeding import Seeder
 from fluxer_panel.sources.registry import PROBES, Sources, known_manager_kinds, manager_ref_hints
 
 log = logging.getLogger(__name__)
@@ -69,6 +72,10 @@ class CardContext:
     kick: Callable[[], None] = lambda: None
     clock: Callable[[], float] = time.time
     locks: CardLocks = field(default_factory=CardLocks)
+    roles: RoleCache | None = None
+    games_guild: GamesGuild | None = None
+    seeder: Seeder | None = None
+    identity: BotIdentity | None = None
 
 
 @dataclass(frozen=True)

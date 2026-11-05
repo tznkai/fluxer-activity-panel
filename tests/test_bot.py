@@ -21,14 +21,17 @@ import pytest
 
 from fluxer_client.events import MessageDelete
 from fluxer_client.gateway import Gateway
-from fluxer_client.rest import FluxerREST
+from fluxer_client.rest import FluxerREST, encode_emoji
 from fluxer_client.roles import RoleCache
 from fluxer_panel import cards, text
 from fluxer_panel.bot import Bot
 from fluxer_panel.card_commands import CardContext
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
+from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.logs import setup_logging
+from fluxer_panel.pacer import ChannelPacer
+from fluxer_panel.presses import WAKE_EMOJI, Action, Press, Presses, Surface
 from fluxer_panel.sources.registry import build_sources
 from tests.fakes import (
     GATEWAY_STATE,
@@ -192,9 +195,10 @@ async def test_reactions_are_logged_with_ids_only(fake, session, caplog) -> None
     })
     reactions = [r for r in caplog.records if r.getMessage() == "reaction"]
     assert len(reactions) == 2
-    allowed = {"event_type", "user_id", "channel_id", "message_id", "guild_id"}
+    allowed = {"event_type", "channel_id", "message_id", "guild_id"}
     for record in reactions:
         assert set(record.panel_fields) <= allowed
+        assert "user_id" not in record.panel_fields   # AC6.3: a reaction log never carries the user id
     assert reactions[0].panel_fields["guild_id"] == "2001"
     assert "guild_id" not in reactions[1].panel_fields   # a DM reaction carries no guild
 
@@ -468,3 +472,82 @@ async def test_own_card_command_is_skipped_without_a_denial_log(captured, fake, 
 
     assert state.requests == []
     assert log_events(captured)[logged_before:] == []
+
+
+# --- reactions through the press adapter ------------------------------------------------------------
+
+GAMES = "3001"
+GUILD = "2001"
+CARD_MSG = "5001"
+PRESSER = "6001"
+HASH = "a" * 64   # a rendered hash: the store takes 64 lowercase hex digits
+
+
+class _RecordingHandler:
+    def __init__(self) -> None:
+        self.presses: list[Press] = []
+
+    async def handle(self, press: Press) -> None:
+        self.presses.append(press)
+
+    async def me_too_changed(self, card_id: int, surface: Surface, user_id: str) -> None:
+        pass
+
+
+@pytest.fixture
+async def press_db(tmp_path):
+    database = Database.open(tmp_path / "panel.db")
+    try:
+        def seed(conn) -> None:
+            card = cards.create_card(conn, slug="mc", title="Minecraft", author_id="1001", now=1)
+            cards.set_state(conn, card, "live", 1)
+            cards.set_message(conn, card, GAMES, CARD_MSG, HASH)
+
+        await database.run(seed)
+        yield database
+    finally:
+        database.close()
+
+
+def press_bot(session, base: str, db: Database) -> tuple[Bot, _RecordingHandler]:
+    rest = make_rest(session, base)
+    config = make_config("1001")
+    identity = BotIdentity()
+    handler = _RecordingHandler()
+    presses = Presses(db=db, rest=rest, config=config, handler=handler, games_guild=GamesGuild(rest, config),
+                      pacer=ChannelPacer(max_calls=1000), identity=identity)
+    bot = Bot(rest=rest, config=config, roles=RoleCache(rest), presses=presses, identity=identity)
+    return bot, handler
+
+
+def reaction_payload(user: str, message: str, name: str) -> dict[str, Any]:
+    return {"user_id": user, "channel_id": GAMES, "message_id": message, "guild_id": GUILD,
+            "emoji": {"name": name}}
+
+
+async def test_a_wake_reaction_on_a_live_card_reaches_the_handler_and_is_removed(fake, session, press_db) -> None:
+    state, base = fake
+    bot, handler = press_bot(session, base, press_db)
+    await bot.on_dispatch("READY", READY)
+    await bot.on_dispatch("MESSAGE_REACTION_ADD", reaction_payload(PRESSER, CARD_MSG, WAKE_EMOJI))
+
+    [press] = handler.presses
+    assert (press.card_id, press.action, press.user_id) == (1, Action.WAKE, PRESSER)
+    assert press.surface.kind == "card"
+    [removal] = [r for r in state.requests if r.method == "DELETE"]
+    assert removal.raw_path == (f"/api/v1/channels/{GAMES}/messages/{CARD_MSG}/reactions/"
+                                f"{encode_emoji(WAKE_EMOJI)}/{PRESSER}")
+
+
+async def test_a_reaction_from_the_bot_user_after_ready_is_ignored(fake, session, press_db) -> None:
+    state, base = fake
+    bot, handler = press_bot(session, base, press_db)
+    await bot.on_dispatch("READY", READY)   # the bot's own id is 5000
+    await bot.on_dispatch("MESSAGE_REACTION_ADD", reaction_payload("5000", CARD_MSG, WAKE_EMOJI))
+
+    assert handler.presses == []
+    assert [r for r in state.requests if r.method == "DELETE"] == []
+
+    # control: the same reaction from a person is handled
+    await bot.on_dispatch("MESSAGE_REACTION_ADD", reaction_payload(PRESSER, CARD_MSG, WAKE_EMOJI))
+    assert len(handler.presses) == 1

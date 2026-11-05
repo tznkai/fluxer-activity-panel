@@ -14,7 +14,9 @@ from fluxer_client.roles import RoleCache
 from fluxer_panel import admin
 from fluxer_panel.card_commands import CardContext
 from fluxer_panel.config import Config
+from fluxer_panel.games import BotIdentity
 from fluxer_panel.logs import log_event
+from fluxer_panel.presses import Presses
 
 log = logging.getLogger(__name__)
 
@@ -28,12 +30,16 @@ class Bot:
         roles: RoleCache,
         on_message_delete: Callable[[events.MessageDelete], Awaitable[None]] | None = None,
         card_ctx: CardContext | None = None,
+        presses: Presses | None = None,
+        identity: BotIdentity | None = None,
     ) -> None:
         self.rest = rest
         self.config = config
         self.roles = roles
         self.on_message_delete = on_message_delete
         self.card_ctx = card_ctx
+        self.presses = presses
+        self.identity = identity
         self.user_id: str | None = None
 
     async def on_dispatch(self, t: str, d: dict[str, Any]) -> None:
@@ -41,6 +47,8 @@ class Bot:
         match event:
             case events.Ready(user_id=user_id):
                 self.user_id = user_id
+                if self.identity is not None:
+                    self.identity.user_id = user_id
                 log_event(log, "ready", user_id=user_id)
             case events.Resumed():
                 log_event(log, "resumed")
@@ -53,8 +61,11 @@ class Bot:
                 # authorize: it logs admin_denied and posts nothing, so the guild channel gets no reply.
                 await admin.handle(msg, self.config, self.rest, self.card_ctx)
             case events.ReactionAdd() | events.ReactionRemove() as r:
-                log_event(log, "reaction", event_type=t, user_id=r.user_id, channel_id=r.channel_id,
+                # The user id is never logged here (AC6.3): an absorbed press logs it in the adapter, and nothing else does.
+                log_event(log, "reaction", event_type=t, channel_id=r.channel_id,
                           message_id=r.message_id, guild_id=r.guild_id)
+                if self.presses is not None:
+                    await self.presses.on_reaction(r)
             case events.ReactionRemoveAll() | events.ReactionRemoveEmoji() as r:
                 log_event(log, "reaction", event_type=t, channel_id=r.channel_id,
                           message_id=r.message_id, guild_id=r.guild_id)
