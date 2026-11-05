@@ -32,12 +32,21 @@ ALLOWED_COLUMNS: dict[str, set[str]] = {
     "sessions": {"id", "card_id", "group_role_id", "starts_at", "ends_at", "location_text", "seats",
                  "recurrence", "recurrence_until", "proposer_id", "created_at", "channel_id", "message_id"},
     "rsvps": {"session_id", "user_id", "status", "responded_at"},
-    "requests": {"id", "kind", "card_id", "requester_id", "status", "created_at"},
+    "requests": {"id", "kind", "card_id", "requester_id", "status", "created_at", "closed_at"},
+    "wake_request_dm": {"card_id", "admin_id", "kind", "channel_id", "message_id", "opened_at"},
+    "card_follow_role": {"card_id", "guild_id", "role_id"},
+    "card_play_now_channel": {"card_id", "guild_id", "channel_id", "channel_name", "verified"},
+    "play_now": {"id", "card_id", "guild_id", "channel_id", "message_id", "presser_id", "offers_wake", "state",
+                 "created_at", "expires_at"},
+    "interactions": {"id", "enabled"},
+    "card_interactions_off": {"card_id"},
+    "reaction_degraded": {"channel_id", "alerted_at", "last_retry_at"},
 }
 
 STRICT_TABLES = {"card_location", "card_voice", "card_text_channel", "card_address", "card_manager", "card_probe",
                  "card_subscription",
-                 "card_runtime", "board"}
+                 "card_runtime", "board", "wake_request_dm", "card_follow_role", "card_play_now_channel",
+                 "play_now", "interactions", "card_interactions_off", "reaction_degraded"}
 
 FORBIDDEN_TOKENS = {"nick", "nickname", "age", "birth", "birthday", "dob", "gender",
                     "member", "membership", "group"}
@@ -176,6 +185,22 @@ REJECTED: list[tuple[str, str, tuple[object, ...]]] = [
                                      "VALUES (1,'1001','2001','5001',?,0)", ("G" * 64,)),
     ("subscription paused is two", "INSERT INTO card_subscription (card_id,guild_id,channel_id,paused) "
                                    "VALUES (1,'1001','2001',2)", ()),
+    ("request status is done", "INSERT INTO requests (kind,card_id,requester_id,status,created_at) "
+                               "VALUES ('wake',1,'1001','done',1)", ()),
+    ("open request has a close time", "INSERT INTO requests (kind,card_id,requester_id,status,created_at,closed_at) "
+                                      "VALUES ('wake',1,'1001','open',1,2)", ()),
+    ("closed request has no close time", "INSERT INTO requests (kind,card_id,requester_id,status,created_at) "
+                                         "VALUES ('wake',1,'1001','cleared',1)", ()),
+    ("play-now state is open", "INSERT INTO play_now (card_id,guild_id,channel_id,message_id,presser_id,offers_wake,"
+                               "state,created_at,expires_at) VALUES (1,'1001','1002','5001','1001',0,'open',1,2)", ()),
+    ("play-now expires before it is created", "INSERT INTO play_now (card_id,guild_id,channel_id,message_id,presser_id,"
+                                              "offers_wake,state,created_at,expires_at) "
+                                              "VALUES (1,'1001','1002','5001','1001',0,'live',10,5)", ()),
+    ("interactions row id is two", "INSERT INTO interactions (id,enabled) VALUES (2,1)", ()),
+    ("degraded channel id has a letter", "INSERT INTO reaction_degraded (channel_id,alerted_at,last_retry_at) "
+                                         "VALUES ('12a',1,1)", ()),
+    ("play-now channel is unverified but named", "INSERT INTO card_play_now_channel (card_id,guild_id,channel_id,"
+                                                 "channel_name,verified) VALUES (1,'1001','1002','SENTINEL-PN',0)", ()),
 ]
 
 
@@ -320,3 +345,56 @@ async def test_deleting_family_removes_its_members(seeded: Database) -> None:
     await _exec(seeded, "DELETE FROM families WHERE id = 1")
 
     assert await seeded.run(lambda c: c.execute("SELECT COUNT(*) FROM family_members").fetchone()[0]) == 0
+
+
+async def test_request_without_a_card_is_rejected(seeded: Database) -> None:
+    with pytest.raises(sqlite3.IntegrityError, match="NOT NULL constraint failed"):
+        await _exec(seeded, "INSERT INTO requests (kind,card_id,requester_id,status,created_at) "
+                            "VALUES ('wake',NULL,'1001','open',1)")
+
+
+async def test_second_open_request_by_the_same_requester_on_a_card_is_rejected(seeded: Database) -> None:
+    await _exec(seeded, "INSERT INTO requests (kind,card_id,requester_id,status,created_at) "
+                        "VALUES ('wake',1,'1002','open',1)")
+    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
+        await _exec(seeded, "INSERT INTO requests (kind,card_id,requester_id,status,created_at) "
+                            "VALUES ('wake',1,'1002','open',2)")
+
+
+async def test_a_closed_request_does_not_block_a_new_open_one(seeded: Database) -> None:
+    await _exec(seeded, "INSERT INTO requests (kind,card_id,requester_id,status,created_at,closed_at) "
+                        "VALUES ('wake',1,'1002','cleared',1,1)")
+    await _exec(seeded, "INSERT INTO requests (kind,card_id,requester_id,status,created_at) "
+                        "VALUES ('wake',1,'1002','open',2)")
+    count = await seeded.run(lambda c: c.execute("SELECT COUNT(*) FROM requests").fetchone()[0])
+    assert count == 2
+
+
+async def test_follow_role_id_is_unique_across_cards(seeded: Database) -> None:
+    await _exec(seeded, "INSERT INTO cards (title,created_by,created_at,updated_at) VALUES ('t2','1001',1,1)")
+    await _exec(seeded, "INSERT INTO card_follow_role (card_id,guild_id,role_id) VALUES (1,'1001','3001')")
+    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
+        await _exec(seeded, "INSERT INTO card_follow_role (card_id,guild_id,role_id) VALUES (2,'1001','3001')")
+
+
+async def test_deleting_a_card_removes_its_reaction_rows(seeded: Database) -> None:
+    await _exec(seeded, "DELETE FROM sessions WHERE id = 1")
+    await _exec(seeded, "INSERT INTO requests (kind,card_id,requester_id,status,created_at) "
+                        "VALUES ('wake',1,'1002','open',1)")
+    await _exec(seeded, "INSERT INTO wake_request_dm (card_id,admin_id,kind,channel_id,message_id,opened_at) "
+                        "VALUES (1,'1003','request','1004','1005',1)")
+    await _exec(seeded, "INSERT INTO card_follow_role (card_id,guild_id,role_id) VALUES (1,'1001','3001')")
+    await _exec(seeded, "INSERT INTO card_play_now_channel (card_id,guild_id,channel_id,verified) "
+                        "VALUES (1,'1001','1002',0)")
+    await _exec(seeded, "INSERT INTO play_now (card_id,guild_id,channel_id,message_id,presser_id,offers_wake,state,"
+                        "created_at,expires_at) VALUES (1,'1001','1002','5001','1001',0,'live',1,2)")
+    await _exec(seeded, "INSERT INTO card_interactions_off (card_id) VALUES (1)")
+
+    await _exec(seeded, "DELETE FROM cards WHERE id = 1")
+
+    def counts(c: sqlite3.Connection) -> list[int]:
+        tables = ["requests", "wake_request_dm", "card_follow_role", "card_play_now_channel", "play_now",
+                  "card_interactions_off"]
+        return [c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tables]
+
+    assert await seeded.run(counts) == [0, 0, 0, 0, 0, 0]
