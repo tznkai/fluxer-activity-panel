@@ -258,6 +258,10 @@ The last argument takes the rest of the line, so no quoting is needed. `!card he
   its host and port.
 - `show map,version,game_mode`: any subset of those three, or `none`. These are the probe details
   a card shows.
+- `follow_role <role id>`: the card's follow role, which the bot creates at publish or adopts from a matching
+  role. The role must have no permissions, be mentionable and sit below the bot's top role. A role id that fails
+  any of those is refused, and nothing is stored. `!card clear <slug> follow_role` forgets the role but keeps it in
+  Fluxer. The bot never deletes a role. Following needs `GAMES_CHANNEL_ID`.
 
 Every reply names the field and the rule, never the value you sent. Replies use the word
 "community".

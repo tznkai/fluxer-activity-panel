@@ -17,7 +17,7 @@ import aiohttp
 from fluxer_client.events import MessageCreate
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
 from fluxer_client.roles import RoleCache
-from fluxer_panel import card_fields, cards, interaction_settings, render, subscriptions, text
+from fluxer_panel import card_fields, cards, follow_roles, interaction_settings, render, subscriptions, text
 from fluxer_panel.cards import SHOW_ITEMS, CardFieldError, ChannelLink
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
@@ -40,9 +40,10 @@ PREVIEW_LIMIT = 2000  # Fluxer's message content limit
 SUBCOMMANDS = ("new", "set", "clear", "show", "list", "publish", "archive", "subscribe", "unsubscribe", "interactions",
                "help")
 SETTABLE = ("title", "description", "join", "first_time", "sort", "seats", "location", "voice",
-            "text_channel1", "text_channel2", "text_channel3", "address", "address_public", "manager", "probe", "show")
+            "text_channel1", "text_channel2", "text_channel3", "address", "address_public", "manager", "probe", "show",
+            "follow_role")
 CLEARABLE = ("description", "join", "first_time", "sort", "seats", "location", "voice",
-             "text_channel1", "text_channel2", "text_channel3", "address", "manager", "probe", "show")
+             "text_channel1", "text_channel2", "text_channel3", "address", "manager", "probe", "show", "follow_role")
 # Text channel fields and the slot each one writes. The slots are the store's, so no input picks a table or a slot.
 TEXT_CHANNEL_SLOTS = {"text_channel1": 1, "text_channel2": 2, "text_channel3": 3}
 # Settable fields that are stored as base columns, and the column each one writes.
@@ -52,6 +53,10 @@ BASE_COLUMNS = {"title": "title", "description": "description", "join": "how_to_
 BASE_CLEARS = {"description": ("description", None), "join": ("how_to_join", None),
                "first_time": ("first_time", None), "sort": ("sort_order", 0), "show": ("show_details", ())}
 SLOT_CLEARS = frozenset({"voice", "address", "location", "seats", "manager", "probe"})
+# Settable fields whose change shows on the posted messages' reactions, so a set re-seeds them.
+RESEED_FIELDS = frozenset({"follow_role"})
+# Role outcomes after which a card has a working follow role, so its bell is seeded and the reply says following is on.
+_FOLLOWING = frozenset({follow_roles.Ensured.REUSED, follow_roles.Ensured.ADOPTED, follow_roles.Ensured.CREATED})
 _FIELD_NAMES = frozenset(SETTABLE) | {"slug"}
 
 
@@ -176,6 +181,8 @@ async def _set(event: MessageCreate, ctx: CardContext, rest: str) -> _Result:
         await ctx.db.run(write)
         ctx.kick()
     await _say(ctx, event, reply)
+    if field_name in RESEED_FIELDS:
+        await _reseed(ctx, card.id)
     return _Result(card.id, logged)
 
 
@@ -212,6 +219,8 @@ async def _prepare_set(ctx: CardContext, card: cards.Card, field_name: str,
         kind, host, port = card_fields.probe(value, ctx.sources)
         probe = cards.ProbeRef(kind, host, port)
         return (lambda c: cards.set_probe(c, card_id, probe)), text.CARD_UPDATED
+    if field_name == "follow_role":
+        return await _set_follow_role(ctx, card, value)
     if field_name in TEXT_CHANNEL_SLOTS:
         slot = TEXT_CHANNEL_SLOTS[field_name]
         guild_id, channel_id = card_fields.channel_target(field_name, value)
@@ -224,6 +233,29 @@ async def _prepare_set(ctx: CardContext, card: cards.Card, field_name: str,
     if voice is None:
         return None, reply
     return (lambda c: cards.set_voice(c, card_id, voice)), reply
+
+
+async def _set_follow_role(ctx: CardContext, card: cards.Card, value: str) -> tuple[None, str]:
+    """Checks a role id and stores it when every check passes: `ensure_follow_role` does the store, so this returns no
+    write and only the reply."""
+    role_id = card_fields.snowflake("follow_role", value)
+    guild = await ctx.games_guild.get() if ctx.games_guild is not None else None
+    if guild is None:
+        return None, text.FOLLOW_NO_GAMES
+    deps = _follow_deps(ctx)
+    if deps is None:
+        return None, text.FOLLOW_REFUSED["no_bot_id"]
+    res = await follow_roles.ensure_follow_role(deps, guild, card, role_id=role_id)
+    if res.outcome is follow_roles.Ensured.SET:
+        return None, text.FOLLOW_ROLE_SET.format(slug=card.slug)
+    return None, text.FOLLOW_REFUSED[res.reason or "lookup_failed"]
+
+
+def _follow_deps(ctx: CardContext) -> follow_roles.FollowDeps | None:
+    """The role dependencies, or None when following is off: a context built without them makes no role call."""
+    if ctx.roles is None or ctx.identity is None:
+        return None
+    return follow_roles.FollowDeps(db=ctx.db, rest=ctx.rest, config=ctx.config, roles=ctx.roles, identity=ctx.identity)
 
 
 def _base_value(field_name: str, value: str) -> Any:
@@ -288,6 +320,14 @@ async def _clear(event: MessageCreate, ctx: CardContext, rest: str) -> _Result:
         return _Result(card.id, logged)
     now = int(ctx.clock())
     card_id = card.id
+    if field_name == "follow_role":
+        # The bell already on the card stays. A press on it then gets "Following isn't available", which is correct.
+        old = await ctx.db.run(lambda c: cards.clear_follow_role(c, card_id))
+        if old is None:
+            await _say(ctx, event, text.FOLLOW_ROLE_NONE.format(slug=card.slug))
+        else:
+            await _say(ctx, event, text.FOLLOW_ROLE_CLEARED.format(slug=card.slug, role=f"<@&{old.role_id}>"))
+        return _Result(card_id, logged)
     if field_name in TEXT_CHANNEL_SLOTS:
         slot = TEXT_CHANNEL_SLOTS[field_name]
         await ctx.db.run(lambda c: cards.clear_text_channel(c, card_id, slot))
@@ -392,7 +432,12 @@ async def _publish(event: MessageCreate, ctx: CardContext, rest: str) -> _Result
     if outcome == "live":
         await _say(ctx, event, text.ALREADY_LIVE)
         return _Result(card_id)
+    # The role step runs after the lock, so its REST calls never hold the card's lock. It runs before the kick, so the
+    # poller's first post already sees the stored role.
+    follow = await _publish_follow(ctx, found)
     ctx.kick()
+    if follow is not None and follow.outcome in _FOLLOWING:
+        await _reseed(ctx, card_id)
     # The reply says what the next check will post: the card when a games channel is set, otherwise only its active
     # copies (the poller posts those without a games channel), otherwise nothing.
     if ctx.config.games_channel_id is not None:
@@ -401,8 +446,22 @@ async def _publish(event: MessageCreate, ctx: CardContext, rest: str) -> _Result
         reply = text.PUBLISHED_COPIES_ONLY
     else:
         reply = text.PUBLISHED_NO_CHANNEL
+    if follow is not None:
+        reply += text.FOLLOW_ON if follow.outcome in _FOLLOWING else text.FOLLOW_OFF
     await _say(ctx, event, reply)
     return _Result(card_id)
+
+
+async def _publish_follow(ctx: CardContext, card: cards.Card) -> follow_roles.EnsureResult | None:
+    """The publish-time role step. None, with no role call and no reply text, when following is off: no games channel,
+    no games community, or a context without the role dependencies."""
+    deps = _follow_deps(ctx)
+    if ctx.config.games_channel_id is None or ctx.games_guild is None or deps is None:
+        return None
+    guild = await ctx.games_guild.get()
+    if guild is None:
+        return None
+    return await follow_roles.ensure_follow_role(deps, guild, card)
 
 
 async def _archive(event: MessageCreate, ctx: CardContext, rest: str) -> _Result:
@@ -627,12 +686,32 @@ async def _apply_interactions(ctx: CardContext, targets: list[_Target], *, on: b
         for target in targets:
             await seeder.unseed(target.channel_id, target.message_id, REACTION_EMOJI)
         return
-    games_guild_id = await games_guild.get()
+    await _seed_targets(ctx, seeder, targets, await games_guild.get())
+
+
+async def _seed_targets(ctx: CardContext, seeder: Seeder, targets: list[_Target], games_guild_id: str | None) -> None:
+    """Adds the emoji each target should carry. A copy outside the games community is not home, so it gets no bell."""
     for target in targets:
         home = target.kind == "card" or target.guild_id == games_guild_id
         play_now = has_play_now_target(target.card, ctx.config, surface_kind=target.kind, home=home)
         await seeder.seed(target.channel_id, target.message_id,
                           wanted_emoji(target.card, home=home, play_now_target=play_now))
+
+
+async def _reseed(ctx: CardContext, card_id: int) -> None:
+    """Adds the reactions a live card's posted messages should carry: its own message and each active copy with one. It
+    runs with no card lock held, and only adds the emoji a message lacks. Nothing is added while reactions are off."""
+    if ctx.seeder is None or ctx.games_guild is None:
+        return
+    targets = await ctx.db.run(lambda c: _live_targets(c, card_id))
+    if not targets or not await ctx.seeder.enabled_for(card_id):
+        return
+    await _seed_targets(ctx, ctx.seeder, targets, await ctx.games_guild.get())
+
+
+def _live_targets(conn: Any, card_id: int) -> list[_Target]:
+    card = cards.get_by_id(conn, card_id)
+    return _targets(conn, [card] if card is not None and card.state == "live" else [])
 
 
 async def _interactions(event: MessageCreate, ctx: CardContext, rest: str) -> _Result:

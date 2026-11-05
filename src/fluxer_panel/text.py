@@ -80,7 +80,7 @@ HELP_COMMANDS = (
     "!card interactions on|off [slug]: turn the reaction taps on or off, for every card or for one\n"
     "!card help fields: each field, its format and its limits\n"
     "Fields: title, description, join, first_time, sort, seats, location, voice, text_channel1, text_channel2, "
-    "text_channel3, address, address_public, manager, probe, show"
+    "text_channel3, address, address_public, manager, probe, show, follow_role"
 )
 # `!card help fields`: one line per field. The placeholders are filled from the code's limits and kinds.
 HELP_FIELDS = (
@@ -99,7 +99,9 @@ HELP_FIELDS = (
     "address_public: yes or no (default no). Shows the address outside Fluxer. Needs an address first.\n"
     "manager: <kind> <ref>, kind one of {manager_kinds}. The ref each kind expects: {manager_refs}.\n"
     "probe: <{probe_kinds}> <host> <port>.\n"
-    "show: any of {show_items}, comma separated, or none."
+    "show: any of {show_items}, comma separated, or none.\n"
+    "follow_role: a role id, as a snowflake. The role must have permissions 0, be mentionable and sit below the bot's "
+    "top role. Clear it with !card clear <slug> follow_role."
 )
 PUBLISHED_NO_CHANNEL = "Published, but GAMES_CHANNEL_ID isn't set, so nothing will be posted."
 # Used when the card has active copies: the card's own message is not posted, but its copies are.
@@ -170,3 +172,21 @@ BOARD_PIN_ALERT = "I posted the summary board in the games channel. Pin it so it
 # takes a channel id only.
 PRESS_FAILED = "Something went wrong with that. Try again in a moment."
 REACTION_DEGRADED_ALERT = "<#{channel_id}> doesn't let the bot remove reactions, so taps there count when added."
+# Follow roles, on the card commands and at publish. The bell is written as an escape, as presses.FOLLOW_EMOJI is.
+FOLLOW_ON = " Following is on: \U0001F514 on the card toggles its role."
+FOLLOW_OFF = " Following is off for this card (see !card set <slug> follow_role <role id>)."
+FOLLOW_NO_GAMES = "Following needs GAMES_CHANNEL_ID."
+FOLLOW_ROLE_SET = "Follow role set for {slug}."
+FOLLOW_ROLE_CLEARED = "Forgot the follow role {role} for {slug}. The role itself is kept."
+FOLLOW_ROLE_NONE = "{slug} has no follow role."
+# One sentence per refusal reason of the set path. None of them names the role.
+FOLLOW_REFUSED = {
+    "missing": "That role isn't in the games channel's community.",
+    "everyone": "That's the @everyone role.",
+    "role_permissions": "That role grants permissions. A follow role must have none.",
+    "not_mentionable": "That role isn't mentionable.",
+    "hierarchy": "That role is at or above the bot's top role.",
+    "taken": "That role is another card's follow role.",
+    "no_bot_id": "Try again in a moment.",
+    "lookup_failed": "I couldn't reach Fluxer to check that role. Try again in a minute.",
+}
