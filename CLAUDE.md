@@ -26,6 +26,11 @@ user-facing description, the purge status file format and the "Exit 3" recovery 
   summary board's payload), `text.py` (user-facing strings), `poller.py` (the single card poller, which also keeps
   the board and each card's subscription copies). The summary board's single-row store is `board.py`. Card
   subscriptions (copies of a card in other text channels) are stored by `subscriptions.py`.
+  Reactions: `presses.py` (filters, rate limits and removals for presses; the only module that knows presses are
+  reactions), `interactions.py` (the press handler), `seeding.py` (adds and removes the bot's own reactions),
+  `pacer.py` (the per-channel reaction budget), `games.py` (the games community lookup and the bot's identity),
+  `notify.py` (DMs to the admins and to one user) and `interaction_settings.py` (the global switch, the per-card off
+  switch and the degraded channels).
 - `src/fluxer_panel/sources/`: `base.py` (result types and the `HostManager`/`Probe` protocols), `registry.py`
   (the kind-to-plugin map), `pterodactyl.py` (host manager), `minecraft.py` (Bedrock and Java probes), `a2s.py`
   (A2S probe), `_probe_util.py` (the shared guard and limits).
@@ -170,6 +175,12 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   message. A failed read of the stored board at the start of a tick is logged. The cards then publish as they would
   with a board stored, and no new board is posted in that tick (a stored board is still edited); the next tick
   posts it. The poller logs the board's ids and exception types only: never a title, a status or a link.
+
+## Reactions rules
+
+- `presses.py` is the only code that knows presses are reactions.
+- Every reaction REST call in `fluxer_panel` goes through `ChannelPacer.wait()`, so each channel's reaction calls share
+  one budget.
 
 ## Database
 
