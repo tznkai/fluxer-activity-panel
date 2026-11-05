@@ -12,12 +12,15 @@ The script never deletes roles: the operator deletes the test role by hand.
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
 from _live import Live, LiveRefused, Results, live, load_env, main, out, wait_for_enter
 from fluxer_client.rest import FluxerHTTPError
 from roles import has_role
+
+PING_GAP_S = 60  # between ping shapes, so the operator can tell their notifications apart
 
 REASON = "fluxer panel live test"
 AUDIT_HEADERS = {"X-Audit-Log-Reason": REASON}   # the same header FluxerREST.create_role sends for REASON
@@ -187,10 +190,13 @@ async def patch_mentionable(lv: Live, res: Results, guild: str, role_id: str, va
 
 
 async def ping_shapes(lv: Live, res: Results, role_id: str, sent: list[str]) -> dict[str, Any] | None:
-    """Sends shape A then shape B. Each accepted send must list the role in mention_roles. Returns the first accepted
-    shape's allowed_mentions, or None."""
+    """Sends shape A then shape B, PING_GAP_S apart so their notifications can be told apart. Each accepted send must
+    list the role in mention_roles. Returns the first accepted shape's allowed_mentions, or None."""
     accepted: dict[str, Any] | None = None
-    for name, allowed in shapes(role_id):
+    for index, (name, allowed) in enumerate(shapes(role_id)):
+        if index:
+            out(lv.redactor, f"INFO waiting {PING_GAP_S} s before shape {name}")
+            await asyncio.sleep(PING_GAP_S)
         try:
             message = await send_ping(lv, role_id, f"live ping {name}", allowed, sent)
         except FluxerHTTPError as exc:
