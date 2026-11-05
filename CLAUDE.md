@@ -3,7 +3,7 @@
 
 # Fluxer Activity Panel
 
-Last verified: 2026-11-04
+Last verified: 2026-11-05
 
 Standalone project with two packages under `src/`: `fluxer_client` (a panel-agnostic Fluxer REST and
 gateway client) and `fluxer_panel` (the activity panel bot built on it). `README.md` has the
@@ -208,6 +208,7 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   `recurrence_until` is more than 7 days ago. An open-ended series (`recurrence_until` NULL) is never purged.
   RSVPs go with their session by `ON DELETE CASCADE`.
 - A request expires when `created_at` is more than 30 days ago, whatever its status.
+- A play-now post expires when `created_at` is more than 30 days ago, in either state.
 - Cutoffs are strict: a row exactly at a cutoff is kept. One transaction per run, then a WAL checkpoint.
 - `run` purges at startup and then every `PURGE_INTERVAL_SECONDS`. A failed purge logs `purge_failed`, is recorded
   in the status file, and the bot keeps running.
