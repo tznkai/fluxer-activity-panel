@@ -18,7 +18,7 @@ import aiohttp
 import pytest
 
 from fluxer_client import events
-from fluxer_client.rest import FluxerREST, ReactionUsersPage
+from fluxer_client.rest import FluxerHTTPError, FluxerREST, ReactionUsersPage
 from fluxer_client.roles import RoleCache
 from fluxer_panel import cards, play_now, render, subscriptions, text
 from fluxer_panel.logs import FIELDS_ATTR
@@ -673,6 +673,22 @@ async def test_a_cursor_that_does_not_advance_stops_the_count_and_is_logged(harn
     assert "play_now_count_stalled" in event_names(caplog)
 
 
+async def test_a_page_with_no_new_user_stops_the_count_even_when_the_cursor_moves(harness, monkeypatch,
+                                                                                  caplog) -> None:
+    caplog.set_level(logging.INFO, logger="fluxer_panel")
+    h = await harness()
+    h.clock.now = 100
+    mid = await post_play_now(h)
+    responses = {None: ReactionUsersPage(crowd(7001, 2), True, "7002"),
+                 "7002": ReactionUsersPage(crowd(7001, 2), True, "7099")}
+    asked = page_source(h.interactions._rest, lambda after: responses[after], monkeypatch)
+    h.clock.now = 3700
+    await h.interactions.expire_play_now()
+    assert asked == [None, "7002"]
+    assert status_field(edits_to(h.state, mid)[-1]) == text.PLAY_NOW_PLAYING.format(n=3)
+    assert "play_now_count_stalled" in event_names(caplog)
+
+
 async def test_the_page_cap_stops_the_count_and_logs_the_card_id_only(harness, monkeypatch, caplog) -> None:
     caplog.set_level(logging.INFO, logger="fluxer_panel")
     h = await harness()
@@ -711,6 +727,42 @@ async def test_a_failed_recount_at_expiry_omits_the_count_and_still_ends_the_mes
     assert ended.payload["content"] == text.PLAY_NOW_ENDED_CONTENT.format(card=render.escape(CARD_TITLE))
     assert len(deletes_all_reactions(h.state, mid)) == 1
     assert "play_now_count_failed" in event_names(caplog)
+
+
+async def test_a_failed_recount_at_expiry_logs_the_http_status_and_no_reason(harness, monkeypatch, caplog) -> None:
+    caplog.set_level(logging.INFO, logger="fluxer_panel")
+    h = await harness()
+    h.clock.now = 100
+    mid = await post_play_now(h)
+
+    async def refused(*args: Any, **kwargs: Any) -> ReactionUsersPage:
+        raise FluxerHTTPError(500, None, "server error")
+
+    monkeypatch.setattr(h.interactions._rest, "get_reaction_users_page", refused)
+    h.clock.now = 3700
+    await h.interactions.expire_play_now()
+    [ended] = edits_to(h.state, mid)
+    assert text.FIELD_STATUS not in ended_status_fields(ended)
+    [failed] = [r for r in panel_records(caplog) if r.getMessage() == "play_now_count_failed"]
+    assert getattr(failed, FIELDS_ATTR)["status"] == 500
+    assert "reason" not in getattr(failed, FIELDS_ATTR)
+
+
+async def test_a_failed_me_too_recount_logs_the_http_status_and_edits_nothing(harness, monkeypatch, caplog) -> None:
+    caplog.set_level(logging.INFO, logger="fluxer_panel")
+    h = await harness()
+    mid = await post_play_now(h)
+    set_reactors(h.state, mid, [REACTOR_A])
+
+    async def refused(*args: Any, **kwargs: Any) -> ReactionUsersPage:
+        raise FluxerHTTPError(503, None, "unavailable")
+
+    monkeypatch.setattr(h.interactions._rest, "get_reaction_users_page", refused)
+    await h.presses.on_reaction(me_too(REACTOR_A, mid))
+    assert edits_to(h.state, mid) == []
+    [failed] = [r for r in panel_records(caplog) if r.getMessage() == "play_now_count_failed"]
+    assert getattr(failed, FIELDS_ATTR)["status"] == 503
+    assert "reason" not in getattr(failed, FIELDS_ATTR)
 
 
 async def test_a_transport_error_on_the_ended_edit_still_removes_reactions_and_ends_the_next_message(
@@ -766,7 +818,9 @@ async def test_an_unexpected_failure_in_the_me_too_handler_is_logged_and_not_rai
 
     monkeypatch.setattr(h.interactions, "me_too_changed", broken)
     await h.presses.on_reaction(me_too(REACTOR_A, mid))
-    assert "play_now_edit_failed" in event_names(caplog)
+    assert "play_now_edit_failed" not in event_names(caplog)
+    [failed] = [r for r in panel_records(caplog) if r.getMessage() == "play_now_me_too_failed"]
+    assert getattr(failed, FIELDS_ATTR)["reason"] == "RuntimeError"
 
 
 async def test_a_store_failure_after_the_send_deletes_the_message_and_tells_the_presser(harness, monkeypatch,

@@ -268,7 +268,7 @@ class Interactions:
             count = await self._count_playing(pn)
         except Exception as exc:  # noqa: BLE001 - a failed count leaves the message as it is
             log_event(log, "play_now_count_failed", level=logging.WARNING, card_id=card_id,
-                      reason=type(exc).__name__)
+                      **_failure_fields(exc))
             return
         async with self._locks.get(card_id):
             live = await self._db.run(lambda c: play_now.get_live_by_message(c, pn.message_id))
@@ -317,7 +317,7 @@ class Interactions:
             return await self._count_playing(pn)
         except Exception as exc:  # noqa: BLE001 - a failed recount omits the count rather than showing a guess
             log_event(log, "play_now_count_failed", level=logging.WARNING, card_id=pn.card_id,
-                      reason=type(exc).__name__)
+                      **_failure_fields(exc))
             return None
 
     async def expire_play_now(self) -> None:
