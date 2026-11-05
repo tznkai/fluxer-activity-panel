@@ -19,12 +19,12 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fluxer_client.events import MessageDelete
-from fluxer_client.ids import is_snowflake
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
-from fluxer_panel import board, cards, render, subscriptions, text
+from fluxer_panel import board, cards, notify, render, subscriptions, text
 from fluxer_panel.card_commands import TEXT_CHANNEL_TYPE, VOICE_CHANNEL_TYPE, CardLocks, channel_name
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
+from fluxer_panel.games import GamesGuild
 from fluxer_panel.logs import log_event
 from fluxer_panel.resolver import CardStatus, next_action_text, resolve
 from fluxer_panel.sources.base import HostManager, PowerAction, PowerState, ProbeFailed, ProbeResult
@@ -57,7 +57,7 @@ class _Evaluated:
 
 class Poller:
     def __init__(self, *, db: Database, rest: FluxerREST, sources: Sources, config: Config, locks: CardLocks,
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time, games_guild: GamesGuild | None = None) -> None:
         self._db = db
         self._rest = rest
         self._sources = sources
@@ -69,7 +69,7 @@ class Poller:
         self._names_checked: dict[int, float] = {}
         self._deleted: OrderedDict[tuple[str, str], None] = OrderedDict()
         self._warned_no_channel = False
-        self._games_guilds: dict[str, str] = {}   # each board channel's community, once a lookup has answered
+        self._games_guild = games_guild if games_guild is not None else GamesGuild(rest, config)
 
     def kick(self) -> None:
         self._kick.set()
@@ -319,12 +319,7 @@ class Poller:
         await self._dm_admins(text.PROBE_ALERT.format(slug=card.slug), failed_event="probe_alert_failed")
 
     async def _dm_admins(self, content: str, *, failed_event: str) -> None:
-        for user_id in sorted(self._config.admin_user_ids):
-            try:
-                dm = await self._rest.open_dm(user_id)
-                await self._rest.send_message(dm, content=content, allowed_mentions={"parse": []})
-            except Exception as exc:  # noqa: BLE001 - one admin's failed DM must not stop the other admins' DMs
-                log_event(log, failed_event, level=logging.WARNING, user_id=user_id, reason=type(exc).__name__)
+        await notify.dm_admins(self._rest, self._config, content, failed_event=failed_event)
 
     async def _read_board(self) -> board.BoardState | None:
         """The stored board state, read at the start of a tick. A failed read is logged and gives None: the cards then
@@ -379,27 +374,10 @@ class Poller:
 
     async def _board_payload(self, entries: list[tuple[cards.Card, CardStatus | None]],
                              channel_id: str) -> dict[str, Any]:
-        guild_id = await self._games_guild_id(channel_id)
+        # Until a lookup answers, the board's links are plain text.
+        guild_id = await self._games_guild.get(channel_id)
         return render.board_message(entries, games_channel_id=channel_id, games_guild_id=guild_id,
                                     instance_url=self._config.instance_url)
-
-    async def _games_guild_id(self, channel_id: str) -> str | None:
-        """The community of a board channel, looked up once per channel and kept. Until a lookup answers, the board's
-        links are plain text."""
-        known = self._games_guilds.get(channel_id)
-        if known is not None:
-            return known
-        try:
-            channel = await self._rest.get_channel(channel_id)
-        except Exception as exc:  # noqa: BLE001 - without the community the board shows plain text, and the lookup retries
-            log_event(log, "games_channel_lookup_failed", level=logging.WARNING, reason=type(exc).__name__)
-            return None
-        guild_id = channel.get("guild_id")
-        if not is_snowflake(guild_id):
-            log_event(log, "games_channel_lookup_failed", level=logging.WARNING, reason="no_community")
-            return None
-        self._games_guilds[channel_id] = guild_id
-        return guild_id
 
     async def _board_post(self, channel_id: str, payload: dict[str, Any]) -> None:
         sent = await self._rest.send_message(channel_id, embeds=payload["embeds"],
