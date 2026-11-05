@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 K. Chen
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Retention purge: delete expired sessions, RSVPs and requests, and record each attempt in an atomic status file."""
+"""Retention purge: delete expired sessions, RSVPs, requests and play-now posts; log each attempt in a status file."""
 
 from __future__ import annotations
 
