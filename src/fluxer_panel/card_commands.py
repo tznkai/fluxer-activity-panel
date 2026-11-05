@@ -17,13 +17,14 @@ import aiohttp
 from fluxer_client.events import MessageCreate
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
 from fluxer_client.roles import RoleCache
-from fluxer_panel import card_fields, cards, render, subscriptions, text
+from fluxer_panel import card_fields, cards, interaction_settings, render, subscriptions, text
 from fluxer_panel.cards import SHOW_ITEMS, CardFieldError, ChannelLink
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.logs import log_event
-from fluxer_panel.seeding import Seeder
+from fluxer_panel.presses import FOLLOW_EMOJI, PLAY_NOW_EMOJI, WAKE_EMOJI
+from fluxer_panel.seeding import Seeder, has_play_now_target, wanted_emoji
 from fluxer_panel.sources.registry import PROBES, Sources, known_manager_kinds, manager_ref_hints
 
 log = logging.getLogger(__name__)
@@ -36,7 +37,8 @@ _CHANNEL_KINDS = {VOICE_CHANNEL_TYPE: text.CHANNEL_KIND_VOICE, TEXT_CHANNEL_TYPE
 CHANNEL_NAME_MAX = 100
 LIST_CHUNK = 1900  # UTF-16 units: a list message stays under Fluxer's 2000-unit message limit
 PREVIEW_LIMIT = 2000  # Fluxer's message content limit
-SUBCOMMANDS = ("new", "set", "clear", "show", "list", "publish", "archive", "subscribe", "unsubscribe", "help")
+SUBCOMMANDS = ("new", "set", "clear", "show", "list", "publish", "archive", "subscribe", "unsubscribe", "interactions",
+               "help")
 SETTABLE = ("title", "description", "join", "first_time", "sort", "seats", "location", "voice",
             "text_channel1", "text_channel2", "text_channel3", "address", "address_public", "manager", "probe", "show")
 CLEARABLE = ("description", "join", "first_time", "sort", "seats", "location", "voice",
@@ -584,6 +586,102 @@ async def _unsubscribe(event: MessageCreate, ctx: CardContext, rest: str) -> _Re
     return _Result(card.id)
 
 
+# interactions ----------------------------------------------------------------------------------------
+
+REACTION_EMOJI = (WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI)
+
+
+@dataclass(frozen=True)
+class _Target:
+    """One posted message that carries the bot's reactions: a card's own message, or a copy's."""
+    card: cards.Card
+    kind: str               # "card" or "copy": the surfaces that carry reactions
+    channel_id: str
+    message_id: str
+    guild_id: str | None    # a copy's community; None for the card's own message, which is always at home
+
+
+def _targets(conn: Any, listed: list[cards.Card]) -> list[_Target]:
+    """The posted messages of each card and its active copies, each card before its own copies."""
+    targets: list[_Target] = []
+    for card in listed:
+        if card.channel_id is not None and card.message_id is not None:
+            targets.append(_Target(card, "card", card.channel_id, card.message_id, None))
+        for sub in subscriptions.list_active(conn, card.id):
+            if sub.message_id is not None:
+                targets.append(_Target(card, "copy", sub.channel_id, sub.message_id, sub.guild_id))
+    return targets
+
+
+def _interaction_deps(ctx: CardContext) -> tuple[Seeder, GamesGuild]:
+    if ctx.seeder is None or ctx.games_guild is None:
+        raise RuntimeError("reactions are not wired into the command context")
+    return ctx.seeder, ctx.games_guild
+
+
+async def _apply_interactions(ctx: CardContext, targets: list[_Target], *, on: bool) -> None:
+    """Removes the bot's reactions from each message, or adds the ones each surface should carry. Callers take the
+    targets in a database read and hold no card lock here, so a slow reaction call never stalls a publish or archive."""
+    seeder, games_guild = _interaction_deps(ctx)
+    if not on:
+        for target in targets:
+            await seeder.unseed(target.channel_id, target.message_id, REACTION_EMOJI)
+        return
+    games_guild_id = await games_guild.get()
+    for target in targets:
+        home = target.kind == "card" or target.guild_id == games_guild_id
+        play_now = has_play_now_target(target.card, ctx.config, surface_kind=target.kind, home=home)
+        await seeder.seed(target.channel_id, target.message_id,
+                          wanted_emoji(target.card, home=home, play_now_target=play_now))
+
+
+async def _interactions(event: MessageCreate, ctx: CardContext, rest: str) -> _Result:
+    parts = rest.split()
+    if not 1 <= len(parts) <= 2 or parts[0].lower() not in ("on", "off"):
+        await _say(ctx, event, text.INTERACTIONS_USAGE)
+        return _Result()
+    on = parts[0].lower() == "on"
+    if len(parts) == 2:
+        return await _interactions_card(event, ctx, parts[1], on=on)
+    return await _interactions_all(event, ctx, on=on)
+
+
+async def _interactions_all(event: MessageCreate, ctx: CardContext, *, on: bool) -> _Result:
+    def switch(conn: Any) -> list[_Target]:
+        interaction_settings.set_enabled(conn, on)
+        listed = cards.list_cards(conn, state="live")
+        if on:   # a card switched off on its own stays off when the global switch comes back on
+            listed = [card for card in listed if not interaction_settings.card_off(conn, card.id)]
+        return _targets(conn, listed)
+
+    targets = await ctx.db.run(switch)
+    await _apply_interactions(ctx, targets, on=on)
+    await _say(ctx, event, text.INTERACTIONS_ON if on else text.INTERACTIONS_OFF)
+    return _Result()
+
+
+async def _interactions_card(event: MessageCreate, ctx: CardContext, slug: str, *, on: bool) -> _Result:
+    card = await _find(ctx, slug)
+    if card is None:
+        await _say(ctx, event, text.NO_SUCH_CARD)
+        return _Result()
+    card_id = card.id
+
+    def switch(conn: Any) -> list[_Target]:
+        interaction_settings.set_card_off(conn, card_id, not on)
+        current = cards.get_by_id(conn, card_id)
+        # With the global switch off, a card turned on seeds nothing until the switch itself comes back on.
+        if current is None or (on and not interaction_settings.enabled(conn)):
+            return []
+        return _targets(conn, [current])
+
+    targets = await ctx.db.run(switch)
+    await _apply_interactions(ctx, targets, on=on)
+    reply = text.INTERACTIONS_CARD_ON if on else text.INTERACTIONS_CARD_OFF
+    await _say(ctx, event, reply.format(slug=card.slug))
+    return _Result(card_id)
+
+
 # help ------------------------------------------------------------------------------------------------
 
 def help_fields_reply() -> str:
@@ -626,5 +724,6 @@ _HANDLERS: dict[str, Callable[[MessageCreate, CardContext, str], Any]] = {
     "archive": _archive,
     "subscribe": _subscribe,
     "unsubscribe": _unsubscribe,
+    "interactions": _interactions,
     "help": _help,
 }

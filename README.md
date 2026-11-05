@@ -230,6 +230,7 @@ message. The board is laid out for the desktop and web clients. Phones show the 
 !card archive <slug>                       deletes the message and every subscription copy, keeps the card
 !card subscribe <slug> <channel>           posts a copy of the card in another text channel
 !card unsubscribe <slug> <channel>         deletes that copy and stops posting there
+!card interactions on|off [slug]           turns the reaction taps off or on, for every card or for one
 !card help                                 the subcommands and the field names
 !card help fields                          each field, its format and its limits
 ```
