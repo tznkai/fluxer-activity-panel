@@ -9,14 +9,14 @@ import logging
 from fluxer_client.events import MessageCreate
 from fluxer_client.ids import is_snowflake
 from fluxer_client.rest import FluxerREST
-from fluxer_panel import card_commands
+from fluxer_panel import card_commands, request_commands
 from fluxer_panel.card_commands import CardContext
 from fluxer_panel.config import Config
 from fluxer_panel.logs import log_event
 
 log = logging.getLogger(__name__)
 SUBCOMMANDS = ("ping",)
-HEADS = ("admin", "card")
+HEADS = ("admin", "card", "request")
 
 
 def authorize(event: MessageCreate, config: Config) -> bool:
@@ -61,6 +61,11 @@ async def handle(event: MessageCreate, config: Config, rest: FluxerREST, card_ct
         if card_ctx is None:
             return
         await card_commands.handle(args, event, card_ctx)
+        return
+    if head == "request":
+        if card_ctx is None:
+            return
+        await request_commands.handle(args, event, card_ctx)
         return
     sub = args.split()[0].lower() if args else ""
     if sub == "ping":

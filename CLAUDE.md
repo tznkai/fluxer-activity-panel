@@ -32,7 +32,8 @@ user-facing description, the purge status file format and the "Exit 3" recovery 
   `notify.py` (DMs to the admins and to one user), `interaction_settings.py` (the global switch, the per-card off
   switch and the degraded channels) and `follow_roles.py` (the only module that changes a role: the 🔔 follow toggle
   and each card's follow role).
-  `wake.py` (wake presses, and closing a request on ready or expiry), `wake_requests.py` (the request store).
+  `wake.py` (wake presses, and closing a request on ready or expiry), `wake_requests.py` (the request store),
+  `request_commands.py` (`!request list|clear`).
 - `src/fluxer_panel/sources/`: `base.py` (result types and the `HostManager`/`Probe` protocols), `registry.py`
   (the kind-to-plugin map), `pterodactyl.py` (host manager), `minecraft.py` (Bedrock and Java probes), `a2s.py`
   (A2S probe), `_probe_util.py` (the shared guard and limits).
@@ -132,6 +133,9 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   (`poller._publish`), so `!card publish` replies with one of three texts: `text.CARD_PUBLISHED` (a games channel is
   set), `text.PUBLISHED_COPIES_ONLY` (no games channel, at least one active copy) or `text.PUBLISHED_NO_CHANNEL`
   (no games channel and no active copy, so nothing is posted). Rows without a slug (v1 data) are never read or listed.
+- `!request list` and `!request clear <slug>` are the admin head `request`, routed by `admin.handle` after `authorize`
+  to `request_commands.handle`, and documented in `README.md`. `clear` closes the card's open rows as `cleared` through
+  `WakeRequests.close`, so each requester gets one close DM.
 - `!card help` lists the subcommands; `!card help fields` lists every field with limits, ranges and kinds taken from
   the code that enforces them (`card_fields`, `sources/registry.py`). `tests/test_card_help.py` checks they match and
   that each reply fits one message, so a new field or limit needs no hand edit of the help numbers but a new field

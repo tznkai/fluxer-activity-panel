@@ -224,6 +224,12 @@ WAKE_ADMIN = "Someone wants {card} ({slug}). Status: {status}. Asked by: {reques
 WAKE_ADMIN_OPEN = " · open request"
 WAKE_READY = "{card} is ready."
 WAKE_GAVE_UP = "Nobody could start {card} right now."
+# `!request list|clear <slug>`: admin replies.
+REQUEST_USAGE = "Usage: !request list | !request clear <slug>"
+REQUEST_LIST_EMPTY = "No open requests."
+REQUEST_LIST_LINE = "{slug}: {n} requested, open for {age}"
+REQUEST_NONE_OPEN = "There's no open request for {slug}."
+REQUEST_CLEARED = "Cleared the request for {slug} ({n} people)."
 WAKE_ADMIN_CLOSED = {
     "ready": "{card} ({slug}) is ready. The request from {n} people is closed.",
     "expired": "Nobody started {card} ({slug}). The request from {n} people has expired.",

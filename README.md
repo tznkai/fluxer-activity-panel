@@ -238,6 +238,18 @@ message. The board is laid out for the desktop and web clients. Phones show the 
 The last argument takes the rest of the line, so no quoting is needed. `!card help` and
 `!card help fields` are the replies to read when you forget a format or a limit.
 
+### Wake requests
+
+A member who presses the wake reaction on an asleep card opens a request: the admins get a direct
+message, and the card shows "Requested" with the number of people who asked. A request closes when the
+card is ready, when it expires (`WAKE_REQUEST_EXPIRY_SECONDS`), or when an admin clears it. Each
+requester gets one direct message when a request closes. Admins manage open requests by direct message:
+
+```
+!request list                              each card with an open request: its slug, the number of people and the age
+!request clear <slug>                      closes the card's open requests as cleared
+```
+
 ### Fields
 
 - `title` (up to 200 characters), `description`, `join` (how to join) and `first_time` (up to 1000
