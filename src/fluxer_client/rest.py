@@ -311,8 +311,8 @@ class FluxerREST:
         if after is not None:
             path += f"&after={require_snowflake(after)}"
         result = await self.request("GET", path)
-        if isinstance(result, dict):          # Fluxer documents a paged object for /users
-            result = result.get("users")
+        if isinstance(result, dict):          # the live /users path: {"items", "has_more", "next_after"}
+            result = result.get("items")
         return result if isinstance(result, list) else []
 
     async def remove_emoji_reactions(self, channel_id: str, message_id: str, emoji: str) -> None:

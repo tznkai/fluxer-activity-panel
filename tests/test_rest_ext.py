@@ -639,10 +639,34 @@ async def test_get_reaction_users_limit_out_of_range_raises_without_request(fake
 async def test_get_reaction_users_unwraps_a_paged_object(fake, session):
     state, base = fake
     state.overrides[f"GET /api/v1/channels/1/messages/2/reactions/{RAISED_HAND}/users"] = Override(
-        200, b'{"users": [{"id": "1001", "bot": false}]}'
+        200, b'{"items": [{"id": "1001", "bot": false}], "has_more": false, "next_after": null}'
     )
     users = await make_rest(session, base).get_reaction_users("1", "2", RAISED_HAND)
     assert users == [{"id": "1001", "bot": False}]
+
+
+async def test_get_reaction_users_keeps_the_plain_list_case(fake, session):
+    state, base = fake
+    state.overrides[f"GET /api/v1/channels/1/messages/2/reactions/{RAISED_HAND}/users"] = Override(
+        200, b'[{"id": "1001", "bot": false}]'
+    )
+    users = await make_rest(session, base).get_reaction_users("1", "2", RAISED_HAND)
+    assert users == [{"id": "1001", "bot": False}]
+
+
+async def test_get_reaction_users_has_more_and_next_after_page_through_the_list(fake, session):
+    state, base = fake
+    state.reactions[("1", "2")] = {RAISED_HAND: ["1001", "1002", "1003"]}
+    rest = make_rest(session, base)
+    first = await rest.get_reaction_users("1", "2", RAISED_HAND, limit=2)
+    assert [u["id"] for u in first] == ["1001", "1002"]
+    raw = await rest.request("GET", f"/channels/1/messages/2/reactions/{RAISED_HAND}/users?limit=2")
+    assert raw["has_more"] is True
+    assert raw["next_after"] == "1002"
+    second = await rest.get_reaction_users("1", "2", RAISED_HAND, limit=2, after=raw["next_after"])
+    assert [u["id"] for u in second] == ["1003"]
+    last = await rest.request("GET", f"/channels/1/messages/2/reactions/{RAISED_HAND}/users?limit=2&after=1003")
+    assert last == {"items": [], "has_more": False, "next_after": None}
 
 
 async def test_get_reaction_users_encodes_play_emoji_with_variation_selector(fake, session):

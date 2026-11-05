@@ -256,7 +256,14 @@ def make_rest_app(state: FakeFluxerState) -> web.Application:
         users = sorted(_reactors(key, emoji), key=int)
         if after is not None:
             users = [u for u in users if int(u) > int(after)]
-        body = [{"id": u, "bot": u == state.bot_user_id} for u in users[:limit]]
+        page = users[:limit]
+        has_more = len(users) > limit
+        # The paged shape the live run confirmed for .../reactions/{emoji}/users.
+        body = {
+            "items": [{"id": u, "bot": u == state.bot_user_id} for u in page],
+            "has_more": has_more,
+            "next_after": page[-1] if has_more and page else None,
+        }
         return _send(state, request, 200, body)
 
     async def remove_emoji_reactions(request: web.Request) -> web.Response:
