@@ -51,6 +51,14 @@ def claim_retry(conn: sqlite3.Connection, channel_id: str, now: int, min_interva
     return cur.rowcount == 1
 
 
+def release_retry(conn: sqlite3.Connection, channel_id: str, now: int, min_interval: int) -> bool:
+    """Gives back a claimed retry whose answer said nothing about permission, so the next claim succeeds at once.
+    True when the channel is degraded."""
+    cur = conn.execute("UPDATE reaction_degraded SET last_retry_at = ? WHERE channel_id = ?",
+                       (now - min_interval, channel_id))
+    return cur.rowcount == 1
+
+
 def clear_degraded(conn: sqlite3.Connection, channel_id: str) -> bool:
     cur = conn.execute("DELETE FROM reaction_degraded WHERE channel_id = ?", (channel_id,))
     return cur.rowcount == 1

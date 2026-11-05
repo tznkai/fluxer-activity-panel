@@ -78,6 +78,18 @@ async def test_claim_retry_for_a_channel_that_is_not_degraded_is_false(db: Datab
     assert await db.run(lambda c: interaction_settings.claim_retry(c, CHANNEL, NOW + DAY, DAY)) is False
 
 
+async def test_a_released_retry_can_be_claimed_at_once(db: Database) -> None:
+    await db.run(lambda c: interaction_settings.mark_degraded(c, CHANNEL, NOW))
+    assert await db.run(lambda c: interaction_settings.claim_retry(c, CHANNEL, NOW + DAY, DAY)) is True
+    assert await db.run(lambda c: interaction_settings.claim_retry(c, CHANNEL, NOW + DAY + 1, DAY)) is False
+    assert await db.run(lambda c: interaction_settings.release_retry(c, CHANNEL, NOW + DAY + 1, DAY)) is True
+    assert await db.run(lambda c: interaction_settings.claim_retry(c, CHANNEL, NOW + DAY + 2, DAY)) is True
+
+
+async def test_release_retry_for_a_channel_that_is_not_degraded_is_false(db: Database) -> None:
+    assert await db.run(lambda c: interaction_settings.release_retry(c, CHANNEL, NOW, DAY)) is False
+
+
 async def test_clear_degraded_removes_the_row_and_reports_it(db: Database) -> None:
     await db.run(lambda c: interaction_settings.mark_degraded(c, CHANNEL, NOW))
     assert await db.run(lambda c: interaction_settings.clear_degraded(c, CHANNEL)) is True

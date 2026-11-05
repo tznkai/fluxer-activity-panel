@@ -6,6 +6,7 @@ escapes; the tests never contain a literal emoji."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator, Callable
@@ -60,6 +61,7 @@ CUSTOM_ID = "7777"
 DAY = 86400
 HASH = "a" * 64   # a rendered hash: the store takes 64 lowercase hex digits
 FORBIDDEN = json.dumps({"code": "MISSING_PERMISSIONS", "message": "Missing Permissions"}).encode()
+NOT_FOUND = json.dumps({"code": "UNKNOWN_MESSAGE", "message": "Unknown Message"}).encode()
 
 
 class Clock:
@@ -89,6 +91,17 @@ class RecordingHandler:
 
     async def me_too_changed(self, card_id: int, surface: Surface, user_id: str) -> None:
         self.me_too.append((card_id, surface, user_id))
+
+
+class BarrierPacer:
+    """A pacer that holds every reaction call until `parties` of them are waiting, so that concurrent presses are in
+    flight together before either removal goes out."""
+
+    def __init__(self, parties: int) -> None:
+        self._barrier = asyncio.Barrier(parties)
+
+    async def wait(self, channel_id: str) -> None:
+        await self._barrier.wait()
 
 
 @dataclass
@@ -151,7 +164,7 @@ async def harness(tmp_path: Path, session, fake) -> AsyncIterator[Callable[..., 
     state, base = fake
     opened: list[Database] = []
 
-    async def build(**env: str) -> Harness:
+    async def build(*, pacer: ChannelPacer | BarrierPacer | None = None, **env: str) -> Harness:
         rest = FluxerREST(session, f"{base}/api", TOKEN)
         database = Database.open(tmp_path / f"panel{len(opened)}.db")
         opened.append(database)
@@ -162,7 +175,8 @@ async def harness(tmp_path: Path, session, fake) -> AsyncIterator[Callable[..., 
         handler = RecordingHandler(state)
         identity = BotIdentity(user_id=BOT_ID)
         presses = Presses(db=database, rest=rest, config=config, handler=handler,
-                          games_guild=GamesGuild(rest, config), pacer=ChannelPacer(max_calls=1000),
+                          games_guild=GamesGuild(rest, config),
+                          pacer=pacer if pacer is not None else ChannelPacer(max_calls=1000),
                           identity=identity, clock=clock)
         return Harness(state=state, db=database, clock=clock, handler=handler, presses=presses, config=config,
                        identity=identity)
@@ -204,6 +218,10 @@ def removal_key(channel: str, message: str, name: str, user: str) -> str:
 
 def forbid_removals(state: FakeFluxerState, channel: str, message: str, name: str, user: str) -> None:
     state.overrides[removal_key(channel, message, name, user)] = Override(status=403, body=FORBIDDEN)
+
+
+def not_found_removals(state: FakeFluxerState, channel: str, message: str, name: str, user: str) -> None:
+    state.overrides[removal_key(channel, message, name, user)] = Override(status=404, body=NOT_FOUND)
 
 
 def dm_channel_of(state: FakeFluxerState, user: str) -> str | None:
@@ -401,6 +419,27 @@ async def test_presses_beyond_the_card_burst_are_absorbed_silently(harness, capl
     assert h.handler.presses[-1].user_id == PRESSER_5
 
 
+async def test_the_rate_limit_maps_do_not_grow_with_expired_presses(harness) -> None:
+    # The maps are private on purpose: this checks that they stay bounded, which no press outcome shows.
+    h = await harness()
+    for i in range(50):
+        h.clock.now = i * 100   # every earlier press is far outside both windows
+        await h.presses.on_reaction(reaction_add(user=str(6100 + i)))
+    assert len(h.handler.presses) == 50
+    assert len(h.presses._user_last) <= 1
+    assert all(len(times) <= 1 for times in h.presses._card_times.values())
+
+
+async def test_a_card_with_no_presses_left_in_its_window_leaves_the_card_map(harness) -> None:
+    h = await harness()
+    h.clock.now = 0
+    await h.presses.on_reaction(reaction_add())                                     # the first card
+    h.clock.now = 1000
+    await h.presses.on_reaction(reaction_add(user=PRESSER_2, message=SECOND_MSG))   # the second card
+    assert CARD_ID not in h.presses._card_times
+    assert SECOND_ID in h.presses._card_times
+
+
 # Degraded channels -------------------------------------------------------------------------------------
 
 async def test_a_403_on_removal_degrades_the_channel_and_dms_each_admin_once(harness, caplog) -> None:
@@ -453,6 +492,44 @@ async def test_a_failed_retry_stays_degraded_with_no_dm_and_no_second_try_that_d
     h.clock.now = DAY + 2
     await h.presses.on_reaction(reaction_add(user=PRESSER_2))
     assert len(deletes(h.state)) == 1
+    assert open_dms_for(h.state, ADMIN) == []
+
+
+async def test_two_presses_in_flight_that_both_get_403_dm_each_admin_once_and_log_once(harness, caplog) -> None:
+    """The gateway runs dispatches concurrently, so two presses in one channel can both be refused before either marks
+    the channel degraded. The barrier holds both removals until both are in flight."""
+    caplog.set_level(logging.INFO, logger="fluxer_panel")
+    h = await harness(pacer=BarrierPacer(parties=2))
+    forbid_removals(h.state, GAMES, CARD_MSG, WAKE_EMOJI, PRESSER)
+    forbid_removals(h.state, GAMES, SECOND_MSG, WAKE_EMOJI, PRESSER_2)
+    await asyncio.gather(h.presses.on_reaction(reaction_add()),
+                         h.presses.on_reaction(reaction_add(user=PRESSER_2, message=SECOND_MSG)))
+    assert len(deletes(h.state)) == 2
+    assert await h.db.run(lambda c: interaction_settings.is_degraded(c, GAMES))
+    assert len(open_dms_for(h.state, ADMIN)) == 1
+    assert dm_texts(h.state, ADMIN) == [text.REACTION_DEGRADED_ALERT.format(channel_id=GAMES)]
+    assert len([r for r in panel_records(caplog) if r.getMessage() == "reaction_degraded"]) == 1
+
+
+async def test_a_404_on_a_retry_is_inconclusive_and_does_not_spend_the_day(harness, caplog) -> None:
+    caplog.set_level(logging.INFO, logger="fluxer_panel")
+    h = await harness()
+    await h.db.run(lambda c: interaction_settings.mark_degraded(c, GAMES, 0))
+    not_found_removals(h.state, GAMES, CARD_MSG, WAKE_EMOJI, PRESSER)
+    not_found_removals(h.state, GAMES, SECOND_MSG, WAKE_EMOJI, PRESSER_2)
+    h.clock.now = DAY + 1
+    await h.presses.on_reaction(reaction_add())
+    assert len(deletes(h.state)) == 1
+    assert await h.db.run(lambda c: interaction_settings.is_degraded(c, GAMES))
+    assert open_dms_for(h.state, ADMIN) == []
+    [inconclusive] = [r for r in panel_records(caplog) if r.getMessage() == "reaction_retry_inconclusive"]
+    assert inconclusive.panel_fields == {"channel_id": GAMES}
+
+    # The 404 gave the retry back, so another press the same day is still allowed to try.
+    h.clock.now = DAY + 2
+    await h.presses.on_reaction(reaction_add(user=PRESSER_2, message=SECOND_MSG))
+    assert len(deletes(h.state)) == 2
+    assert await h.db.run(lambda c: interaction_settings.is_degraded(c, GAMES))
     assert open_dms_for(h.state, ADMIN) == []
 
 

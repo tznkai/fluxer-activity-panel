@@ -137,6 +137,7 @@ class Presses:
         self._clock = clock
         self._user_last: dict[tuple[str, int, Action], float] = {}   # when a user's press was last handled
         self._card_times: dict[int, deque[float]] = {}               # when each card's presses were last handled
+        self._last_prune = float("-inf")                             # when the two maps above were last pruned
 
     async def on_reaction(self, event: events.ReactionAdd | events.ReactionRemove) -> None:
         # 1. The bot's own reactions, another bot's, and anything in a DM never reach the adapter.
@@ -187,19 +188,40 @@ class Presses:
 
     def _admit(self, card_id: int, action: Action, user_id: str, now: float) -> str | None:
         """None when the press is handled, else the reason it is absorbed. Only a handled press moves the windows."""
+        if now - self._last_prune >= self._config.press_user_window_seconds:
+            self._prune(now)
         key = (user_id, card_id, action)
         last = self._user_last.get(key)
         if last is not None and now - last < self._config.press_user_window_seconds:
             return "user_window"
-        times = self._card_times.setdefault(card_id, deque())
+        times = self._card_times.get(card_id, deque())
         cutoff = now - self._config.press_card_window_seconds
         while times and times[0] <= cutoff:
             times.popleft()
+        if not times:
+            self._card_times.pop(card_id, None)
         if len(times) >= self._config.press_card_burst:
             return "card_burst"
         times.append(now)
+        self._card_times[card_id] = times
         self._user_last[key] = now
         return None
+
+    def _prune(self, now: float) -> None:
+        """Drops every entry that can no longer change a decision: a user's last press outside the user window, and a
+        card's presses outside the card window. A card left with none is dropped. Runs at most once per user window, so
+        the cost is spread out and the maps hold only what the windows still need."""
+        self._last_prune = now
+        user_cutoff = now - self._config.press_user_window_seconds
+        for key in [key for key, last in self._user_last.items() if last <= user_cutoff]:
+            del self._user_last[key]
+        card_cutoff = now - self._config.press_card_window_seconds
+        for card_id in list(self._card_times):
+            times = self._card_times[card_id]
+            while times and times[0] <= card_cutoff:
+                times.popleft()
+            if not times:
+                del self._card_times[card_id]
 
     async def _remove(self, event: events.ReactionAdd | events.ReactionRemove, *, degraded: bool, now: float) -> None:
         channel = event.channel_id
@@ -210,6 +232,15 @@ class Presses:
                 return
             try:
                 await self._delete_reaction(event)
+            except FluxerHTTPError as exc:
+                if exc.status == 404:
+                    # A 404 means the reaction was already gone, which says nothing about permission. The retry is
+                    # given back, so the next press may try again today.
+                    await self._db.run(lambda c: interaction_settings.release_retry(c, channel, int(now), DAY))
+                    log_event(log, "reaction_retry_inconclusive", channel_id=channel)
+                    return
+                self._log_removal_failure(channel, exc)
+                return
             except Exception as exc:  # noqa: BLE001 - a failed retry leaves the channel degraded
                 self._log_removal_failure(channel, exc)
                 return
