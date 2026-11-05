@@ -287,13 +287,24 @@ class FluxerREST:
     async def create_role(self, guild_id: str, *, name: str, mentionable: bool,
                           reason: str | None = None) -> dict[str, Any]:
         """Create a role with no permissions (always "0"), not hoisted, colour 0. There is deliberately no
-        permissions parameter: this client never creates a role that grants anything."""
+        permissions parameter: this client never creates a role that grants anything.
+
+        Fluxer ignores mentionable and hoist on create (always false, position 1), so the returned role is
+        not mentionable even when mentionable=True is passed. Callers must call set_role_mentionable next."""
         if not name or len(name) > 100 or not name.isprintable():
             raise ValueError("role name must be 1-100 printable characters")
         body = {"name": name, "permissions": "0", "color": 0, "hoist": False, "mentionable": bool(mentionable)}
         headers = _check_reason(reason)
         return await self.request("POST", f"/guilds/{require_snowflake(guild_id)}/roles",
                                   json_body=body, headers=headers)
+
+    async def set_role_mentionable(self, guild_id: str, role_id: str, *, mentionable: bool,
+                                   reason: str | None = None) -> dict[str, Any]:
+        """Set only a role's mentionable flag (PATCH). Deliberately cannot change permissions or anything else,
+        so this client never grants a role a permission through it."""
+        path = f"/guilds/{require_snowflake(guild_id)}/roles/{require_snowflake(role_id)}"
+        return await self.request("PATCH", path, json_body={"mentionable": bool(mentionable)},
+                                  headers=_check_reason(reason))
 
     async def get_messages(self, channel_id: str, *, limit: int) -> list[dict[str, Any]]:
         """Newest-first messages of a channel (GET /channels/{id}/messages?limit=N, 1 <= N <= 100)."""

@@ -249,6 +249,8 @@ CALLS: list[tuple[str, Callable[[FluxerREST, str], Awaitable[object]]]] = [
     ("delete_message channel", lambda r, v: r.delete_message(v, "2")),
     ("delete_message message", lambda r, v: r.delete_message("1", v)),
     ("create_role guild", lambda r, v: r.create_role(v, name="x", mentionable=False)),
+    ("set_role_mentionable guild", lambda r, v: r.set_role_mentionable(v, "2", mentionable=True)),
+    ("set_role_mentionable role", lambda r, v: r.set_role_mentionable("1", v, mentionable=True)),
     ("get_messages channel", lambda r, v: r.get_messages(v, limit=1)),
     ("get_reaction_users channel", lambda r, v: r.get_reaction_users(v, "2", "\U0001F64B")),
     ("get_reaction_users message", lambda r, v: r.get_reaction_users("1", v, "\U0001F64B")),
@@ -553,11 +555,64 @@ async def test_create_role_sends_fixed_permissions_and_returns_the_role(fake, se
     assert role["id"] == "7001"
     assert role["name"] == "live_ping_test"
     assert role["permissions"] == "0"
-    assert role["mentionable"] is True
+    # Fluxer ignores mentionable on create (the live run confirmed it); only set_role_mentionable sets it.
+    assert role["mentionable"] is False
 
 
 async def test_create_role_has_no_permissions_parameter():
     assert "permissions" not in inspect.signature(FluxerREST.create_role).parameters
+
+
+async def test_create_role_mirrors_fluxer_and_ignores_mentionable_and_hoist(fake, session):
+    state, base = fake
+    role = await make_rest(session, base).create_role("1", name="x", mentionable=True)
+    assert role["mentionable"] is False
+    assert role["hoist"] is False
+    assert role["position"] == 1
+    assert state.roles["1"] == [role]
+
+
+async def test_set_role_mentionable_patches_only_the_flag(fake, session):
+    state, base = fake
+    rest = make_rest(session, base)
+    role = await rest.create_role("1", name="live_ping_test", mentionable=False)
+    updated = await rest.set_role_mentionable("1", role["id"], mentionable=True)
+    rec = state.requests[-1]
+    assert rec.method == "PATCH"
+    assert rec.path == f"/api/v1/guilds/1/roles/{role['id']}"
+    assert rec.payload == {"mentionable": True}
+    assert updated["mentionable"] is True
+    assert state.roles["1"][0]["mentionable"] is True
+
+
+async def test_set_role_mentionable_false_sends_false(fake, session):
+    state, base = fake
+    rest = make_rest(session, base)
+    role = await rest.create_role("1", name="x", mentionable=False)
+    await rest.set_role_mentionable("1", role["id"], mentionable=True)
+    await rest.set_role_mentionable("1", role["id"], mentionable=False)
+    assert state.requests[-1].payload == {"mentionable": False}
+    assert state.roles["1"][0]["mentionable"] is False
+
+
+async def test_set_role_mentionable_sends_audit_reason_header(fake, session):
+    state, base = fake
+    rest = make_rest(session, base)
+    role = await rest.create_role("1", name="x", mentionable=False)
+    await rest.set_role_mentionable("1", role["id"], mentionable=True, reason="fluxer panel live test")
+    assert state.requests[-1].headers["x-audit-log-reason"] == "fluxer panel live test"
+
+
+async def test_set_role_mentionable_unknown_role_is_404(fake, session):
+    _, base = fake
+    with pytest.raises(FluxerHTTPError) as info:
+        await make_rest(session, base).set_role_mentionable("1", "9999", mentionable=True)
+    assert info.value.status == 404
+
+
+async def test_set_role_mentionable_has_only_the_flag_and_audit_parameters():
+    params = list(inspect.signature(FluxerREST.set_role_mentionable).parameters)
+    assert params == ["self", "guild_id", "role_id", "mentionable", "reason"]
 
 
 async def test_create_role_sends_audit_reason_header(fake, session):
@@ -710,13 +765,15 @@ async def test_bulk_removal_leaves_other_messages_alone(fake, session):
 
 @pytest.mark.parametrize("method, path, call", [
     ("POST", "/api/v1/guilds/1/roles", lambda r: r.create_role("1", name="x", mentionable=False)),
+    ("PATCH", "/api/v1/guilds/1/roles/2", lambda r: r.set_role_mentionable("1", "2", mentionable=True)),
     ("GET", "/api/v1/channels/1/messages", lambda r: r.get_messages("1", limit=1)),
     ("GET", f"/api/v1/channels/1/messages/2/reactions/{RAISED_HAND}/users",
      lambda r: r.get_reaction_users("1", "2", RAISED_HAND)),
     ("DELETE", f"/api/v1/channels/1/messages/2/reactions/{RAISED_HAND}",
      lambda r: r.remove_emoji_reactions("1", "2", RAISED_HAND)),
     ("DELETE", "/api/v1/channels/1/messages/2/reactions", lambda r: r.remove_all_reactions("1", "2")),
-], ids=["create_role", "get_messages", "get_reaction_users", "remove_emoji_reactions", "remove_all_reactions"])
+], ids=["create_role", "set_role_mentionable", "get_messages", "get_reaction_users",
+        "remove_emoji_reactions", "remove_all_reactions"])
 async def test_new_calls_surface_a_403(fake, session, method, path, call):
     state, base = fake
     state.overrides[f"{method} {path}"] = Override(403, b'{"code":"MISSING_PERMISSIONS","message":"x"}')

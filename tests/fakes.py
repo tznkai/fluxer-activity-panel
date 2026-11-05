@@ -278,19 +278,33 @@ def make_rest_app(state: FakeFluxerState) -> web.Application:
     async def create_role(request: web.Request) -> web.Response:
         gid = request.match_info["gid"]
         body = await request.json()
+        # Mirrors Fluxer: create ignores mentionable and hoist and always lands at position 1.
         role = {
             "id": str(state.next_role_id),
             "name": body["name"],
             "permissions": body.get("permissions", "0"),
             "position": 1,
             "color": body.get("color", 0),
-            "hoist": body.get("hoist", False),
-            "mentionable": body.get("mentionable", False),
+            "hoist": False,
+            "mentionable": False,
         }
 
         def commit() -> None:
             state.roles.setdefault(gid, []).append(role)
             state.next_role_id += 1
+
+        return _send(state, request, 200, role, payload=body, commit=commit)
+
+    async def patch_role(request: web.Request) -> web.Response:
+        gid = request.match_info["gid"]
+        rid = request.match_info["rid"]
+        body = await request.json()
+        role = next((r for r in state.roles.get(gid, []) if r["id"] == rid), None)
+        if role is None:
+            return _send(state, request, 404, {"code": "UNKNOWN_ROLE", "message": "Unknown role"}, payload=body)
+
+        def commit() -> None:
+            role["mentionable"] = bool(body["mentionable"])
 
         return _send(state, request, 200, role, payload=body, commit=commit)
 
@@ -375,6 +389,7 @@ def make_rest_app(state: FakeFluxerState) -> web.Application:
     app.router.add_get("/api/v1/guilds/{gid}", guild)
     app.router.add_get("/api/v1/guilds/{gid}/roles", roles)
     app.router.add_post("/api/v1/guilds/{gid}/roles", create_role)
+    app.router.add_patch("/api/v1/guilds/{gid}/roles/{rid}", patch_role)
     app.router.add_get("/api/v1/guilds/{gid}/members/{uid}", member)
     app.router.add_get("/api/v1/channels/{cid}/messages", channel_messages)
     reactions_path = "/api/v1/channels/{cid}/messages/{mid}/reactions"
