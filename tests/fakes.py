@@ -70,6 +70,12 @@ class FakeFluxerState:
     messages: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
     # (channel_id, message_id) of messages the fake has deleted.
     deleted: set[tuple[str, str]] = field(default_factory=set)
+    # The id the fake treats as @me (the bot's own user).
+    bot_user_id: str = "1900"
+    # (channel_id, message_id) -> emoji name -> user ids, in add order.
+    reactions: dict[tuple[str, str], dict[str, list[str]]] = field(default_factory=dict)
+    # Id given to the next role created by POST /guilds/{gid}/roles.
+    next_role_id: int = 7001
     # "METHOD /path" -> seconds to sleep before the handler runs (for timeout tests).
     delays: dict[str, float] = field(default_factory=dict)
     # "METHOD /path" -> an Event the request waits on before the handler runs, so a test can hold requests in flight.
@@ -209,12 +215,84 @@ def make_rest_app(state: FakeFluxerState) -> web.Application:
             return _send(state, request, 404, {"code": "UNKNOWN_MEMBER", "message": "Unknown member"})
         return _send(state, request, 200, state.members[key])
 
-    async def reaction(request: web.Request) -> web.Response:
-        # PUT .../@me adds our reaction; DELETE .../{user} removes a reaction (204 either way)
-        return _send(state, request, 204, None)
-
     def _key(request: web.Request) -> tuple[str, str]:
         return request.match_info["cid"], request.match_info["mid"]
+
+    def _reactors(key: tuple[str, str], emoji: str) -> list[str]:
+        return list(state.reactions.get(key, {}).get(emoji, []))
+
+    def _set_reactors(key: tuple[str, str], emoji: str, users: list[str]) -> None:
+        message = state.reactions.setdefault(key, {})
+        if users:
+            message[emoji] = users
+        else:
+            message.pop(emoji, None)
+        if not message:
+            state.reactions.pop(key, None)
+
+    async def reaction(request: web.Request) -> web.Response:
+        # PUT .../@me adds our reaction; DELETE .../{user} removes a reaction (204 either way)
+        key = _key(request)
+        emoji = request.match_info["emoji"]
+        user = request.match_info["user"]
+        uid = state.bot_user_id if user == "@me" else user
+
+        def commit() -> None:
+            users = _reactors(key, emoji)
+            if request.method == "PUT":
+                if uid not in users:
+                    users.append(uid)
+            else:
+                users = [u for u in users if u != uid]
+            _set_reactors(key, emoji, users)
+
+        return _send(state, request, 204, None, commit=commit)
+
+    async def reaction_users(request: web.Request) -> web.Response:
+        key = _key(request)
+        emoji = request.match_info["emoji"]
+        limit = int(request.query.get("limit", "25"))
+        after = request.query.get("after")
+        users = sorted(_reactors(key, emoji), key=int)
+        if after is not None:
+            users = [u for u in users if int(u) > int(after)]
+        body = [{"id": u, "bot": u == state.bot_user_id} for u in users[:limit]]
+        return _send(state, request, 200, body)
+
+    async def remove_emoji_reactions(request: web.Request) -> web.Response:
+        key = _key(request)
+        emoji = request.match_info["emoji"]
+        return _send(state, request, 204, None, commit=lambda: _set_reactors(key, emoji, []))
+
+    async def remove_all_reactions(request: web.Request) -> web.Response:
+        key = _key(request)
+        return _send(state, request, 204, None, commit=lambda: state.reactions.pop(key, None))
+
+    async def create_role(request: web.Request) -> web.Response:
+        gid = request.match_info["gid"]
+        body = await request.json()
+        role = {
+            "id": str(state.next_role_id),
+            "name": body["name"],
+            "permissions": body.get("permissions", "0"),
+            "position": 1,
+            "color": body.get("color", 0),
+            "hoist": body.get("hoist", False),
+            "mentionable": body.get("mentionable", False),
+        }
+
+        def commit() -> None:
+            state.roles.setdefault(gid, []).append(role)
+            state.next_role_id += 1
+
+        return _send(state, request, 200, role, payload=body, commit=commit)
+
+    async def channel_messages(request: web.Request) -> web.Response:
+        cid = request.match_info["cid"]
+        limit = int(request.query.get("limit", "50"))
+        keys = [key for key in state.messages if key[0] == cid and key not in state.deleted]
+        keys.sort(key=lambda key: int(key[1]), reverse=True)
+        return _send(state, request, 200, [_message_view(key) for key in keys[:limit]])
 
     async def edit_message(request: web.Request) -> web.Response:
         payload = await request.json()
@@ -231,12 +309,22 @@ def make_rest_app(state: FakeFluxerState) -> web.Application:
 
         return _send(state, request, 200, {"id": mid, **payload}, payload=payload, commit=commit)
 
+    def _message_view(key: tuple[str, str]) -> dict[str, Any]:
+        cid, mid = key
+        view: dict[str, Any] = {"id": mid, "channel_id": cid, **state.messages[key]}
+        reactions = state.reactions.get(key)
+        if reactions:
+            view["reactions"] = [
+                {"emoji": {"name": name, "id": None}, "count": len(users), "me": state.bot_user_id in users}
+                for name, users in reactions.items()
+            ]
+        return view
+
     async def get_message(request: web.Request) -> web.Response:
         key = _key(request)
         if key not in state.messages or key in state.deleted:
             return _send(state, request, 404, {"code": "UNKNOWN_MESSAGE", "message": "Unknown Message"})
-        cid, mid = key
-        return _send(state, request, 200, {"id": mid, "channel_id": cid, **state.messages[key]})
+        return _send(state, request, 200, _message_view(key))
 
     async def delete_message(request: web.Request) -> web.Response:
         key = _key(request)
@@ -279,8 +367,14 @@ def make_rest_app(state: FakeFluxerState) -> web.Application:
     app.router.add_get("/api/v1/channels/{cid}", channel)
     app.router.add_get("/api/v1/guilds/{gid}", guild)
     app.router.add_get("/api/v1/guilds/{gid}/roles", roles)
+    app.router.add_post("/api/v1/guilds/{gid}/roles", create_role)
     app.router.add_get("/api/v1/guilds/{gid}/members/{uid}", member)
-    reaction_path = "/api/v1/channels/{cid}/messages/{mid}/reactions/{emoji}/{user}"
+    app.router.add_get("/api/v1/channels/{cid}/messages", channel_messages)
+    reactions_path = "/api/v1/channels/{cid}/messages/{mid}/reactions"
+    app.router.add_get(f"{reactions_path}/{{emoji}}/users", reaction_users)
+    app.router.add_delete(f"{reactions_path}/{{emoji}}", remove_emoji_reactions)
+    app.router.add_delete(reactions_path, remove_all_reactions)
+    reaction_path = f"{reactions_path}/{{emoji}}/{{user}}"
     app.router.add_put(reaction_path, reaction)
     app.router.add_delete(reaction_path, reaction)
     message_path = "/api/v1/channels/{cid}/messages/{mid}"
