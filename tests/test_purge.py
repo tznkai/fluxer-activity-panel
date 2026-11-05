@@ -214,7 +214,13 @@ async def test_status_file_mode_is_world_readable(db: Database, status: Path) ->
 
 async def test_successful_run_logs_purge_done_with_count_and_duration(
         db: Database, status: Path, caplog: pytest.LogCaptureFixture) -> None:
-    await db.run(lambda conn: _rsvps(conn, _session(conn, _card(conn), ends_at=CUT - 1), "1001", "1002"))
+    def seed(conn: sqlite3.Connection) -> None:
+        card = _card(conn)
+        _rsvps(conn, _session(conn, card, ends_at=CUT - 1), "1001", "1002")
+        _request(conn, card, status="cleared", created_at=REQ_CUT - 1)
+        _play_now(conn, card, state="expired", created_at=REQ_CUT - 1, message_id="5001")
+
+    await db.run(seed)
     caplog.set_level(logging.INFO, logger="fluxer_panel.purge")
 
     await run_purge(db, status, NOW)
@@ -222,7 +228,7 @@ async def test_successful_run_logs_purge_done_with_count_and_duration(
     done = [r for r in caplog.records if r.getMessage() == "purge_done"]
     assert len(done) == 1
     fields = done[0].panel_fields  # type: ignore[attr-defined]
-    assert fields["count"] == 3          # 1 session + 2 rsvps + 0 requests
+    assert fields["count"] == 5          # 1 session + 2 rsvps + 1 request + 1 play_now
     assert isinstance(fields["duration_ms"], int)
 
 
