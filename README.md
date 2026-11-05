@@ -82,6 +82,7 @@ The purge deletes:
 - a recurring session whose series ended (`recurrence_until`) more than 7 days ago. A series
   with no end date is never purged.
 - a request created more than 30 days ago, whatever its status.
+- a play-now post created more than 30 days ago, whatever its state.
 
 The cutoffs are strict: a row exactly at a cutoff is kept.
 
@@ -96,7 +97,7 @@ so a monitor running as another user can read it. It holds only timestamps and c
  "last_success_at": 1767225600,
  "last_attempt_at": 1767225600,
  "ok": true,
- "deleted": {"sessions": 0, "rsvps": 0, "requests": 0},
+ "deleted": {"sessions": 0, "rsvps": 0, "requests": 0, "play_now": 0},
  "schema_version": 1
 }
 ```
@@ -104,7 +105,8 @@ so a monitor running as another user can read it. It holds only timestamps and c
 - `last_success_at`: when the last successful purge ran. It is `null` until the first success,
   and a failed attempt keeps the previous value.
 - `last_attempt_at`: when the latest attempt ran, successful or not.
-- `ok`: whether the latest attempt succeeded. `deleted` holds that attempt's counts (zeros on failure).
+- `ok`: whether the latest attempt succeeded. `deleted` holds that attempt's counts (zeros on failure):
+  `sessions`, `rsvps`, `requests` and `play_now` (the play-now posts deleted).
   A checkpoint failure after the commit is reported as `ok: false` with zero `deleted`, but the rows may already be
   gone. The next run checkpoints again.
 

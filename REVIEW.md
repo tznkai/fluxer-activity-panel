@@ -75,12 +75,12 @@ No code in `src/fluxer_panel` calls `add_member_role` or `remove_member_role` in
 
 - `src/fluxer_panel/purge.py:26` `_EXPIRED_SESSIONS = """(` — the expiry rule. A non-recurring session expires by `ends_at`, and a recurring one by `recurrence_until`.
 - `src/fluxer_panel/purge.py:28` `recurrence_until IS NOT NULL` — an open-ended series (`recurrence_until` NULL) never matches, so it is never purged.
-- `src/fluxer_panel/purge.py:39` `def _purge_tx(` — one transaction: count the RSVPs of expired sessions, delete the sessions, delete the old requests.
-- `src/fluxer_panel/purge.py:44` `DELETE FROM sessions` — deletes expired sessions. Their RSVPs go with them by cascade.
-- `src/fluxer_panel/purge.py:45` `DELETE FROM requests` — deletes requests older than 30 days, whatever their status.
-- `src/fluxer_panel/purge.py:64` `def write_status(` — the status file is written atomically and holds only timestamps and counts.
-- `src/fluxer_panel/purge.py:80` `await db.checkpoint()` — a WAL checkpoint after each run. A checkpoint failure after the commit is reported as `ok: false`, though the rows may already be gone.
-- `src/fluxer_panel/purge.py:107` `log.exception("purge_loop_error")` — the per-iteration catch-all. A failing iteration is logged, and the loop goes on.
+- `src/fluxer_panel/purge.py:40` `def _purge_tx(` — one transaction: count the RSVPs of expired sessions, delete the sessions, delete the old requests and play-now posts.
+- `src/fluxer_panel/purge.py:45` `DELETE FROM sessions` — deletes expired sessions. Their RSVPs go with them by cascade.
+- `src/fluxer_panel/purge.py:46` `DELETE FROM requests` — deletes requests older than 30 days, whatever their status.
+- `src/fluxer_panel/purge.py:67` `def write_status(` — the status file is written atomically and holds only timestamps and counts.
+- `src/fluxer_panel/purge.py:83` `await db.checkpoint()` — a WAL checkpoint after each run. A checkpoint failure after the commit is reported as `ok: false`, though the rows may already be gone.
+- `src/fluxer_panel/purge.py:110` `log.exception("purge_loop_error")` — the per-iteration catch-all. A failing iteration is logged, and the loop goes on.
 - `src/fluxer_panel/__main__.py:77` `purge_task = asyncio.create_task(purge_loop(` — the purge task and the poller start only once the gateway task exists, so a stop that wins discovery never starts either.
 - `src/fluxer_panel/__main__.py:93` `gw_task.cancel()` — `run()`'s finally cancels the gateway task first, so the session never closes under a live reconnect.
 - `src/fluxer_panel/__main__.py:98` `poller_task.cancel()` — the card poller is cancelled and awaited after the gateway task and before the purge task, so no card write is in flight when the session closes.

@@ -457,8 +457,11 @@ def _seed_purge_rows(conn: sqlite3.Connection, now: int) -> None:
     for session_id in (expired, kept):
         conn.execute("INSERT INTO rsvps (session_id, user_id, status, responded_at) VALUES (?, '5000', 'yes', ?)",
                      (session_id, now))
-    conn.execute("INSERT INTO requests (kind, card_id, requester_id, status, created_at) "
-                 "VALUES ('wake', ?, '5000', 'done', ?)", (card, now - 31 * DAY))
+    conn.execute("INSERT INTO requests (kind, card_id, requester_id, status, created_at, closed_at) "
+                 "VALUES ('wake', ?, '5000', 'cleared', ?, ?)", (card, now - 31 * DAY, now - 31 * DAY))
+    conn.execute("INSERT INTO play_now (card_id, guild_id, channel_id, message_id, presser_id, offers_wake, state, "
+                 "created_at, expires_at) VALUES (?, '1003', '1004', '6000', '5000', 0, 'expired', ?, ?)",
+                 (card, now - 31 * DAY, now - 31 * DAY + 3600))
     conn.execute("INSERT INTO requests (kind, card_id, requester_id, status, created_at) "
                  "VALUES ('wake', ?, '5000', 'open', ?)", (card, now))
 
@@ -476,13 +479,13 @@ async def test_purge_subcommand_runs_once_and_exits_zero(tmp_path):
     assert code == 0
     status = json.loads((tmp_path / "purge-status.json").read_text())
     assert status["ok"] is True
-    assert status["deleted"] == {"sessions": 1, "rsvps": 1, "requests": 1}
+    assert status["deleted"] == {"sessions": 1, "rsvps": 1, "requests": 1, "play_now": 1}
     assert "purge_done" in [e["event"] for e in json_lines(out)]
     assert TOKEN not in out + err
     with contextlib.closing(sqlite3.connect(tmp_path / "panel.db")) as conn:
         counts = [conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
-                  for table in ("sessions", "rsvps", "requests")]
-    assert counts == [1, 1, 1]      # only the expired rows went; the kept session, RSVP and request remain
+                  for table in ("sessions", "rsvps", "requests", "play_now")]
+    assert counts == [1, 1, 1, 0]   # only the expired rows went; the kept session, RSVP and request remain
 
 
 def test_purge_once_exits_1_when_the_purge_fails(tmp_path):

@@ -67,9 +67,17 @@ def _rsvps(conn: sqlite3.Connection, session_id: int, *user_ids: str) -> None:
                      (session_id, user_id, NOW))
 
 
-def _request(conn: sqlite3.Connection, card_id: int, *, status: str, created_at: int) -> None:
-    conn.execute("INSERT INTO requests (kind, card_id, requester_id, status, created_at) "
-                 "VALUES ('wake', ?, '1001', ?, ?)", (card_id, status, created_at))
+def _request(conn: sqlite3.Connection, card_id: int, *, status: str, created_at: int,
+             requester_id: str = "1001") -> None:
+    closed_at = None if status == "open" else created_at
+    conn.execute("INSERT INTO requests (kind, card_id, requester_id, status, created_at, closed_at) "
+                 "VALUES ('wake', ?, ?, ?, ?, ?)", (card_id, requester_id, status, created_at, closed_at))
+
+
+def _play_now(conn: sqlite3.Connection, card_id: int, *, state: str, created_at: int, message_id: str) -> None:
+    conn.execute("INSERT INTO play_now (card_id, guild_id, channel_id, message_id, presser_id, offers_wake, state, "
+                 "created_at, expires_at) VALUES (?, '1001', '1002', ?, '1001', 0, ?, ?, ?)",
+                 (card_id, message_id, state, created_at, created_at + 3600))
 
 
 def _count(conn: sqlite3.Connection, table: str) -> int:
@@ -97,7 +105,7 @@ async def test_expired_session_and_its_rsvps_are_deleted(db: Database) -> None:
 
     result = await purge(db, NOW)
 
-    assert result == PurgeResult(sessions=1, rsvps=2, requests=0)
+    assert result == PurgeResult(sessions=1, rsvps=2, requests=0, play_now=0)
     assert await db.run(lambda c: _count(c, "sessions")) == 0
     assert await db.run(lambda c: _count(c, "rsvps")) == 0
 
@@ -112,7 +120,7 @@ async def test_session_at_or_after_the_cutoff_is_kept(db: Database) -> None:
 
     result = await purge(db, NOW)
 
-    assert result == PurgeResult(sessions=0, rsvps=0, requests=0)
+    assert result == PurgeResult(sessions=0, rsvps=0, requests=0, play_now=0)
     assert await db.run(lambda c: _count(c, "sessions")) == 2
     assert await db.run(lambda c: _count(c, "rsvps")) == 3
 
@@ -136,7 +144,7 @@ async def test_recurring_session_is_deleted_only_once_its_series_ended_before_th
 
     result = await purge(db, NOW)
 
-    assert result == PurgeResult(sessions=1, rsvps=0, requests=0)
+    assert result == PurgeResult(sessions=1, rsvps=0, requests=0, play_now=0)
     remaining = await db.run(_session_ids)
     assert remaining == {ids["ended_long_ago_but_series_continues"], ids["series_ends_exactly_at_cutoff"],
                          ids["open_ended_series"]}
@@ -147,17 +155,33 @@ async def test_recurring_session_is_deleted_only_once_its_series_ended_before_th
 async def test_old_requests_are_deleted_whatever_their_status(db: Database) -> None:
     def seed(conn: sqlite3.Connection) -> None:
         card = _card(conn)
-        for status in ("open", "done", "declined"):
-            _request(conn, card, status=status, created_at=REQ_CUT - 1)
-        _request(conn, card, status="open", created_at=REQ_CUT)
-        _request(conn, card, status="open", created_at=NOW)
+        for index, status in enumerate(("open", "ready", "expired", "cleared")):
+            _request(conn, card, status=status, created_at=REQ_CUT - 1, requester_id=f"100{index}")
+        _request(conn, card, status="open", created_at=REQ_CUT, requester_id="1005")
+        _request(conn, card, status="open", created_at=NOW, requester_id="1006")
 
     await db.run(seed)
 
     result = await purge(db, NOW)
 
-    assert result == PurgeResult(sessions=0, rsvps=0, requests=3)
+    assert result == PurgeResult(sessions=0, rsvps=0, requests=4, play_now=0)
     assert await db.run(lambda c: _count(c, "requests")) == 2
+
+
+async def test_old_play_now_posts_are_deleted_in_either_state_and_young_ones_kept(db: Database) -> None:
+    def seed(conn: sqlite3.Connection) -> None:
+        card = _card(conn)
+        _play_now(conn, card, state="live", created_at=REQ_CUT - 1, message_id="5001")
+        _play_now(conn, card, state="expired", created_at=REQ_CUT - 1, message_id="5002")
+        _play_now(conn, card, state="live", created_at=REQ_CUT, message_id="5003")
+        _play_now(conn, card, state="expired", created_at=NOW, message_id="5004")
+
+    await db.run(seed)
+
+    result = await purge(db, NOW)
+
+    assert result == PurgeResult(sessions=0, rsvps=0, requests=0, play_now=2)
+    assert await db.run(lambda c: _count(c, "play_now")) == 2
 
 
 # AC6.4 ------------------------------------------------------------------------------------------------
@@ -165,13 +189,13 @@ async def test_old_requests_are_deleted_whatever_their_status(db: Database) -> N
 async def test_run_purge_writes_a_valid_status_file(db: Database, status: Path) -> None:
     def seed(conn: sqlite3.Connection) -> None:
         _rsvps(conn, _session(conn, _card(conn), ends_at=CUT - 1), "1001")
-        _request(conn, _card(conn), status="done", created_at=REQ_CUT - 1)
+        _request(conn, _card(conn), status="cleared", created_at=REQ_CUT - 1)
 
     await db.run(seed)
 
     result = await run_purge(db, status, NOW)
 
-    assert result == PurgeResult(sessions=1, rsvps=1, requests=1)
+    assert result == PurgeResult(sessions=1, rsvps=1, requests=1, play_now=0)
     data = json.loads(status.read_text("utf-8"))
     assert data == {
         "last_success_at": NOW,
@@ -216,7 +240,7 @@ async def test_failed_status_write_keeps_the_previous_file_and_never_raises(
 
     result = await run_purge(db, status, NOW + 60)
 
-    assert result == PurgeResult(sessions=0, rsvps=0, requests=0)
+    assert result == PurgeResult(sessions=0, rsvps=0, requests=0, play_now=0)
     assert status.read_bytes() == before
     assert json.loads(before)["last_attempt_at"] == NOW
     assert list(tmp_path.glob(".purge-status.json.*.tmp")) == []
@@ -244,7 +268,7 @@ async def test_failing_purge_rolls_back_and_keeps_the_previous_success(
     assert data["ok"] is False
     assert data["last_attempt_at"] == NOW
     assert data["last_success_at"] == NOW - 100
-    assert data["deleted"] == {"sessions": 0, "rsvps": 0, "requests": 0}
+    assert data["deleted"] == {"sessions": 0, "rsvps": 0, "requests": 0, "play_now": 0}
     assert any(r.getMessage() == "purge_failed" for r in caplog.records)
 
 
@@ -337,7 +361,7 @@ def test_write_status_treats_a_malformed_previous_file_as_no_success(tmp_path: P
     assert data["last_success_at"] is None
     assert data["ok"] is False
     assert data["last_attempt_at"] == NOW
-    assert data["deleted"] == {"sessions": 0, "rsvps": 0, "requests": 0}
+    assert data["deleted"] == {"sessions": 0, "rsvps": 0, "requests": 0, "play_now": 0}
 
 
 async def test_deeply_nested_previous_status_does_not_stop_a_failed_run(db: Database, status: Path) -> None:
@@ -361,7 +385,7 @@ async def test_any_status_write_failure_is_logged_and_survived(db: Database, sta
     monkeypatch.setattr(purge_module, "write_status", broken_write)
     caplog.set_level(logging.ERROR, logger="fluxer_panel.purge")
 
-    assert await run_purge(db, status, NOW) == PurgeResult(sessions=0, rsvps=0, requests=0)
+    assert await run_purge(db, status, NOW) == PurgeResult(sessions=0, rsvps=0, requests=0, play_now=0)
     assert any(r.getMessage() == "purge_status_write_failed" for r in caplog.records)
 
 
@@ -381,7 +405,7 @@ async def test_checkpoint_failure_after_commit_reports_not_ok_and_keeps_the_rows
         "last_success_at": NOW - 100,
         "last_attempt_at": NOW,
         "ok": False,
-        "deleted": {"sessions": 0, "rsvps": 0, "requests": 0},
+        "deleted": {"sessions": 0, "rsvps": 0, "requests": 0, "play_now": 0},
         "schema_version": 1,
     }
     # the commit happened before the checkpoint failed: the expired rows are gone

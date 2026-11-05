@@ -34,6 +34,7 @@ class PurgeResult:
     sessions: int
     rsvps: int
     requests: int
+    play_now: int
 
 
 def _purge_tx(conn: sqlite3.Connection, now: int) -> PurgeResult:
@@ -44,7 +45,9 @@ def _purge_tx(conn: sqlite3.Connection, now: int) -> PurgeResult:
     sessions = conn.execute(f"DELETE FROM sessions WHERE {_EXPIRED_SESSIONS}", cutoff).rowcount
     requests = conn.execute("DELETE FROM requests WHERE created_at < :cutoff",
                             {"cutoff": now - REQUEST_RETENTION}).rowcount
-    return PurgeResult(sessions=sessions, rsvps=rsvps, requests=requests)
+    play_now = conn.execute("DELETE FROM play_now WHERE created_at < :cutoff",
+                            {"cutoff": now - REQUEST_RETENTION}).rowcount
+    return PurgeResult(sessions=sessions, rsvps=rsvps, requests=requests, play_now=play_now)
 
 
 async def purge(db: Database, now: int) -> PurgeResult:
@@ -66,7 +69,7 @@ def write_status(path: Path, *, now: int, result: PurgeResult | None) -> None:
         "last_success_at": now if result is not None else _previous_success(path),
         "last_attempt_at": now,
         "ok": result is not None,
-        "deleted": asdict(result) if result is not None else {"sessions": 0, "rsvps": 0, "requests": 0},
+        "deleted": asdict(result) if result is not None else {"sessions": 0, "rsvps": 0, "requests": 0, "play_now": 0},
         "schema_version": STATUS_SCHEMA_VERSION,
     }
     atomic_write(path, (json.dumps(data, indent=1) + "\n").encode("utf-8"))
@@ -84,7 +87,7 @@ async def run_purge(db: Database, status_path: Path, now: int) -> PurgeResult | 
         log.exception("purge_failed")
         result = None
     else:
-        log_event(log, "purge_done", count=result.sessions + result.rsvps + result.requests,
+        log_event(log, "purge_done", count=result.sessions + result.rsvps + result.requests + result.play_now,
                   duration_ms=round((time.monotonic() - started) * 1000))
     try:
         write_status(status_path, now=now, result=result)
