@@ -128,17 +128,59 @@ class WakeRequests:
 
     async def _edit_admin_dms(self, card: Card, dms: list[AdminDm], content: str, kind: str, now: int) -> None:
         for dm in dms:
-            try:
-                await self._rest.edit_message(dm.channel_id, dm.message_id, content=content,
-                                              allowed_mentions=NO_MENTIONS)
-            except Exception as exc:  # noqa: BLE001 - one admin's failed edit must not stop the other admins' DMs
-                if isinstance(exc, FluxerHTTPError) and exc.status == 404:
-                    await self._send_admin_dm(card, dm.admin_id, content, kind, now)
-                else:
-                    log_event(log, "admin_dm_edit_failed", level=logging.WARNING, card_id=card.id,
-                              reason=type(exc).__name__)
-                continue
-            await self._put_dm(AdminDm(card.id, dm.admin_id, kind, dm.channel_id, dm.message_id, dm.opened_at))
+            outcome = await self._patch_admin_dm(card, dm, content)
+            if outcome == "gone":
+                await self._send_admin_dm(card, dm.admin_id, content, kind, now)
+            elif outcome == "edited":
+                await self._put_dm(AdminDm(card.id, dm.admin_id, kind, dm.channel_id, dm.message_id, dm.opened_at))
+
+    async def _patch_admin_dm(self, card: Card, dm: AdminDm, content: str) -> str:
+        """Edits one admin DM. Returns "edited", "gone" (a 404: the message was deleted) or "failed" (logged by type).
+        One admin's failed edit never stops the other admins' DMs."""
+        try:
+            await self._rest.edit_message(dm.channel_id, dm.message_id, content=content, allowed_mentions=NO_MENTIONS)
+        except Exception as exc:  # noqa: BLE001 - see above: any failure is logged by type and the others go on
+            if isinstance(exc, FluxerHTTPError) and exc.status == 404:
+                return "gone"
+            log_event(log, "admin_dm_edit_failed", level=logging.WARNING, card_id=dm.card_id,
+                      reason=type(exc).__name__)
+            return "failed"
+        return "edited"
+
+    async def close(self, card_id: int, status: str) -> int:
+        """Closes every open request of the card as `status`, DMs each requester once, and edits the admins' DMs to
+        say so. Returns the number of requests closed. The rows close first, in one transaction, so a crash after
+        that point never sends a second close DM."""
+        async with self._locks.get(card_id):
+            card = await self._db.run(lambda c: cards.get_by_id(c, card_id))
+            if card is None:
+                return 0
+            now = int(self._clock())
+            user_ids = await self._db.run(lambda c: wake_requests.close(c, card_id, status, now))
+            if not user_ids:
+                return 0
+            requester_text = text.WAKE_READY if status == "ready" else text.WAKE_GAVE_UP
+            for user_id in user_ids:
+                await notify.dm_user(self._rest, user_id, requester_text.format(card=card.title))
+            admin_text = text.WAKE_ADMIN_CLOSED[status].format(card=card.title, slug=card.slug, n=len(user_ids))
+            for dm in await self._db.run(lambda c: wake_requests.get_dms(c, card_id)):
+                await self._patch_admin_dm(card, dm, admin_text)
+            await self._db.run(lambda c: wake_requests.drop_dms(c, card_id))
+            self._signals.pop(card_id, None)
+            self._kick()
+            log_event(log, "wake_closed", card_id=card_id, outcome=status, count=len(user_ids))
+            return len(user_ids)
+
+    async def close_due(self) -> None:
+        """Closes a card's requests as ready when it is Ready, or as expired when its oldest open row is older than the
+        window. Runs on every poller tick."""
+        now = int(self._clock())
+        for summary in await self._db.run(wake_requests.open_summaries):
+            status = self._status_of(summary.card_id)
+            if status is not None and status.kind is StatusKind.READY:
+                await self.close(summary.card_id, "ready")
+            elif now - summary.oldest_at > self._config.wake_request_expiry_seconds:
+                await self.close(summary.card_id, "expired")
 
     async def _send_admin_dms(self, card: Card, content: str, kind: str, now: int) -> None:
         await self._db.run(lambda c: wake_requests.drop_dms(c, card.id))

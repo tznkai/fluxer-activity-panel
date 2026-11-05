@@ -15,7 +15,7 @@ import aiohttp
 import pytest
 
 from fluxer_client.rest import FluxerREST
-from fluxer_panel import cards, wake_requests
+from fluxer_panel import cards, notify, wake_requests
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.cards import ManagerRef
 from fluxer_panel.config import Config
@@ -333,3 +333,104 @@ async def test_list_open_gives_slug_count_and_age_per_card(db: Database, harness
 
 async def test_list_open_is_empty_with_no_open_request(db: Database, harness: Harness) -> None:
     assert await harness.wake().list_open() == []
+
+
+READY_DM = "Minecraft is ready."
+GAVE_UP_DM = "Nobody could start Minecraft right now."
+READY_ADMIN = "Minecraft (mc) is ready. The request from 2 people is closed."
+EXPIRED_ADMIN = "Nobody started Minecraft (mc). The request from 2 people has expired."
+
+
+def contents_to(state: FakeFluxerState, user_id: str) -> list[str]:
+    return [r.payload["content"] for r in sent_to(state, user_id)]
+
+
+def admin_edits(state: FakeFluxerState, content: str) -> list[Recorded]:
+    return [p for p in patches(state) if p.payload["content"] == content]
+
+
+async def open_two_requests(db: Database, harness: Harness, status: StatusKind) -> tuple[int, WakeRequests]:
+    card = await live_card(db)
+    harness.statuses[card] = CardStatus(status)
+    wake = harness.wake()
+    await wake.press(card, ALICE)
+    await wake.press(card, BOB)
+    return card, wake
+
+
+async def test_close_returns_the_count_once_and_edits_the_admin_dms_to_the_cleared_text(
+        db: Database, harness: Harness) -> None:
+    card, wake = await open_two_requests(db, harness, StatusKind.ASLEEP)
+
+    assert await wake.close(card, "cleared") == 2
+    assert await wake.close(card, "cleared") == 0
+
+    assert await open_counts(db) == {}
+    cleared = "The request for Minecraft (mc) from 2 people was cleared."
+    assert len(admin_edits(harness.state, cleared)) == 2
+    assert await db.run(lambda c: wake_requests.get_dms(c, card)) == []
+
+
+async def test_a_ready_card_closes_its_requests_and_tells_each_requester_once(db: Database, harness: Harness) -> None:
+    card, wake = await open_two_requests(db, harness, StatusKind.ASLEEP)
+    harness.statuses[card] = CardStatus(StatusKind.READY)   # the card wakes after the requests were opened
+
+    await wake.close_due()
+    await wake.close_due()
+
+    rows = await db.run(lambda c: c.execute("SELECT requester_id, status FROM requests ORDER BY requester_id").fetchall())
+    assert [tuple(row) for row in rows] == [(ALICE, "ready"), (BOB, "ready")]
+    for user in (ALICE, BOB):
+        assert contents_to(harness.state, user).count(READY_DM) == 1
+    assert len(admin_edits(harness.state, READY_ADMIN)) == 2
+    assert await db.run(lambda c: wake_requests.get_dms(c, card)) == []
+    assert await open_counts(db) == {}
+
+
+async def test_a_request_expires_after_the_window_and_tells_each_requester_once(db: Database, harness: Harness) -> None:
+    card, wake = await open_two_requests(db, harness, StatusKind.ASLEEP)
+
+    harness.clock.now = 1000 + WINDOW   # the oldest row is exactly at the window: not yet expired
+    await wake.close_due()
+    assert await open_counts(db) == {card: 2}
+
+    harness.clock.now = 1000 + WINDOW + 1
+    await wake.close_due()
+    await wake.close_due()
+
+    assert await open_counts(db) == {}
+    for user in (ALICE, BOB):
+        assert contents_to(harness.state, user).count(GAVE_UP_DM) == 1
+    assert len(admin_edits(harness.state, EXPIRED_ADMIN)) == 2
+
+
+async def test_a_restart_sends_no_second_close_dm(db: Database, harness: Harness) -> None:
+    _, wake = await open_two_requests(db, harness, StatusKind.ASLEEP)
+    harness.clock.now = 1000 + WINDOW + 1
+    await wake.close_due()
+
+    await harness.wake().close_due()
+
+    for user in (ALICE, BOB):
+        assert contents_to(harness.state, user).count(GAVE_UP_DM) == 1
+
+
+async def test_a_crash_after_the_close_sends_nothing_on_the_next_run(db: Database, harness: Harness,
+                                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    _, wake = await open_two_requests(db, harness, StatusKind.ASLEEP)
+    harness.clock.now = 1000 + WINDOW + 1
+    real_dm_user = notify.dm_user
+
+    async def crash(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("crash after the close")
+
+    monkeypatch.setattr(notify, "dm_user", crash)
+    with pytest.raises(RuntimeError):
+        await wake.close_due()
+    monkeypatch.setattr(notify, "dm_user", real_dm_user)
+    before = {user: len(sent_to(harness.state, user)) for user in (ALICE, BOB)}
+
+    await harness.wake().close_due()
+
+    assert {user: len(sent_to(harness.state, user)) for user in (ALICE, BOB)} == before
+    assert await open_counts(db) == {}
