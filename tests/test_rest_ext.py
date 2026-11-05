@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable
 import aiohttp
 import pytest
 
-from fluxer_client.rest import FluxerHTTPError, FluxerREST
+from fluxer_client.rest import FluxerHTTPError, FluxerREST, ReactionUsersPage
 from tests.fakes import FakeFluxerState, Override, make_rest_app
 
 TOKEN = "test.token"
@@ -254,6 +254,8 @@ CALLS: list[tuple[str, Callable[[FluxerREST, str], Awaitable[object]]]] = [
     ("get_messages channel", lambda r, v: r.get_messages(v, limit=1)),
     ("get_reaction_users channel", lambda r, v: r.get_reaction_users(v, "2", "\U0001F64B")),
     ("get_reaction_users message", lambda r, v: r.get_reaction_users("1", v, "\U0001F64B")),
+    ("get_reaction_users_page channel", lambda r, v: r.get_reaction_users_page(v, "2", "\U0001F64B")),
+    ("get_reaction_users_page message", lambda r, v: r.get_reaction_users_page("1", v, "\U0001F64B")),
     ("remove_emoji_reactions channel", lambda r, v: r.remove_emoji_reactions(v, "2", "\U0001F64B")),
     ("remove_emoji_reactions message", lambda r, v: r.remove_emoji_reactions("1", v, "\U0001F64B")),
     ("remove_all_reactions channel", lambda r, v: r.remove_all_reactions(v, "2")),
@@ -722,6 +724,48 @@ async def test_get_reaction_users_has_more_and_next_after_page_through_the_list(
     assert [u["id"] for u in second] == ["1003"]
     last = await rest.request("GET", f"/channels/1/messages/2/reactions/{RAISED_HAND}/users?limit=2&after=1003")
     assert last == {"items": [], "has_more": False, "next_after": None}
+
+
+async def test_get_reaction_users_page_returns_items_has_more_and_next_after(fake, session):
+    state, base = fake
+    state.overrides[f"GET /api/v1/channels/1/messages/2/reactions/{RAISED_HAND}/users"] = Override(
+        200, b'{"items": [{"id": "1001", "bot": false}, {"id": "1002", "bot": true}],'
+             b' "has_more": true, "next_after": "1002"}'
+    )
+    page = await make_rest(session, base).get_reaction_users_page("1", "2", RAISED_HAND)
+    assert page == ReactionUsersPage(
+        users=[{"id": "1001", "bot": False}, {"id": "1002", "bot": True}], has_more=True, next_after="1002")
+
+
+async def test_get_reaction_users_page_treats_a_plain_list_as_the_last_page(fake, session):
+    state, base = fake
+    state.overrides[f"GET /api/v1/channels/1/messages/2/reactions/{RAISED_HAND}/users"] = Override(
+        200, b'[{"id": "1001", "bot": false}]'
+    )
+    page = await make_rest(session, base).get_reaction_users_page("1", "2", RAISED_HAND)
+    assert page == ReactionUsersPage(users=[{"id": "1001", "bot": False}], has_more=False, next_after=None)
+
+
+async def test_get_reaction_users_page_walks_the_pages_with_next_after(fake, session):
+    state, base = fake
+    state.reactions[("1", "2")] = {RAISED_HAND: ["1001", "1002", "1003"]}
+    rest = make_rest(session, base)
+    first = await rest.get_reaction_users_page("1", "2", RAISED_HAND, limit=2)
+    assert [u["id"] for u in first.users] == ["1001", "1002"]
+    assert first.has_more is True
+    second = await rest.get_reaction_users_page("1", "2", RAISED_HAND, limit=2, after=first.next_after)
+    assert [u["id"] for u in second.users] == ["1003"]
+    assert second.has_more is False
+    assert second.next_after is None
+
+
+async def test_get_reaction_users_page_ignores_a_non_string_next_after(fake, session):
+    state, base = fake
+    state.overrides[f"GET /api/v1/channels/1/messages/2/reactions/{RAISED_HAND}/users"] = Override(
+        200, b'{"items": [], "has_more": true, "next_after": 1002}'
+    )
+    page = await make_rest(session, base).get_reaction_users_page("1", "2", RAISED_HAND)
+    assert page == ReactionUsersPage(users=[], has_more=True, next_after=None)
 
 
 async def test_get_reaction_users_encodes_play_emoji_with_variation_selector(fake, session):

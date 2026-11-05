@@ -11,7 +11,7 @@ import logging
 import math
 import re
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Any, Final
+from typing import Any, Final, NamedTuple
 from urllib.parse import quote
 
 import aiohttp
@@ -315,6 +315,12 @@ class FluxerREST:
 
     async def get_reaction_users(self, channel_id: str, message_id: str, emoji: str, *,
                                  limit: int = 100, after: str | None = None) -> list[dict[str, Any]]:
+        return (await self.get_reaction_users_page(channel_id, message_id, emoji, limit=limit, after=after)).users
+
+    async def get_reaction_users_page(self, channel_id: str, message_id: str, emoji: str, *,
+                                      limit: int = 100, after: str | None = None) -> ReactionUsersPage:
+        """One page of a reaction's users. The live /users path answers {"items", "has_more", "next_after"}; a plain
+        list is read as the last page. A next_after that is not a string is treated as absent."""
         if not 1 <= limit <= 100:
             raise ValueError("limit must be 1-100")
         path = (f"/channels/{require_snowflake(channel_id)}/messages/{require_snowflake(message_id)}"
@@ -322,9 +328,13 @@ class FluxerREST:
         if after is not None:
             path += f"&after={require_snowflake(after)}"
         result = await self.request("GET", path)
-        if isinstance(result, dict):          # the live /users path: {"items", "has_more", "next_after"}
-            result = result.get("items")
-        return result if isinstance(result, list) else []
+        if isinstance(result, dict):
+            items = result.get("items")
+            next_after = result.get("next_after")
+            return ReactionUsersPage(users=items if isinstance(items, list) else [],
+                                     has_more=result.get("has_more") is True,
+                                     next_after=next_after if isinstance(next_after, str) else None)
+        return ReactionUsersPage(users=result if isinstance(result, list) else [], has_more=False, next_after=None)
 
     async def remove_emoji_reactions(self, channel_id: str, message_id: str, emoji: str) -> None:
         await self.request("DELETE", f"/channels/{require_snowflake(channel_id)}/messages/"
@@ -349,3 +359,11 @@ async def resolve_endpoints(
     api = api_url or await discover_api(session, instance_url or "")
     gateway = gateway_url or await FluxerREST(session, api, token).get_gateway_url()
     return api, gateway
+
+
+class ReactionUsersPage(NamedTuple):
+    """One page of a reaction's users. `has_more` and `next_after` are the paging cursor; a plain list has neither."""
+
+    users: list[dict[str, Any]]
+    has_more: bool
+    next_after: str | None
