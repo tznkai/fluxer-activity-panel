@@ -15,6 +15,9 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+import aiohttp
+
+from fluxer_client.ids import is_snowflake
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
 from fluxer_client.roles import RoleCache
 from fluxer_panel import cards
@@ -129,3 +132,144 @@ async def toggle_follow(deps: FollowDeps, guild_id: str, user_id: str, card: Car
     outcome = Toggle.REMOVED if has else Toggle.ADDED
     log_event(log, "follow_toggled", card_id=card.id, outcome=outcome.value, role_id=role_id)
     return ToggleResult(outcome)
+
+
+# Ensure: create, adopt or validate a card's follow role ----------------------------------------------
+
+class Ensured(enum.Enum):
+    REUSED = "reused"
+    ADOPTED = "adopted"
+    CREATED = "created"
+    SET = "set"
+    REFUSED = "refused"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class EnsureResult:
+    outcome: Ensured
+    role_id: str | None = None
+    # other_community | everyone | role_permissions | not_mentionable | hierarchy | taken | missing |
+    # duplicate_name | no_bot_id | create_failed | mentionable_failed | lookup_failed
+    reason: str | None = None
+
+
+# Fluxer errors, transport errors and timeouts. A role call that fails with one of these is a result, not a raise.
+_TRANSPORT = (FluxerHTTPError, aiohttp.ClientError, TimeoutError)
+
+
+def role_name(config: Config, card: Card) -> str:
+    return f"{config.follow_role_prefix}{card.slug}"
+
+
+def _mentionable(role: object) -> bool:
+    """True only for a returned role that reads back as mentionable. A missing or odd response is not."""
+    return isinstance(role, Mapping) and role.get("mentionable") is True
+
+
+def _ensured(card: Card, result: EnsureResult) -> EnsureResult:
+    log_event(log, "follow_role_ensured", card_id=card.id, outcome=result.outcome.value, reason=result.reason,
+              role_id=result.role_id)
+    return result
+
+
+async def _store(deps: FollowDeps, card: Card, guild_id: str, role_id: str) -> bool:
+    """Stores the card's follow role. False when another card already has it (the store's own check)."""
+    try:
+        await deps.db.run(lambda c: cards.set_follow_role(c, card.id, guild_id, role_id))
+    except cards.FollowRoleTaken:
+        return False
+    return True
+
+
+async def ensure_follow_role(deps: FollowDeps, guild_id: str, card: Card, *,
+                             role_id: str | None = None) -> EnsureResult:
+    """Publish (role_id None) reuses, adopts or creates the card's role. A manual set (role_id given) validates
+    that role and stores it. Nothing is stored unless the result is REUSED, ADOPTED, CREATED or SET."""
+    bot_id = deps.identity.user_id
+    if bot_id is None:
+        return _ensured(card, EnsureResult(Ensured.REFUSED, reason="no_bot_id"))
+    try:
+        roles = await deps.rest.get_roles(guild_id)
+        bot_roles = _role_ids(await deps.rest.get_member(guild_id, bot_id))
+    except _TRANSPORT:
+        return _ensured(card, EnsureResult(Ensured.FAILED, reason="lookup_failed"))
+    if role_id is None:
+        return _ensured(card, await _publish(deps, guild_id, card, roles, bot_roles))
+    return _ensured(card, await _set(deps, guild_id, card, role_id, roles, bot_roles))
+
+
+async def _publish(deps: FollowDeps, guild_id: str, card: Card, roles: list[Mapping[str, Any]],
+                   bot_roles: frozenset[str]) -> EnsureResult:
+    stored, allow = await deps.db.run(lambda c: (cards.get_follow_role(c, card.id), cards.follow_role_ids(c)))
+    if stored is not None and stored.role_id in {str(r.get("id")) for r in roles}:
+        return EnsureResult(Ensured.REUSED, role_id=stored.role_id)
+    name = role_name(deps.config, card)
+    matches = [r for r in roles if str(r.get("name", "")).casefold() == name.casefold()]
+    if len(matches) > 1:
+        return EnsureResult(Ensured.REFUSED, reason="duplicate_name")
+    if matches:
+        return await _adopt(deps, guild_id, card, matches[0], roles, bot_roles, allow)
+    return await _create(deps, guild_id, card, name)
+
+
+async def _adopt(deps: FollowDeps, guild_id: str, card: Card, target: Mapping[str, Any],
+                 roles: list[Mapping[str, Any]], bot_roles: frozenset[str],
+                 allow: frozenset[str]) -> EnsureResult:
+    role_id = str(target["id"])
+    # Every check runs before the PATCH, so a role owned by another card, or failing a check, is never written.
+    if not zero_permissions(target):
+        return EnsureResult(Ensured.REFUSED, reason="role_permissions")
+    if not manageable(target, roles, bot_roles, guild_id):
+        return EnsureResult(Ensured.REFUSED, reason="hierarchy")
+    if role_id in allow:
+        return EnsureResult(Ensured.REFUSED, reason="taken")
+    if not _mentionable(target):
+        try:
+            updated = await deps.rest.set_role_mentionable(guild_id, role_id, mentionable=True, reason=REASON)
+        except _TRANSPORT:
+            return EnsureResult(Ensured.FAILED, reason="mentionable_failed")
+        if not _mentionable(updated):
+            return EnsureResult(Ensured.FAILED, reason="mentionable_failed")
+    if not await _store(deps, card, guild_id, role_id):
+        return EnsureResult(Ensured.REFUSED, reason="taken")
+    return EnsureResult(Ensured.ADOPTED, role_id=role_id)
+
+
+async def _create(deps: FollowDeps, guild_id: str, card: Card, name: str) -> EnsureResult:
+    try:
+        created = await deps.rest.create_role(guild_id, name=name, mentionable=True, reason=REASON)
+    except (*_TRANSPORT, ValueError):
+        return EnsureResult(Ensured.FAILED, reason="create_failed")
+    # The role exists in Fluxer now, whatever happens next, so the cached name list is stale from here on.
+    deps.roles.invalidate(guild_id)
+    role_id = created.get("id") if isinstance(created, Mapping) else None
+    if not is_snowflake(role_id):
+        return EnsureResult(Ensured.FAILED, reason="create_failed")
+    try:
+        updated = await deps.rest.set_role_mentionable(guild_id, role_id, mentionable=True, reason=REASON)
+    except _TRANSPORT:
+        return EnsureResult(Ensured.FAILED, reason="mentionable_failed")
+    if not _mentionable(updated):
+        return EnsureResult(Ensured.FAILED, reason="mentionable_failed")
+    if not await _store(deps, card, guild_id, role_id):
+        return EnsureResult(Ensured.REFUSED, reason="taken")
+    return EnsureResult(Ensured.CREATED, role_id=role_id)
+
+
+async def _set(deps: FollowDeps, guild_id: str, card: Card, role_id: str, roles: list[Mapping[str, Any]],
+               bot_roles: frozenset[str]) -> EnsureResult:
+    target = next((r for r in roles if str(r.get("id")) == role_id), None)
+    if target is None:   # Fluxer lists only the games community's roles, so another community's role is missing too
+        return EnsureResult(Ensured.REFUSED, reason="missing")
+    if role_id == guild_id:
+        return EnsureResult(Ensured.REFUSED, reason="everyone")
+    if not zero_permissions(target):
+        return EnsureResult(Ensured.REFUSED, reason="role_permissions")
+    if not _mentionable(target):
+        return EnsureResult(Ensured.REFUSED, reason="not_mentionable")
+    if not manageable(target, roles, bot_roles, guild_id):
+        return EnsureResult(Ensured.REFUSED, reason="hierarchy")
+    if not await _store(deps, card, guild_id, role_id):
+        return EnsureResult(Ensured.REFUSED, reason="taken")
+    return EnsureResult(Ensured.SET, role_id=role_id)
