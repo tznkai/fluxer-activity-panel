@@ -23,7 +23,6 @@ from roles import has_role
 PING_GAP_S = 60  # between ping shapes, so the operator can tell their notifications apart
 
 REASON = "fluxer panel live test"
-AUDIT_HEADERS = {"X-Audit-Log-Reason": REASON}   # the same header FluxerREST.create_role sends for REASON
 ROLE_NAME = "live_ping_test"
 ROLE_LABEL = "test-role"
 MENTION_EVERYONE = 1 << 17
@@ -170,12 +169,12 @@ async def read_mentionable(lv: Live, guild: str, role_id: str) -> Any:
 
 async def patch_mentionable(lv: Live, res: Results, guild: str, role_id: str, value: bool, name: str,
                             state: MentionState) -> None:
-    """PATCH {"mentionable": value} (never permissions), read it back and report it as ok or fail under `name`."""
+    """PATCH {"mentionable": value} through the client's set_role_mentionable (never permissions), read it back and
+    report it as ok or fail under `name`."""
     if value:
         state.may_be_mentionable = True   # set before the send: a PATCH that errors may still have applied
     try:
-        await lv.rest.request("PATCH", f"/guilds/{guild}/roles/{role_id}", json_body={"mentionable": value},
-                              headers=AUDIT_HEADERS)
+        await lv.rest.set_role_mentionable(guild, role_id, mentionable=value, reason=REASON)
         readback = await read_mentionable(lv, guild, role_id)
     except FluxerHTTPError as exc:
         res.fail(name, f"HTTP {exc.status} {exc.code}")

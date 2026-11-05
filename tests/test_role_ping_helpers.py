@@ -76,3 +76,23 @@ def test_flag_reports_yes_no_or_unknown():
 def test_bit_constants_match_the_documented_values():
     assert role_ping.MENTION_EVERYONE == 1 << 17
     assert role_ping.ADMINISTRATOR == 1 << 3
+
+
+def test_parse_bits_reads_a_decimal_string_and_an_int():
+    assert role_ping.parse_bits("0") == 0
+    assert role_ping.parse_bits("131072") == MENTION_EVERYONE
+    assert role_ping.parse_bits(8) == ADMINISTRATOR
+
+
+def test_parse_bits_rejects_a_bool_even_though_bool_is_an_int():
+    assert role_ping.parse_bits(True) is None
+    assert role_ping.parse_bits(False) is None
+
+
+def test_parse_bits_is_none_for_anything_that_is_not_a_plain_decimal():
+    assert role_ping.parse_bits(None) is None
+    assert role_ping.parse_bits("") is None
+    assert role_ping.parse_bits("8a") is None
+    assert role_ping.parse_bits("-1") is None
+    assert role_ping.parse_bits(1.5) is None
+    assert role_ping.parse_bits(["8"]) is None
