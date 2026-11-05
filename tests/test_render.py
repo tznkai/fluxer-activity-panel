@@ -875,3 +875,26 @@ def test_three_maximum_text_channels_fit_one_field_at_the_instance_url_cap() -> 
     card = make_card(text_channels=tuple(_text("2" * 25, repeated("<#", 100)) for _ in range(3)))
     value = fields_of(render.render_embed(card, None, None, instance_url=CAP_INSTANCE))[text.FIELD_CHANNELS]
     assert len(value) <= 1024
+
+
+# Open wake requests on an Asleep card (AC2.2, AC2.6) -------------------------------------------------
+
+def test_an_asleep_card_with_open_requests_shows_the_requested_count() -> None:
+    assert render.status_text(CardStatus(StatusKind.ASLEEP), 2) == "Asleep · Requested · 2"
+
+
+def test_an_asleep_card_with_no_open_requests_shows_the_plain_label() -> None:
+    assert render.status_text(CardStatus(StatusKind.ASLEEP), 0) == "Asleep"
+
+
+def test_an_unavailable_card_never_shows_the_requested_count() -> None:
+    assert render.status_text(CardStatus(StatusKind.UNAVAILABLE), 2) == "Unavailable"
+
+
+def test_a_ready_card_never_shows_the_requested_count() -> None:
+    assert render.status_text(CardStatus(StatusKind.READY, counts=PlayerCounts(1, 4)), 2) == "Ready · 1 / 4"
+
+
+def test_the_embed_status_field_shows_the_requested_count() -> None:
+    embed = render.render_embed(make_card(), CardStatus(StatusKind.ASLEEP), None, instance_url=None, requested=2)
+    assert fields_of(embed)[text.FIELD_STATUS] == "Asleep · Requested · 2"

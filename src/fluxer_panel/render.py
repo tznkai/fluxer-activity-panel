@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from fluxer_client.ids import require_snowflake
@@ -129,9 +129,18 @@ def jump_link(label: str, instance_url: str, guild_id: str, channel_id: str, mes
 JUMP_LINK_RE = re.compile(r"\[([^\]]*)\]\(https?://[^/\s]+/channels/([0-9]+)/([0-9]+)/([0-9]+)\)")  # parses jump_link
 
 
+def status_text(status: CardStatus, requested: int) -> str:
+    """The status line, with the open wake request count after an Asleep label when there are requests."""
+    label = status_label(status)
+    if status.kind is StatusKind.ASLEEP and requested > 0:
+        return label + text.REQUESTED_SUFFIX.format(n=requested)
+    return label
+
+
 def render_embed(card: Card, status: CardStatus | None, next_text: str | None, *,
-                 instance_url: str | None) -> dict[str, Any]:
-    """The inside-Fluxer embed. `next_text` is inserted as is: it is our own wording, not card text."""
+                 instance_url: str | None, requested: int = 0) -> dict[str, Any]:
+    """The inside-Fluxer embed. `next_text` is inserted as is: it is our own wording, not card text. `requested` is
+    the card's count of open wake requests."""
     embed: dict[str, Any] = {
         "title": fit(escape(card.title), LIMITS["title"]),
         "color": COLOURS[status.kind] if status is not None else NEUTRAL,
@@ -145,7 +154,7 @@ def render_embed(card: Card, status: CardStatus | None, next_text: str | None, *
         fields.append({"name": name, "value": value, "inline": False})
 
     if status is not None:
-        add(text.FIELD_STATUS, status_label(status))
+        add(text.FIELD_STATUS, status_text(status, requested))
     if next_text is not None:
         add(text.FIELD_NEXT, next_text)
     if card.how_to_join is not None:
@@ -186,14 +195,17 @@ def _channel_value(channel: ChannelLink, unnamed: str, instance_url: str | None)
 
 
 def board_message(entries: Sequence[tuple[Card, CardStatus | None]], *, games_channel_id: str | None,
-                  games_guild_id: str | None, instance_url: str | None) -> dict[str, Any]:
+                  games_guild_id: str | None, instance_url: str | None,
+                  requested: Mapping[int, int] | None = None) -> dict[str, Any]:
     """The whole summary board, as a message payload. One cell per card, in the order given: the title as the name and
     the status line as the value. `games_channel_id` is the board's channel: the one it is stored in, or the games
     channel when none is stored. `games_guild_id` is that channel's community. A status is a jump link only when the
     card's message is in the board's channel, the community is known and the instance URL is known, so a link never
     leaves the community the lookup named. A card with no live status shows a dash."""
+    counts = requested or {}
     cells = [(fit(escape(card.title), LIMITS["board_title"]),
-              _board_value(card, status, games_channel_id, games_guild_id, instance_url))
+              _board_value(card, status, games_channel_id, games_guild_id, instance_url,
+                           counts.get(card.id, 0)))
              for card, status in entries]
     shown = _fit_cells(cells)
     chunks = [shown[i:i + BOARD_FIELDS_PER_EMBED] for i in range(0, len(shown), BOARD_FIELDS_PER_EMBED)] or [[]]
@@ -212,8 +224,8 @@ def board_message(entries: Sequence[tuple[Card, CardStatus | None]], *, games_ch
 
 
 def _board_value(card: Card, status: CardStatus | None, games_channel_id: str | None,
-                 games_guild_id: str | None, instance_url: str | None) -> str:
-    label = text.BOARD_NO_STATUS if status is None else status_label(status)
+                 games_guild_id: str | None, instance_url: str | None, requested: int) -> str:
+    label = text.BOARD_NO_STATUS if status is None else status_text(status, requested)
     linkable = (instance_url is not None and games_guild_id is not None and games_channel_id is not None
                 and card.message_id is not None and card.channel_id == games_channel_id)
     if not linkable:

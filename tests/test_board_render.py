@@ -313,3 +313,15 @@ def test_the_total_budget_drops_whole_cells_and_keeps_the_leading_ones() -> None
     shown = cells(payload)
     assert shown == cells(render.board_message(entries[: len(shown)], games_channel_id=max_id,
                                                games_guild_id=max_id, instance_url=worst_url))
+
+
+def test_a_board_cell_shows_the_requested_count_for_an_asleep_card() -> None:
+    payload = board([(card("Alpha", id=1, channel=None, message=None), CardStatus(StatusKind.ASLEEP))],
+                    requested={1: 2})
+    assert cells(payload) == [("Alpha", "Asleep · Requested · 2")]
+
+
+def test_a_board_cell_for_an_unavailable_card_shows_no_requested_count() -> None:
+    payload = board([(card("Alpha", id=1, channel=None, message=None), CardStatus(StatusKind.UNAVAILABLE))],
+                    requested={1: 2})
+    assert cells(payload) == [("Alpha", "Unavailable")]

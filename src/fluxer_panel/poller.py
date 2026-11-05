@@ -20,7 +20,7 @@ from typing import Any
 
 from fluxer_client.events import MessageDelete
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
-from fluxer_panel import board, cards, notify, render, subscriptions, text
+from fluxer_panel import board, cards, notify, render, subscriptions, text, wake_requests
 from fluxer_panel.card_commands import TEXT_CHANNEL_TYPE, VOICE_CHANNEL_TYPE, CardLocks, channel_name
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
@@ -67,12 +67,18 @@ class Poller:
         self._kick = asyncio.Event()
         self._schedules: dict[int, _ScheduleCache] = {}
         self._names_checked: dict[int, float] = {}
+        self._statuses: dict[int, CardStatus | None] = {}   # each card's latest evaluated status, for wake requests
+        self._requested: dict[int, int] = {}                 # each card's open wake request count, read per tick
         self._deleted: OrderedDict[tuple[str, str], None] = OrderedDict()
         self._warned_no_channel = False
         self._games_guild = games_guild if games_guild is not None else GamesGuild(rest, config)
 
     def kick(self) -> None:
         self._kick.set()
+
+    def status_of(self, card_id: int) -> CardStatus | None:
+        """The card's status at its last evaluation, or None when it has none (never evaluated, or its evaluation failed)."""
+        return self._statuses.get(card_id)
 
     async def on_message_delete(self, event: MessageDelete) -> None:
         # Remembered before the transaction, so a store that commits after this point still sees the deletion.
@@ -159,6 +165,7 @@ class Poller:
         card is published as soon as its own evaluation ends, so one slow card does not hold back the others. Either way
         the board is brought up to date after the cards. When this tick's read of the stored board fails, the cards
         publish as they would with a board stored, and no new board is posted in this tick."""
+        self._requested = await self._db.run(wake_requests.open_counts)
         live = await self._db.run(lambda c: cards.list_cards(c, "live"))
         self._forget_cards_not_in({card.id for card in live})
         sem = asyncio.Semaphore(self._config.poll_concurrency)
@@ -179,10 +186,11 @@ class Poller:
                                       may_post=stored is not None)
 
     def _forget_cards_not_in(self, live_ids: set[int]) -> None:
-        """Drops the cached schedule and channel name check of every card not in `live_ids`, the live set of this tick.
-        A card republished after such a tick fetches them again. A card republished before any tick saw it as non-live
-        keeps its cache. A manager change is handled by the ManagerRef comparison in `_next_action`, not by this drop."""
-        for entries in (self._schedules, self._names_checked):
+        """Drops the cached schedule, channel name check and status of every card not in `live_ids`, the live set of this
+        tick. A card republished after such a tick fetches them again. A card republished before any tick saw it as
+        non-live keeps its cache. A manager change is handled by the ManagerRef comparison in `_next_action`, not by
+        this drop."""
+        for entries in (self._schedules, self._names_checked, self._statuses):
             for card_id in [card_id for card_id in entries if card_id not in live_ids]:
                 del entries[card_id]
 
@@ -201,6 +209,7 @@ class Poller:
             except Exception as exc:  # noqa: BLE001 - one card's failure must not stop the other cards
                 log_event(log, "card_poll_failed", level=logging.WARNING, card_id=card.id,
                           reason=type(exc).__name__)
+                self._statuses[card.id] = None
                 return _Evaluated(card, None, None)
 
     async def _publish_guarded(self, result: _Evaluated, sem: asyncio.Semaphore) -> None:
@@ -233,13 +242,15 @@ class Poller:
             now=now,
             grace=self._config.probe_grace_seconds,
         )
+        self._statuses[card.id] = res.status
         if (res.failing_since, res.alert_sent) != (card.runtime.probe_failing_since, card.runtime.probe_alert_sent):
             # Saved before the DM goes out: a crash or a failed DM can never send the alert a second time.
             await self._db.run(lambda c: cards.set_probe_tracking(c, card.id, res.failing_since, res.alert_sent))
         if res.alert_now:
             await self._alert(card)
         next_text = next_action_text(action, now_dt) if action is not None else None
-        embed = render.render_embed(card, res.status, next_text, instance_url=self._config.instance_url)
+        embed = render.render_embed(card, res.status, next_text, instance_url=self._config.instance_url,
+                                    requested=self._requested.get(card.id, 0))
         return _Evaluated(card, res.status, embed)
 
     async def _refresh_names(self, card: cards.Card) -> cards.Card:
@@ -377,7 +388,7 @@ class Poller:
         # Until a lookup answers, the board's links are plain text.
         guild_id = await self._games_guild.get(channel_id)
         return render.board_message(entries, games_channel_id=channel_id, games_guild_id=guild_id,
-                                    instance_url=self._config.instance_url)
+                                    instance_url=self._config.instance_url, requested=self._requested)
 
     async def _board_post(self, channel_id: str, payload: dict[str, Any]) -> None:
         sent = await self._rest.send_message(channel_id, embeds=payload["embeds"],

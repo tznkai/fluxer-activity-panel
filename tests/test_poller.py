@@ -26,13 +26,14 @@ from fluxer_client.events import MessageCreate, MessageDelete
 from fluxer_client.gateway import Gateway
 from fluxer_client.rest import FluxerREST
 from fluxer_client.roles import RoleCache
-from fluxer_panel import admin, board, cards, render, subscriptions, text
+from fluxer_panel import admin, board, cards, render, subscriptions, text, wake_requests
 from fluxer_panel.bot import Bot
 from fluxer_panel.card_commands import CardContext, CardLocks
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.logs import setup_logging
 from fluxer_panel.poller import _DELETED_CAP, Poller
+from fluxer_panel.resolver import StatusKind
 from fluxer_panel.sources.base import PlayerCounts, ProbeDetails, ProbeFailed, ProbeResult
 from fluxer_panel.sources.pterodactyl import PterodactylManager
 from fluxer_panel.sources.registry import Sources
@@ -1664,3 +1665,55 @@ async def test_copies_hold_the_cards_semaphore_slot(world: World, db: Database):
         release.set()
         await tick
     assert len(copy_posts(world.fluxer, SUB)) == 1 and len(copy_posts(world.fluxer, SUB2)) == 1
+
+
+# Open wake requests on the card, its copy and the board (AC2.2, AC2.6) -----------------------------
+
+async def open_requests(db: Database, card_id: int, *requesters: str) -> None:
+    def tx(conn: Any) -> None:
+        for user in requesters:
+            wake_requests.add_open(conn, card_id, user, 0)
+
+    await db.run(tx)
+
+
+async def test_open_requests_show_on_the_card_its_copy_and_the_board(world: World, poller: Poller, db: Database):
+    world.panel.servers[SERVER].current_state = "offline"
+    card_id = await seed(db, "alpha", title="Alpha", manager=cards.ManagerRef("pterodactyl", SERVER))
+    await subscribe(db, card_id, SUB)
+    await open_requests(db, card_id, "2101", "2102")
+
+    await poller.tick()
+
+    [card_post] = posts(world.fluxer)
+    assert fields_of(card_post.payload["embeds"][0])[text.FIELD_STATUS] == "Asleep · Requested · 2"
+    [copy_post] = requests_for(world.fluxer, "POST", SUB_MESSAGES)
+    assert fields_of(copy_post.payload["embeds"][0])[text.FIELD_STATUS] == "Asleep · Requested · 2"
+    board_edits = requests_for(world.fluxer, "PATCH", f"{GAMES_MESSAGES}/{BOARD_MESSAGE}")
+    assert "Asleep · Requested · 2" in json.dumps(board_edits[-1].payload, ensure_ascii=False)
+
+
+async def test_a_suspended_server_shows_no_requested_suffix(world: World, poller: Poller, db: Database):
+    world.panel.servers[SERVER].is_suspended = True
+    card_id = await seed(db, "alpha", title="Alpha", manager=cards.ManagerRef("pterodactyl", SERVER))
+    await open_requests(db, card_id, "2101", "2102")
+
+    await poller.tick()
+
+    [card_post] = posts(world.fluxer)
+    assert fields_of(card_post.payload["embeds"][0])[text.FIELD_STATUS] == text.STATUS_UNAVAILABLE
+
+
+async def test_status_of_returns_the_last_evaluated_status_and_none_once_the_card_is_not_live(
+        world: World, poller: Poller, db: Database):
+    world.panel.servers[SERVER].current_state = "offline"
+    card_id = await seed(db, "alpha", manager=cards.ManagerRef("pterodactyl", SERVER))
+    assert poller.status_of(card_id) is None
+
+    await poller.tick()
+    status = poller.status_of(card_id)
+    assert status is not None and status.kind is StatusKind.ASLEEP
+
+    await db.run(lambda c: cards.set_state(c, card_id, "archived", 0))
+    await poller.tick()
+    assert poller.status_of(card_id) is None

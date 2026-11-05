@@ -11,6 +11,7 @@ STATUS_UNKNOWN = "Status unknown"
 STATUS_READY = "Ready"
 STATUS_NOT_RESPONDING = "Not responding"
 READY_COUNTS = "Ready · {online} / {max}"
+REQUESTED_SUFFIX = " · Requested · {n}"
 
 NEXT_RESTART = "Restarts"
 NEXT_SLEEP = "Goes to sleep"
