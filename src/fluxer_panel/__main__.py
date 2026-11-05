@@ -89,8 +89,9 @@ async def run(config: Config, db: Database) -> None:
             poller.set_wake(wake)
             card_ctx.wake = wake
             interactions = Interactions(db=db, rest=rest, config=config, locks=card_ctx.locks,
-                                        games_guild=games_guild, seeder=seeder, identity=identity, roles=roles,
-                                        kick=poller.kick, wake=wake, status_of=poller.status_of)
+                                        games_guild=games_guild, seeder=seeder, pacer=pacer, identity=identity,
+                                        roles=roles, kick=poller.kick, wake=wake, status_of=poller.status_of)
+            poller.set_interactions(interactions)   # each tick ends the play-now messages that are due
             presses = Presses(db=db, rest=rest, config=config, handler=interactions, games_guild=games_guild,
                               pacer=pacer, identity=identity)
             bot = Bot(rest=rest, config=config, roles=roles, card_ctx=card_ctx,

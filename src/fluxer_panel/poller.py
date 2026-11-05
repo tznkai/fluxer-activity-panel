@@ -16,7 +16,7 @@ from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fluxer_client.events import MessageDelete
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
@@ -30,6 +30,9 @@ from fluxer_panel.resolver import CardStatus, next_action_text, resolve
 from fluxer_panel.sources.base import HostManager, PowerAction, PowerState, ProbeFailed, ProbeResult
 from fluxer_panel.sources.registry import Sources
 from fluxer_panel.wake import WakeRequests
+
+if TYPE_CHECKING:
+    from fluxer_panel.interactions import Interactions
 
 log = logging.getLogger(__name__)
 
@@ -71,6 +74,7 @@ class Poller:
         self._statuses: dict[int, CardStatus | None] = {}   # each card's latest evaluated status, for wake requests
         self._requested: dict[int, int] = {}                 # each card's open wake request count, read per tick
         self._wake: WakeRequests | None = None               # set by set_wake, before the loop starts
+        self._interactions: Interactions | None = None       # set by set_interactions, before the loop starts
         self._deleted: OrderedDict[tuple[str, str], None] = OrderedDict()
         self._warned_no_channel = False
         self._games_guild = games_guild if games_guild is not None else GamesGuild(rest, config)
@@ -81,6 +85,10 @@ class Poller:
     def set_wake(self, wake: WakeRequests) -> None:
         """Given the wake requests once, after both are built: the requests read this poller's statuses, so it comes first."""
         self._wake = wake
+
+    def set_interactions(self, interactions: Interactions) -> None:
+        """Given the interactions once, after both are built: each tick ends the play-now messages that are due."""
+        self._interactions = interactions
 
     def status_of(self, card_id: int) -> CardStatus | None:
         """The card's status at its last evaluation, or None when it has none (never evaluated, or its evaluation failed)."""
@@ -198,9 +206,12 @@ class Poller:
 
     async def _after_tick(self) -> None:
         """The passes that run on every tick, with or without a games channel. A request that is ready or expired closes
-        here. Closing kicks the poller, so the next loop renders the card without the suffix."""
+        here. Closing kicks the poller, so the next loop renders the card without the suffix. Play-now messages that are
+        due end here too (AC4.10), so they expire without a games channel as well."""
         if self._wake is not None:
             await self._wake.close_due()
+        if self._interactions is not None:
+            await self._interactions.expire_play_now()
 
     def _forget_cards_not_in(self, live_ids: set[int]) -> None:
         """Drops the cached schedule, channel name check and status of every card not in `live_ids`, the live set of this

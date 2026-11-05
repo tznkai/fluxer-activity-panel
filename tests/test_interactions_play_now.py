@@ -108,6 +108,7 @@ class Harness:
     clock: Clock
     config: Config
     wake: RecordingWake
+    locks: CardLocks
 
 
 @pytest.fixture
@@ -139,7 +140,7 @@ async def harness(tmp_path: Path, session, fake) -> AsyncIterator[Callable[..., 
     opened: list[Database] = []
 
     async def build(*, instance_url: bool = True, status_of: Callable[[int], CardStatus | None] | None = None,
-                    **env: str) -> Harness:
+                    pacer: ChannelPacer | None = None, locks: CardLocks | None = None, **env: str) -> Harness:
         rest = FluxerREST(session, api, TOKEN)
         database = Database.open(tmp_path / f"panel{len(opened)}.db")
         opened.append(database)
@@ -148,18 +149,21 @@ async def harness(tmp_path: Path, session, fake) -> AsyncIterator[Callable[..., 
         base["FLUXER_INSTANCE_URL" if instance_url else "FLUXER_API_URL"] = JUMP_URL if instance_url else API
         config = Config.from_env({**base, **env})
         games = GamesGuild(rest, config)
-        pacer = ChannelPacer(max_calls=1000)
+        if pacer is None:
+            pacer = ChannelPacer(max_calls=1000)
+        if locks is None:
+            locks = CardLocks()
         identity = BotIdentity(user_id=BOT_ID)
         clock = Clock()
         wake = RecordingWake()
-        interactions = Interactions(db=database, rest=rest, config=config, locks=CardLocks(), games_guild=games,
-                                    seeder=Seeder(rest=rest, pacer=pacer, db=database), identity=identity,
-                                    roles=RoleCache(rest), clock=clock, wake=wake,
+        interactions = Interactions(db=database, rest=rest, config=config, locks=locks, games_guild=games,
+                                    seeder=Seeder(rest=rest, pacer=pacer, db=database), pacer=pacer,
+                                    identity=identity, roles=RoleCache(rest), clock=clock, wake=wake,
                                     status_of=status_of or (lambda _id: None))
         presses = Presses(db=database, rest=rest, config=config, handler=interactions, games_guild=games,
                           pacer=pacer, identity=identity, clock=clock)
         return Harness(state=state, db=database, presses=presses, interactions=interactions, clock=clock,
-                       config=config, wake=wake)
+                       config=config, wake=wake, locks=locks)
 
     yield build
     for database in opened:
@@ -385,3 +389,180 @@ async def test_a_wake_press_on_the_play_now_message_wakes_the_card(harness) -> N
 
 def _play_now_rows(conn) -> int:
     return conn.execute("SELECT COUNT(*) FROM play_now").fetchone()[0]
+
+
+# Me-too counting and expiry ---------------------------------------------------------------------------
+
+REACTOR_A = "6101"
+REACTOR_B = "6102"
+PLAY_PATH = f"/api/v1/channels/{PLAY_CH}/messages"
+
+
+async def post_play_now(h: Harness, *, user: str = PRESSER) -> str:
+    """Posts one play-now message from a press on the card, in PLAY_CH, and returns its message id."""
+    await set_card_play_channel(h, CARD_ID, GUILD, PLAY_CH)
+    await h.presses.on_reaction(play_press(user=user))
+    [mid] = play_now_message_ids(h.state, PLAY_CH)
+    return mid
+
+
+def set_reactors(state: FakeFluxerState, message: str, users: list[str]) -> None:
+    """Puts these play-now reactors on the play-now message, after the bot's own."""
+    state.reactions[(PLAY_CH, message)][PLAY_NOW_EMOJI] = [BOT_ID, *users]
+
+
+def edits_to(state: FakeFluxerState, message: str) -> list[Recorded]:
+    return [r for r in state.requests if r.method == "PATCH" and r.path == f"{PLAY_PATH}/{message}"]
+
+
+def deletes_all_reactions(state: FakeFluxerState, message: str) -> list[Recorded]:
+    return [r for r in state.requests if r.method == "DELETE" and r.path == f"{PLAY_PATH}/{message}/reactions"]
+
+
+def me_too(user: str, message: str) -> events.ReactionAdd:
+    return press_event(PLAY_NOW_EMOJI, user=user, channel=PLAY_CH, message=message, guild=GUILD)
+
+
+def me_too_removed(user: str, message: str) -> events.ReactionRemove:
+    return events.ReactionRemove(user_id=user, channel_id=PLAY_CH, message_id=message, guild_id=GUILD,
+                                 emoji=events.Emoji(name=PLAY_NOW_EMOJI, id=None), member_role_ids=frozenset(),
+                                 user_is_bot=False)
+
+
+def status_field(recorded: Recorded) -> str:
+    return field_value(recorded.payload["embeds"][0], text.FIELD_STATUS)
+
+
+class ProbePacer(ChannelPacer):
+    """Records whether the card's lock is held each time a reaction call waits for its budget."""
+
+    def __init__(self, card_locks: CardLocks, card_id: int) -> None:
+        super().__init__(max_calls=1000)
+        self._card_locks = card_locks   # not `_locks`: ChannelPacer keeps its own per-channel locks under that name
+        self._card_id = card_id
+        self.held: list[bool] = []
+
+    async def wait(self, channel_id: str) -> None:
+        self.held.append(self._card_locks.get(self._card_id).locked())
+        await super().wait(channel_id)
+
+
+async def test_a_me_too_add_counts_the_distinct_non_bot_reactors_plus_the_presser(harness) -> None:
+    h = await harness()
+    mid = await post_play_now(h)
+    set_reactors(h.state, mid, [REACTOR_A, REACTOR_B])
+    await h.presses.on_reaction(me_too(REACTOR_B, mid))
+    [edit] = edits_to(h.state, mid)
+    assert status_field(edit) == text.PLAY_NOW_PLAYING.format(n=3)
+    assert edit.payload["allowed_mentions"] == {"parse": []}
+
+
+async def test_a_me_too_remove_lowers_the_count(harness) -> None:
+    h = await harness()
+    mid = await post_play_now(h)
+    set_reactors(h.state, mid, [REACTOR_A, REACTOR_B])
+    await h.presses.on_reaction(me_too(REACTOR_B, mid))
+    set_reactors(h.state, mid, [REACTOR_A])
+    await h.presses.on_reaction(me_too_removed(REACTOR_B, mid))
+    assert status_field(edits_to(h.state, mid)[-1]) == text.PLAY_NOW_PLAYING.format(n=2)
+
+
+async def test_a_me_too_never_removes_a_reaction_and_no_user_reaction_is_deleted(harness) -> None:
+    h = await harness()
+    mid = await post_play_now(h)
+    set_reactors(h.state, mid, [REACTOR_A, REACTOR_B])
+    before = len(h.state.requests)     # the presser's own tap on the card was removed during setup, not by this event
+    await h.presses.on_reaction(me_too(REACTOR_B, mid))
+    assert [r for r in h.state.requests[before:] if r.method == "DELETE"] == []
+
+
+async def test_a_bot_reactor_is_not_counted(harness) -> None:
+    h = await harness()
+    mid = await post_play_now(h)
+    set_reactors(h.state, mid, [REACTOR_A])     # the bot's own reaction is also on the message
+    await h.presses.on_reaction(me_too(REACTOR_A, mid))
+    assert status_field(edits_to(h.state, mid)[-1]) == text.PLAY_NOW_PLAYING.format(n=2)
+
+
+async def test_the_count_pages_past_one_hundred_reactors_and_counts_the_presser_once(harness) -> None:
+    h = await harness()
+    mid = await post_play_now(h)
+    crowd = [str(7000 + i) for i in range(149)] + [PRESSER]     # 150 reactors, the presser among them
+    set_reactors(h.state, mid, crowd)
+    await h.presses.on_reaction(me_too(crowd[0], mid))
+    assert status_field(edits_to(h.state, mid)[-1]) == text.PLAY_NOW_PLAYING.format(n=150)
+
+
+async def test_the_reactor_reads_and_the_edit_are_not_held_under_the_card_lock(harness, ) -> None:
+    locks = CardLocks()
+    pacer = ProbePacer(locks, CARD_ID)
+    h = await harness(pacer=pacer, locks=locks)
+    mid = await post_play_now(h)
+    pacer.held.clear()
+    set_reactors(h.state, mid, [REACTOR_A])
+    await h.presses.on_reaction(me_too(REACTOR_A, mid))
+    assert pacer.held and not any(pacer.held)
+
+
+async def test_a_play_now_message_ends_at_its_expiry_with_one_edit_and_one_bulk_removal(harness) -> None:
+    h = await harness()
+    h.clock.now = 100
+    mid = await post_play_now(h)           # expires at 100 + PLAY_NOW_EXPIRY_SECONDS (3600)
+    h.clock.now = 3699
+    await h.interactions.expire_play_now()
+    assert edits_to(h.state, mid) == [] and deletes_all_reactions(h.state, mid) == []
+
+    h.clock.now = 3700
+    await h.interactions.expire_play_now()
+    [ended] = edits_to(h.state, mid)
+    assert ended.payload["content"] == text.PLAY_NOW_ENDED_CONTENT.format(card=render.escape(CARD_TITLE))
+    assert ended.payload["allowed_mentions"] == {"parse": []}
+    assert len(deletes_all_reactions(h.state, mid)) == 1
+    assert (PLAY_CH, mid) not in h.state.reactions
+
+
+async def test_a_later_me_too_on_an_ended_message_makes_no_request(harness) -> None:
+    h = await harness()
+    h.clock.now = 100
+    mid = await post_play_now(h)
+    h.clock.now = 3700
+    await h.interactions.expire_play_now()
+    before = len(h.state.requests)
+    await h.presses.on_reaction(me_too(REACTOR_A, mid))
+    await h.presses.on_reaction(me_too_removed(REACTOR_A, mid))
+    assert len(h.state.requests) == before
+
+
+async def test_the_ended_message_keeps_the_last_count(harness) -> None:
+    h = await harness()
+    h.clock.now = 100
+    mid = await post_play_now(h)
+    set_reactors(h.state, mid, [REACTOR_A, REACTOR_B])
+    await h.presses.on_reaction(me_too(REACTOR_B, mid))
+    h.clock.now = 3700
+    await h.interactions.expire_play_now()
+    assert status_field(edits_to(h.state, mid)[-1]) == text.PLAY_NOW_PLAYING.format(n=3)
+
+
+async def test_a_failed_end_edit_is_logged_and_the_reactions_are_still_removed(harness, caplog) -> None:
+    caplog.set_level(logging.INFO, logger="fluxer_panel")
+    h = await harness()
+    h.clock.now = 100
+    mid = await post_play_now(h)
+    h.state.overrides[f"PATCH {PLAY_PATH}/{mid}"] = Override(404, b'{"code":"UNKNOWN_MESSAGE","message":"gone"}')
+    h.clock.now = 3700
+    await h.interactions.expire_play_now()
+    assert len(deletes_all_reactions(h.state, mid)) == 1
+    assert "play_now_end_failed" in [record.getMessage() for record in panel_records(caplog)]
+
+
+async def test_the_bulk_removal_is_not_held_under_the_card_lock(harness) -> None:
+    locks = CardLocks()
+    pacer = ProbePacer(locks, CARD_ID)
+    h = await harness(pacer=pacer, locks=locks)
+    h.clock.now = 100
+    await post_play_now(h)
+    pacer.held.clear()
+    h.clock.now = 3700
+    await h.interactions.expire_play_now()
+    assert pacer.held and not any(pacer.held)

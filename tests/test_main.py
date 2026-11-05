@@ -564,6 +564,7 @@ class _PollerProbe:
         self.cancelled = False
         self.rest_answered: bool | None = None
         self.wake: Any = None           # what `set_wake` was given, before the loop started
+        self.interactions: Any = None   # what `set_interactions` was given, before the loop started
 
 
 def _probe_poller(monkeypatch: pytest.MonkeyPatch) -> _PollerProbe:
@@ -578,6 +579,9 @@ def _probe_poller(monkeypatch: pytest.MonkeyPatch) -> _PollerProbe:
 
         def set_wake(self, wake: Any) -> None:
             probe.wake = wake
+
+        def set_interactions(self, interactions: Any) -> None:
+            probe.interactions = interactions
 
         def status_of(self, card_id: int) -> None:
             return None
@@ -661,6 +665,21 @@ async def test_the_poller_is_given_the_wake_requests_before_it_starts(aiohttp_se
         task = asyncio.create_task(run(config, db))
         await asyncio.wait_for(probe.started.wait(), BOUND)
         assert isinstance(probe.wake, WakeRequests)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, BOUND)
+    finally:
+        db.close()
+
+
+async def test_the_poller_is_given_the_interactions_before_it_starts(aiohttp_server, tmp_path, monkeypatch):
+    """The play-now expiry runs on the poller's tick, so the poller must hold the interactions before its loop starts."""
+    probe = _probe_poller(monkeypatch)
+    config, db = await _in_process_panel(aiohttp_server, tmp_path, _ready_gateway_script)
+    try:
+        task = asyncio.create_task(run(config, db))
+        await asyncio.wait_for(probe.started.wait(), BOUND)
+        assert probe.interactions is not None
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task, BOUND)

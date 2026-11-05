@@ -26,7 +26,7 @@ from fluxer_client.events import MessageCreate, MessageDelete
 from fluxer_client.gateway import Gateway
 from fluxer_client.rest import FluxerREST
 from fluxer_client.roles import RoleCache
-from fluxer_panel import admin, board, cards, render, subscriptions, text, wake_requests
+from fluxer_panel import admin, board, cards, play_now, render, subscriptions, text, wake_requests
 from fluxer_panel.bot import Bot
 from fluxer_panel.card_commands import CardContext, CardLocks
 from fluxer_panel.config import Config
@@ -1763,8 +1763,8 @@ def press_bot(world: World, poller: Poller, wake: WakeRequests) -> Bot:
     pacer = ChannelPacer(max_calls=1000)
     games = GamesGuild(world.rest, world.config)
     interactions = Interactions(db=world.db, rest=world.rest, config=world.config, locks=world.locks, games_guild=games,
-                                seeder=Seeder(rest=world.rest, pacer=pacer, db=world.db), identity=identity,
-                                roles=RoleCache(world.rest), kick=poller.kick, wake=wake)
+                                seeder=Seeder(rest=world.rest, pacer=pacer, db=world.db), pacer=pacer,
+                                identity=identity, roles=RoleCache(world.rest), kick=poller.kick, wake=wake)
     presses = Presses(db=world.db, rest=world.rest, config=world.config, handler=interactions, games_guild=games,
                       pacer=pacer, identity=identity, clock=world.clock)
     return Bot(rest=world.rest, config=world.config, roles=RoleCache(world.rest), presses=presses, identity=identity)
@@ -1846,3 +1846,39 @@ async def test_each_tick_runs_the_close_pass_without_a_games_channel(world: Worl
     poller.set_wake(wake)
     await poller.tick()
     assert wake.closes == 1
+
+
+# Play-now expiry on the poller's tick ----------------------------------------------------------------
+
+PLAY_MESSAGE = "5201"      # a play-now message in the games channel
+
+
+def wire_interactions(world: World, poller: Poller) -> Interactions:
+    """The interactions the way `__main__` builds them, handed to the poller. They share the test clock."""
+    pacer = ChannelPacer(max_calls=1000)
+    identity = BotIdentity(user_id=WAKE_BOT)
+    games = GamesGuild(world.rest, world.config)
+    interactions = Interactions(db=world.db, rest=world.rest, config=world.config, locks=world.locks, games_guild=games,
+                                seeder=Seeder(rest=world.rest, pacer=pacer, db=world.db), pacer=pacer,
+                                identity=identity, roles=RoleCache(world.rest), clock=world.clock)
+    poller.set_interactions(interactions)
+    return interactions
+
+
+async def test_a_due_play_now_message_ends_on_a_tick_even_without_a_games_channel(world: World, db: Database):
+    card_id = await seed(db, "alpha", title=CARD_TITLE)
+    await db.run(lambda c: play_now.add(c, card_id=card_id, guild_id=GUILD, channel_id=GAMES,
+                                        message_id=PLAY_MESSAGE, presser_id=WAKER, offers_wake=False,
+                                        now=0, expires_at=100))
+    poller = world.make_poller(config=no_games_config())
+    wire_interactions(world, poller)
+    world.clock.now = 99
+    await poller.tick()
+    assert [r for r in world.fluxer.requests if r.method == "PATCH" and r.path.endswith(PLAY_MESSAGE)] == []
+
+    world.clock.now = 100
+    await poller.tick()
+    [ended] = [r for r in world.fluxer.requests if r.method == "PATCH" and r.path == f"{GAMES_MESSAGES}/{PLAY_MESSAGE}"]
+    assert ended.payload["content"] == text.PLAY_NOW_ENDED_CONTENT.format(card=render.escape(CARD_TITLE))
+    assert [r for r in world.fluxer.requests
+            if r.method == "DELETE" and r.path == f"{GAMES_MESSAGES}/{PLAY_MESSAGE}/reactions"]

@@ -58,9 +58,10 @@ def make_interactions(db: Database, session: aiohttp.ClientSession, wake: Record
     config = Config.from_env({"FLUXER_TOKEN": TOKEN, "FLUXER_INSTANCE_URL": "https://fluxer.invalid",
                               "ADMIN_USER_IDS": "1001", "GAMES_CHANNEL_ID": GAMES})
     rest = FluxerREST(session, API, TOKEN)
+    pacer = ChannelPacer()
     return Interactions(db=db, rest=rest, config=config, locks=CardLocks(), games_guild=GamesGuild(rest, config),
-                        seeder=Seeder(rest=rest, pacer=ChannelPacer(), db=db), identity=BotIdentity(user_id=BOT_ID),
-                        roles=RoleCache(rest), wake=wake)
+                        seeder=Seeder(rest=rest, pacer=pacer, db=db), pacer=pacer,
+                        identity=BotIdentity(user_id=BOT_ID), roles=RoleCache(rest), wake=wake)
 
 
 def wake_press(kind: SurfaceKind) -> Press:

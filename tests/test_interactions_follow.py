@@ -131,8 +131,8 @@ async def harness(tmp_path: Path, session, fake) -> AsyncIterator[Callable[..., 
         pacer = ChannelPacer(max_calls=1000)
         identity = BotIdentity(user_id=BOT_ID)
         interactions = Interactions(db=database, rest=rest, config=config, locks=CardLocks(), games_guild=games,
-                                    seeder=Seeder(rest=rest, pacer=pacer, db=database), identity=identity,
-                                    roles=RoleCache(rest))
+                                    seeder=Seeder(rest=rest, pacer=pacer, db=database), pacer=pacer,
+                                    identity=identity, roles=RoleCache(rest))
         clock = Clock()
         presses = Presses(db=database, rest=rest, config=config, handler=interactions, games_guild=games,
                           pacer=pacer, identity=identity, clock=clock)
