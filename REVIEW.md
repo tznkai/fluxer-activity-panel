@@ -331,7 +331,7 @@ This section compares the phase 1 brief and plan with what the investigation and
 
 ### Unicode emoji shape
 
-- **Brief assumed:** the brief's reaction buttons (`▶️ 🙋 📅 🔔`) are unicode emoji. It does not say what the events look like.
+- **Brief assumed:** the brief's reaction buttons (`U+25B6 U+FE0F`, `U+1F64B`, `U+1F4C5`, `U+1F514`) are unicode emoji. It does not say what the events look like.
 - **True:** a unicode emoji has no `id` key at all. It is not `id: null`.
 - **Consequence:** the parser handles the missing key, and `encode_emoji` percent-encodes unicode (`src/fluxer_client/rest.py:63` `return quote(emoji, safe="")`). Matching a reaction to a button must compare names, not ids.
 

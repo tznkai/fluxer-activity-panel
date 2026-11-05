@@ -16,7 +16,7 @@ from fluxer_client.rest import FluxerHTTPError, FluxerREST, encode_emoji
 NO_MENTIONS: dict[str, list[str]] = {"parse": []}
 TEXT = "live test: reaction bulk"
 RAISED_HAND = "\U0001F64B"     # added by the bot, then by the operator
-PLAY = "▶️"          # added by the bot, removed by emoji
+PLAY = "\u25b6\ufe0f"  # added by the bot, removed by emoji
 RAISED_HAND_PROMPT = "U+1F64B"  # named by code point so no raw emoji is printed
 REMOVE_EVENT_WAIT = 10.0
 RATE_CALLS = 30
@@ -29,7 +29,7 @@ def code_points(name: str) -> str:
 
 def normalise(name: str) -> str:
     """Drops U+FE0F, so a stored play button matches with or without the variation selector."""
-    return name.replace("️", "")
+    return name.replace("\ufe0f", "")
 
 
 def on_message(channel_id: str, message_id: str) -> Callable[[str, dict[str, Any]], bool]:
@@ -100,32 +100,58 @@ async def bot_adds(lv: Live, res: Results, channel: str, message_id: str) -> Non
             res.ok(name)
 
 
+def bare_path(channel: str, message: str) -> str:
+    """The bare emoji path (no /users suffix), the alternative reactor-list shape to probe."""
+    return f"/channels/{channel}/messages/{message}/reactions/{encode_emoji(RAISED_HAND)}?limit=1"
+
+
+async def users_page(lv: Live, channel: str, message_id: str, name: str,
+                     *, after: str | None = None) -> list[dict[str, Any]] | None:
+    """One page of the /users reactor list. A refusal is printed with its status and returns None."""
+    try:
+        users = await lv.rest.get_reaction_users(channel, message_id, RAISED_HAND, limit=1, after=after)
+    except FluxerHTTPError as exc:
+        out(lv.redactor, f"INFO {name}: HTTP {exc.status} {exc.code}")
+        return None
+    report_page(lv, name, users)
+    return users
+
+
+async def probe_path(lv: Live, name: str, path: str) -> bool:
+    """One raw GET of a reactor-list path. Prints its status, or its response shape. Returns whether it answered."""
+    try:
+        raw = await lv.rest.request("GET", path)
+    except FluxerHTTPError as exc:
+        out(lv.redactor, f"INFO {name}: HTTP {exc.status} {exc.code}")
+        return False
+    out(lv.redactor, f"INFO {name}: answered, shape:", lv.redactor.shape(raw))
+    return True
+
+
 async def list_reactors(lv: Live, res: Results, channel: str, message_id: str) -> None:
-    first = await lv.rest.get_reaction_users(channel, message_id, RAISED_HAND, limit=1)
-    report_page(lv, "page 1 (limit=1)", first)
+    """Probes both reactor-list paths. Each request handles its own refusal, so the removal and rate steps still run."""
+    first = await users_page(lv, channel, message_id, "/users page 1 (limit=1)")
+    second: list[dict[str, Any]] | None = None
+    if first:
+        second = await users_page(lv, channel, message_id, "/users page 2 (after page 1)",
+                                  after=str(first[0]["id"]))
+    await probe_path(lv, "raw /users response", users_path(channel, message_id, RAISED_HAND, limit=1))
+    bare_answered = await probe_path(lv, "bare emoji path (no /users)", bare_path(channel, message_id))
+
+    answered = [label for label, ok in (("/users", first is not None), ("bare emoji path", bare_answered)) if ok]
+    out(lv.redactor, "INFO reactor list path(s) that answered:", ", ".join(answered) or "none")
+
+    if first is None:
+        res.fail("reactor list via /users", "the /users path was refused")
+        return
     if not first:
         res.fail("reactor list page 1", "no users returned")
         return
-    second = await lv.rest.get_reaction_users(channel, message_id, RAISED_HAND, limit=1,
-                                              after=str(first[0]["id"]))
-    report_page(lv, "page 2 (after page 1)", second)
-
-    raw = await lv.rest.request("GET", users_path(channel, message_id, RAISED_HAND, limit=1))
-    out(lv.redactor, "INFO raw /users response shape:", lv.redactor.shape(raw))
-    try:
-        bare = await lv.rest.request(
-            "GET", f"/channels/{channel}/messages/{message_id}/reactions/{encode_emoji(RAISED_HAND)}?limit=1")
-    except FluxerHTTPError as exc:
-        out(lv.redactor, f"INFO bare emoji path (no /users): HTTP {exc.status}")
-    else:
-        out(lv.redactor, "INFO bare emoji path (no /users): answered, shape:", lv.redactor.shape(bare))
-    out(lv.redactor, "INFO reactor list path that worked: the /users path")
-
-    seen = {str(user.get("id")) for user in [*first, *second]}
+    seen = {str(user.get("id")) for user in [*first, *(second or [])]}
     if str(lv.bot_user_id) in seen and lv.env["LIVE_USER_ID"] in seen:
         res.ok("reactor list has the bot and the operator")
     else:
-        res.fail("reactor list has the bot and the operator", "one of them is missing from both pages")
+        res.fail("reactor list has the bot and the operator", "one of them is missing from the pages fetched")
 
 
 async def remove_one(lv: Live, res: Results, channel: str, message_id: str) -> None:

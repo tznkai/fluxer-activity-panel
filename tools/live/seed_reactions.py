@@ -16,8 +16,9 @@ from fluxer_client.rest import FluxerHTTPError
 
 SEED_TEXT = "live test: reaction seeding"
 EDITED_TEXT = "live test: reaction seeding (edited)"
-SEED_EMOJI = ("▶️", "\U0001F514", "\U0001F64B")   # play, bell, raised hand
+SEED_EMOJI = ("\u25b6\ufe0f", "\U0001F514", "\U0001F64B")   # play, bell, raised hand
 PLAY_PROMPT = "U+25B6 U+FE0F"   # the play button, named by code point so no raw emoji is printed
+PLAY_BASE = "\u25b6"            # the play button without its variation selector
 ECHO_WAIT = 10.0
 NO_MENTIONS: dict[str, list[str]] = {"parse": []}
 
@@ -31,6 +32,23 @@ def on_reaction(channel_id: str, message_id: str, user_id: str) -> Callable[[str
     def where(_t: str, d: dict[str, Any]) -> bool:
         return (str(d.get("channel_id")) == channel_id and str(d.get("message_id")) == message_id
                 and str(d.get("user_id")) == user_id)
+    return where
+
+
+def normalise(name: str) -> str:
+    """Drops U+FE0F, so the play button matches with or without the variation selector."""
+    return name.replace("\ufe0f", "")
+
+
+def on_play_add(channel_id: str, message_id: str, user_id: str) -> Callable[[str, dict[str, Any]], bool]:
+    """The operator's add on this message that is the play button. An earlier leftover add of another emoji is skipped."""
+    on_message = on_reaction(channel_id, message_id, user_id)
+
+    def where(t: str, d: dict[str, Any]) -> bool:
+        if not on_message(t, d):
+            return False
+        parsed = parse(t, d)
+        return isinstance(parsed, ReactionAdd) and normalise(parsed.emoji.name) == PLAY_BASE
     return where
 
 
@@ -97,9 +115,9 @@ async def react_after_edit(lv: Live, res: Results, channel: str, message_id: str
     out(lv.redactor, f"Add the play button ({PLAY_PROMPT}) to the edited message yourself, then press Enter.")
     await wait_for_enter()
     try:
-        t, d = await lv.next_event("MESSAGE_REACTION_ADD", where=on_reaction(channel, message_id, user))
+        t, d = await lv.next_event("MESSAGE_REACTION_ADD", where=on_play_add(channel, message_id, user))
     except TimeoutError:
-        out(lv.redactor, f"INFO operator play add: no event within {WAIT:.0f}s")
+        out(lv.redactor, f"INFO operator play add: no play-button event within {WAIT:.0f}s")
         return
     parsed = parse(t, d)
     if isinstance(parsed, ReactionAdd):

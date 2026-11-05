@@ -152,8 +152,10 @@ async def run() -> Results:
 
             accepted = await ping_shapes(lv, res, role_id, sent)
             if accepted is None:
-                out(lv.redactor, "SKIP non-mentionable check: neither shape was accepted")
+                out(lv.redactor, "SKIP notification questions and non-mentionable check: neither shape was accepted")
             else:
+                await ask(lv, "Did you get exactly one notification for A? for B? Was anything else mentioned? "
+                              "Type a short answer and press Enter.")
                 await non_mentionable(lv, role_id, accepted, sent)
 
             await assignment(lv, res, role_id)

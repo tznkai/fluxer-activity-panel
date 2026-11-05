@@ -537,8 +537,7 @@ async def test_dropped_connections_raise_client_errors_and_change_no_state(fake,
 
 # Live-capability groundwork: role creation, channel message lists, reactor lists and bulk reaction removal
 
-WARNING_EMOJI = "⚠️"
-PLAY_EMOJI = "▶️"
+PLAY_EMOJI = "\u25b6\ufe0f"
 RAISED_HAND = "\U0001F64B"
 
 
@@ -627,6 +626,14 @@ async def test_get_reaction_users_respects_limit_and_after(fake, session):
     assert [u["id"] for u in await rest.get_reaction_users("1", "2", RAISED_HAND, after="1002")] == ["1003", "1004"]
     page = await rest.get_reaction_users("1", "2", RAISED_HAND, limit=1, after="1001")
     assert [u["id"] for u in page] == ["1002"]
+
+
+@pytest.mark.parametrize("limit", [0, 101])
+async def test_get_reaction_users_limit_out_of_range_raises_without_request(fake, session, limit):
+    state, base = fake
+    with pytest.raises(ValueError):
+        await make_rest(session, base).get_reaction_users("1", "2", RAISED_HAND, limit=limit)
+    assert state.requests == []
 
 
 async def test_get_reaction_users_unwraps_a_paged_object(fake, session):

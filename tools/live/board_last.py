@@ -28,15 +28,17 @@ async def send(lv: Live, channel: str, text: str, name: str, names: dict[str, st
     return message_id
 
 
-async def delete_one(lv: Live, channel: str, message_id: str, pending: set[str]) -> None:
-    """Deletes one test message. A 404 means it is already gone, so it is no longer pending."""
+async def delete_one(lv: Live, channel: str, message_id: str, pending: set[str]) -> bool:
+    """Deletes one test message. Returns True when it is gone: deleted now, or already gone (404). A 404 means it is
+    no longer pending. Any other failure is printed and returns False, and the message stays pending."""
     try:
         await lv.rest.delete_message(channel, message_id)
     except FluxerHTTPError as exc:
         if exc.status != NOT_FOUND:
             out(lv.redactor, f"delete failed: HTTP {exc.status}")
-            return
+            return False
     pending.discard(message_id)
+    return True
 
 
 def which(names: dict[str, str], message_id: str | None) -> str:
@@ -60,8 +62,10 @@ async def sequence(lv: Live, res: Results, channel: str, names: dict[str, str], 
     b_id = await send(lv, channel, "live test: board last B", "B", names, pending)
     await report_last(lv, channel, names, "after sending A then B")
 
-    await delete_one(lv, channel, b_id, pending)
-    await report_last(lv, channel, names, "after deleting B")
+    if await delete_one(lv, channel, b_id, pending):
+        await report_last(lv, channel, names, "after deleting B")
+    else:
+        res.fail("delete B", "message B was not deleted, so the after-delete pointer report is skipped")
 
     messages: list[dict[str, Any]] = await lv.rest.get_messages(channel, limit=1)
     labels = [which(names, str(m.get("id"))) for m in messages]
@@ -70,8 +74,10 @@ async def sequence(lv: Live, res: Results, channel: str, names: dict[str, str], 
     c_id = await send(lv, channel, "live test: board last C (board)", "C", names, pending)
     await send(lv, channel, "live test: board last D (below the board)", "D", names, pending)
     await send(lv, channel, "live test: board last C2 (reposted board)", "C2", names, pending)
-    await delete_one(lv, channel, c_id, pending)
-    await report_last(lv, channel, names, "after the repost and deleting C")
+    if await delete_one(lv, channel, c_id, pending):
+        await report_last(lv, channel, names, "after the repost and deleting C")
+    else:
+        res.fail("delete C", "message C was not deleted, so the after-repost pointer report is skipped")
 
     out(lv.redactor, "Compare the unread marker and notifications for the test messages on web and on mobile.")
     out(lv.redactor, "Type a short answer and press Enter.")
