@@ -26,14 +26,14 @@ Paths are relative to this directory.
 
 - `src/fluxer_panel/logs.py:18` `ID_KEYS = frozenset(` — the only keys whose values may be logged as ids. `clean_fields` keeps one only if it is a snowflake.
 - `src/fluxer_panel/logs.py:19` `OTHER_KEYS = frozenset(` — the other keys that may be logged. Numbers and bools pass. Strings must match `_SAFE_TOKEN`.
-- `src/fluxer_panel/logs.py:24` `_SAFE_TOKEN = re.compile(` — string values for other keys must look like identifiers, so free text such as names or message content cannot be logged through them.
-- `src/fluxer_panel/logs.py:28` `def clean_fields(` — the allowlist. Any key not listed in `ID_KEYS` or `OTHER_KEYS` is dropped.
-- `src/fluxer_panel/logs.py:65` `_ESCAPE_ROUNDS = 3` — the token is redacted when it is repr'd or json-escaped up to three nested levels. Deeper nesting is not covered.
-- `src/fluxer_panel/logs.py:78` `def token_variants(` — builds the raw and escaped forms of the token that the filter replaces.
-- `src/fluxer_panel/logs.py:97` `class TokenRedactionFilter` — the handler-level backstop. It replaces the token in the message, the args and the traceback before formatting.
-- `src/fluxer_panel/logs.py:117` `a malformed call must not raise` — a malformed log call is caught inside the filter, so it cannot raise into the code that logged it.
-- `src/fluxer_panel/logs.py:141` `handler.addFilter(redaction)` — the filter is installed on the one JSON handler that `setup_logging` creates.
-- `src/fluxer_panel/logs.py:149` `logging.captureWarnings(True)` — Python warnings go through logging, so they are JSON lines and are redacted too.
+- `src/fluxer_panel/logs.py:25` `_SAFE_TOKEN = re.compile(` — string values for other keys must look like identifiers, so free text such as names or message content cannot be logged through them.
+- `src/fluxer_panel/logs.py:29` `def clean_fields(` — the allowlist. Any key not listed in `ID_KEYS` or `OTHER_KEYS` is dropped.
+- `src/fluxer_panel/logs.py:66` `_ESCAPE_ROUNDS = 3` — the token is redacted when it is repr'd or json-escaped up to three nested levels. Deeper nesting is not covered.
+- `src/fluxer_panel/logs.py:79` `def token_variants(` — builds the raw and escaped forms of the token that the filter replaces.
+- `src/fluxer_panel/logs.py:98` `class TokenRedactionFilter` — the handler-level backstop. It replaces the token in the message, the args and the traceback before formatting.
+- `src/fluxer_panel/logs.py:118` `a malformed call must not raise` — a malformed log call is caught inside the filter, so it cannot raise into the code that logged it.
+- `src/fluxer_panel/logs.py:142` `handler.addFilter(redaction)` — the filter is installed on the one JSON handler that `setup_logging` creates.
+- `src/fluxer_panel/logs.py:150` `logging.captureWarnings(True)` — Python warnings go through logging, so they are JSON lines and are redacted too.
 - `src/fluxer_client/events.py:26` `session_id: str = field(repr=False)` — the gateway session id from `Ready`, which with the token enables a session resume, is kept out of reprs.
 - `src/fluxer_client/events.py:42` `content: str = field(repr=False)` — message text is kept out of reprs and therefore out of debug output.
 - `src/fluxer_client/events.py:250` `log.warning("malformed %s payload: field %s", t, exc.field_name)` — a malformed payload is logged with the field name only.
@@ -179,7 +179,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/sources/minecraft.py:43` `async_status(tries=1)` — the same single request for the Java probe.
 - `src/fluxer_panel/sources/minecraft.py:40` `mcstatus has already built the player sample` — mcstatus builds the Java player sample before this code runs. It is discarded right after parse and never read.
 - `src/fluxer_panel/sources/a2s.py:30` `game_mode=None,` — python-a2s does not parse the game mode, so the A2S probe never reports one.
-- `src/fluxer_panel/logs.py:23` `PINNED_LOGGERS = ("a2s", "mcstatus")` — the probe libraries' loggers are pinned to WARNING, because a2s logs raw packets at DEBUG.
+- `src/fluxer_panel/logs.py:24` `PINNED_LOGGERS = ("a2s", "mcstatus")` — the probe libraries' loggers are pinned to WARNING, because a2s logs raw packets at DEBUG.
 
 ## Plugin boundary
 

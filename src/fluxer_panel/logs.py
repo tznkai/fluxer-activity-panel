@@ -18,6 +18,7 @@ from fluxer_client.ids import is_snowflake
 ID_KEYS = frozenset({"guild_id", "channel_id", "message_id", "user_id", "role_id"})
 OTHER_KEYS = frozenset({
     "event_type", "command", "status", "code", "count", "duration_ms", "card_id", "field", "kind", "reason",
+    "action", "surface", "outcome",
 })
 # Third-party loggers that log more than warnings. a2s logs raw packets at DEBUG (python-a2s 1.4.2).
 PINNED_LOGGERS = ("a2s", "mcstatus")

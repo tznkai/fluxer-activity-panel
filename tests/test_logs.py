@@ -105,6 +105,24 @@ def test_card_fields_are_kept_when_identifier_like_and_dropped_otherwise(capture
     assert "SENTINEL" not in captured.getvalue()
 
 
+def test_press_log_keys_are_kept_when_identifier_like(captured):
+    log = logging.getLogger("fluxer_panel.test")
+    log_event(log, "press", action="wake", surface="copy", outcome="added")
+    (record,) = parsed(captured)
+    assert record["action"] == "wake"
+    assert record["surface"] == "copy"
+    assert record["outcome"] == "added"
+
+
+def test_press_log_action_with_emoji_is_dropped(captured):
+    log = logging.getLogger("fluxer_panel.test")
+    log_event(log, "press", action="\U0001F642", surface="copy", outcome="added")
+    (record,) = parsed(captured)
+    assert "action" not in record
+    assert record["surface"] == "copy"
+    assert record["outcome"] == "added"
+
+
 def test_plain_stdlib_record_is_valid_json_with_message_as_event(captured):
     logging.getLogger("fluxer_client.rest").warning("rate limited on %s", "GET /x")
     (record,) = parsed(captured)
