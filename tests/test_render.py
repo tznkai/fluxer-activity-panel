@@ -898,3 +898,82 @@ def test_a_ready_card_never_shows_the_requested_count() -> None:
 def test_the_embed_status_field_shows_the_requested_count() -> None:
     embed = render.render_embed(make_card(), CardStatus(StatusKind.ASLEEP), None, instance_url=None, requested=2)
     assert fields_of(embed)[text.FIELD_STATUS] == "Asleep · Requested · 2"
+
+
+# The play-now message (Phase 6): content, embed fields and the ended version -----------------------
+
+def play_now(card: Card | None = None, **overrides: object) -> dict:
+    options: dict[str, object] = {"role_id": None, "playing": 1, "ended": False, "instance_url": INSTANCE}
+    options.update(overrides)
+    return render.play_now_message(card if card is not None else make_card(title="Lobby"), **options)  # type: ignore[arg-type]
+
+
+def test_play_now_content_is_exact_without_a_role() -> None:
+    assert play_now()["content"] == "Someone wants to play Lobby now"
+
+
+def test_play_now_content_mentions_only_the_follow_role_when_set() -> None:
+    assert play_now(role_id="6000")["content"] == "Someone wants to play Lobby now <@&6000>"
+
+
+def test_play_now_content_refuses_a_role_id_that_is_not_a_snowflake() -> None:
+    with pytest.raises(ValueError):
+        play_now(role_id="not-a-role")
+
+
+def test_ended_play_now_content_says_it_ended_and_never_mentions() -> None:
+    message = play_now(role_id="6000", ended=True, playing=2)
+    assert message["content"] == "The call to play Lobby has ended."
+    assert "<@" not in message["content"]
+
+
+def test_play_now_message_carries_only_content_and_embeds() -> None:
+    assert set(play_now()) == {"content", "embeds"}
+
+
+def test_play_now_embed_is_one_neutral_embed_titled_with_the_card() -> None:
+    [embed] = play_now()["embeds"]
+    assert embed["title"] == "Lobby"
+    assert embed["color"] == render.NEUTRAL
+
+
+def test_play_now_embed_counts_the_players() -> None:
+    [embed] = play_now(playing=3)["embeds"]
+    assert fields_of(embed) == {text.FIELD_STATUS: text.PLAY_NOW_PLAYING.format(n=3)}
+
+
+def test_play_now_join_fields_appear_only_when_set() -> None:
+    [embed] = play_now()["embeds"]
+    assert set(fields_of(embed)) == {text.FIELD_STATUS}
+
+    card = make_card(title="Lobby", how_to_join="Join with the link",
+                     voice=ChannelLink("1001", "2001", "lobby", True),
+                     address=Address(host="mc.example.invalid", port=19132, public=True))
+    [full] = play_now(card)["embeds"]
+    assert fields_of(full)[text.FIELD_JOIN] == "Join with the link"
+    assert fields_of(full)[text.FIELD_VOICE] == f"[#lobby]({INSTANCE}/channels/1001/2001)"
+    assert fields_of(full)[text.FIELD_ADDRESS] == "`mc.example.invalid:19132`"
+
+
+def test_play_now_address_is_omitted_when_not_public() -> None:
+    card = make_card(title="Lobby", address=Address(host="mc.example.invalid", port=19132, public=False))
+    [embed] = play_now(card)["embeds"]
+    assert text.FIELD_ADDRESS not in fields_of(embed)
+
+
+def test_play_now_voice_link_is_the_one_the_card_embed_shows() -> None:
+    card = make_card(title="Lobby", voice=ChannelLink("1001", "2001", "lobby", True))
+    [embed] = play_now(card)["embeds"]
+    inside = render.render_embed(card, None, None, instance_url=INSTANCE)
+    assert fields_of(embed)[text.FIELD_VOICE] == fields_of(inside)[text.FIELD_VOICE]
+
+
+def test_play_now_title_and_content_escape_the_card_title_as_render_embed_does() -> None:
+    card = make_card(title="@everyone *Lobby*")
+    message = play_now(card)
+    [embed] = message["embeds"]
+    inside = render.render_embed(card, None, None, instance_url=INSTANCE)
+    assert embed["title"] == inside["title"]
+    assert message["content"] == f"Someone wants to play {render.escape(card.title)} now"
+    assert "@everyone" not in message["content"]
+    assert ZWJ in message["content"]

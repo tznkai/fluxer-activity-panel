@@ -144,6 +144,11 @@ CHANNEL_OTHER_COMMUNITY = "That channel is in a different community."
 CHANNEL_RETRY = "I couldn't reach Fluxer to check that channel. Try again in a minute."
 # play_now_channel refuses the games channel: play-now messages never go there.
 PLAY_NOW_IS_GAMES = "Play-now messages can't go in the games channel."
+# The play-now message: the content names the card (escaped), and the sent mention is the follow role only. The ended
+# content has no mention. PLAY_NOW_PLAYING is the count line, as in "3 playing".
+PLAY_NOW_CONTENT = "Someone wants to play {card} now"
+PLAY_NOW_ENDED_CONTENT = "The call to play {card} has ended."
+PLAY_NOW_PLAYING = "{n} playing"
 PROBE_ALERT = "Heads up: card {slug} reports its server running, but the game isn't answering queries."
 # Card subscriptions: a copy of a card in another text channel. The channel is shown as a mention, the only input here.
 SUBSCRIPTION_USAGE = ("Usage: !card subscribe <slug> <channel>, where <channel> is a channel link or "
