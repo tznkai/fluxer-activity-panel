@@ -210,14 +210,27 @@ async def test_the_role_call_carries_the_audit_reason_and_no_user_id_is_logged(h
 
 # Refusals and admin alerts ----------------------------------------------------------------------------
 
-async def test_card_without_a_follow_role_is_unavailable_with_no_role_call(harness) -> None:
+async def test_card_without_a_follow_role_is_unavailable_with_no_role_call_and_no_admin_alert(harness) -> None:
+    # A card cleared with `!card clear <slug> follow_role` is deliberate, so the presser hears "unavailable" only.
     h = await harness()
     await h.presses.on_reaction(follow_press(message=SECOND_MSG))
     assert role_requests(h.state) == []
     assert dm_channel_texts(h.state, PRESSER) == [
         text.FOLLOW_UNAVAILABLE.format(card=render.escape(SECOND_TITLE))]
+    assert dm_channel_texts(h.state, ADMIN) == []
+
+
+async def test_a_role_snapshot_that_is_not_allowlisted_alerts_the_admins_once(harness, monkeypatch) -> None:
+    # The card still has its role when read, but the allowlist no longer holds it (a DB change between the reads).
+    h = await harness()
+    monkeypatch.setattr(cards, "follow_role_ids", lambda conn: frozenset())
+    await h.presses.on_reaction(follow_press())
+    await h.presses.on_reaction(follow_press(user=PRESSER_2))
+    assert role_requests(h.state) == []
+    assert dm_channel_texts(h.state, PRESSER) == [text.FOLLOW_UNAVAILABLE.format(card=render.escape(CARD_TITLE))]
+    assert dm_channel_texts(h.state, PRESSER_2) == [text.FOLLOW_UNAVAILABLE.format(card=render.escape(CARD_TITLE))]
     assert dm_channel_texts(h.state, ADMIN) == [
-        text.FOLLOW_ADMIN_ALERT.format(slug="ark", reason=text.FOLLOW_REASON["not_allowlisted"])]
+        text.FOLLOW_ADMIN_ALERT.format(slug="mc", reason=text.FOLLOW_REASON["not_allowlisted"])]
 
 
 async def test_hierarchy_refusal_is_unavailable_and_alerts_the_admins_once(harness) -> None:

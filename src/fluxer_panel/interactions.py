@@ -77,7 +77,9 @@ class Interactions:
             await self._dm_presser(press.user_id, text.FOLLOW_REMOVED, card)
         else:
             await self._dm_presser(press.user_id, text.FOLLOW_UNAVAILABLE, card)
-            if result.reason is not None and result.reason != "no_bot_id":
+            # A card with no follow role was cleared on purpose: the press is unavailable, and nothing is wrong to report.
+            cleared = result.reason == "not_allowlisted" and card.follow_role is None
+            if result.reason is not None and result.reason != "no_bot_id" and not cleared:
                 await self._alert_admins_once(card, result.reason)
 
     async def _follow_elsewhere(self, user_id: str, card: Card, guild: str | None) -> None:

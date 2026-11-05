@@ -241,8 +241,9 @@ async def _create(deps: FollowDeps, guild_id: str, card: Card, name: str) -> Ens
         created = await deps.rest.create_role(guild_id, name=name, mentionable=True, reason=REASON)
     except (*_TRANSPORT, ValueError):
         return EnsureResult(Ensured.FAILED, reason="create_failed")
-    # The role exists in Fluxer now, whatever happens next, so the cached name list is stale from here on.
-    deps.roles.invalidate(guild_id)
+    finally:
+        # A timeout or a 5xx can land after Fluxer has created the role, so the cached name list is stale on every outcome.
+        deps.roles.invalidate(guild_id)
     role_id = created.get("id") if isinstance(created, Mapping) else None
     if not is_snowflake(role_id):
         return EnsureResult(Ensured.FAILED, reason="create_failed")

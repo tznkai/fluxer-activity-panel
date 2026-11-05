@@ -68,7 +68,7 @@ Paths are relative to this directory.
 - `src/fluxer_panel/follow_roles.py:221` `if not zero_permissions(target):` — the adopt branch of `ensure_follow_role` refuses any role with permissions other than 0, so the bot never writes to a role that grants something.
 - `src/fluxer_panel/follow_roles.py:229` `await deps.rest.set_role_mentionable(` — an adopted role is made mentionable only after every check passes, and nothing is stored if the call fails.
 - `src/fluxer_panel/follow_roles.py:241` `deps.rest.create_role(` — the only role creation in the bot. The REST client fixes its permissions at 0.
-- `src/fluxer_panel/follow_roles.py:250` `await deps.rest.set_role_mentionable(` — a created role is made mentionable and checked before its id is stored.
+- `src/fluxer_panel/follow_roles.py:251` `await deps.rest.set_role_mentionable(` — a created role is made mentionable and checked before its id is stored.
 - `src/fluxer_client/rest.py:296` `"permissions": "0"` — every role the client creates has no permissions, and there is no parameter that changes it.
 - `tests/test_role_callers.py:33` `assert files == {"follow_roles.py"}` — the structural test that fails when any module other than `follow_roles.py` uses a role method.
 

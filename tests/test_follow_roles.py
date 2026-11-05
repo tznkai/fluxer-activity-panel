@@ -362,6 +362,22 @@ async def test_create_failure_is_failed_and_stores_nothing(fake, deps, db) -> No
     assert requests_of(state, "PATCH", NEW_ROLE_PATH) == []
 
 
+async def test_create_500_still_invalidates_the_role_cache(fake, deps, db) -> None:
+    # A 5xx or a timeout can land after Fluxer has created the role, so the cached name list must not survive it.
+    state, _ = fake
+    state.overrides[f"POST {CREATE_PATH}"] = Override(500, b'{"code":"X","message":"x"}')
+    card = await make_card(db, "beta")
+    await deps.roles.role_ids(GUILD, "card_subscription_beta")   # the cache now holds the name list
+
+    result = await ensure_follow_role(deps, GUILD, card)
+
+    assert result == EnsureResult(Ensured.FAILED, reason="create_failed")
+    assert await stored(db, card) is None
+    fetched_by_ensure = fetches(state, ROLES_PATH)
+    await deps.roles.role_ids(GUILD, "card_subscription_beta")
+    assert fetches(state, ROLES_PATH) == fetched_by_ensure + 1
+
+
 async def test_lookup_500_is_failed_and_does_not_raise(fake, deps, db) -> None:
     state, _ = fake
     state.overrides[f"GET {ROLES_PATH}"] = Override(500, b'{"code":"X","message":"x"}')
