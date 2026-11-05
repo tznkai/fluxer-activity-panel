@@ -11,7 +11,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 
-_COLUMNS = ("id, card_id, guild_id, channel_id, message_id, presser_id, offers_wake, state, created_at, expires_at")
+_COLUMNS = "id, card_id, guild_id, channel_id, message_id, presser_id, offers_wake, state, created_at, expires_at"
 
 
 @dataclass(frozen=True)
