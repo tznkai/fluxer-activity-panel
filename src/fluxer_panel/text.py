@@ -190,3 +190,19 @@ FOLLOW_REFUSED = {
     "no_bot_id": "Try again in a moment.",
     "lookup_failed": "I couldn't reach Fluxer to check that role. Try again in a minute.",
 }
+# Follow presses: the presser's DMs, the link label, and the admins' alert. The card's title is passed through
+# render.escape; the alert takes the card's slug and one plain phrase per refusal reason.
+JUMP_LABEL_CARD = "open the card"
+FOLLOW_ADDED = "You're following {card}."
+FOLLOW_REMOVED = "You stopped following {card}."
+FOLLOW_UNAVAILABLE = "Following isn't available for {card} right now."
+FOLLOW_ELSEWHERE = "Following {card} works in the main community: {link}"
+FOLLOW_ELSEWHERE_NO_LINK = "Following {card} works in the main community's games channel."
+FOLLOW_ADMIN_ALERT = "Following is failing for {slug}: {reason}"
+FOLLOW_REASON = {
+    "not_allowlisted": "the card's follow role is not set up",
+    "role_missing": "the follow role is gone from the community",
+    "role_permissions": "the follow role now grants permissions",
+    "hierarchy": "the follow role is no longer below the bot's top role",
+    "forbidden": "Fluxer refused the role change",
+}
