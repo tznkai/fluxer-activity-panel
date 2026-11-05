@@ -10,7 +10,7 @@ import logging
 import time
 from collections.abc import Callable, Container
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 import aiohttp
 
@@ -595,7 +595,7 @@ REACTION_EMOJI = (WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI)
 class _Target:
     """One posted message that carries the bot's reactions: a card's own message, or a copy's."""
     card: cards.Card
-    kind: str               # "card" or "copy": the surfaces that carry reactions
+    kind: Literal["card", "copy"]   # the surfaces that carry reactions
     channel_id: str
     message_id: str
     guild_id: str | None    # a copy's community; None for the card's own message, which is always at home
@@ -636,6 +636,9 @@ async def _apply_interactions(ctx: CardContext, targets: list[_Target], *, on: b
 
 
 async def _interactions(event: MessageCreate, ctx: CardContext, rest: str) -> _Result:
+    # Checked before any write: the switch is stored before the reactions are touched, so missing wiring must stop here
+    # rather than leave a setting changed with no reactions moved.
+    _interaction_deps(ctx)
     parts = rest.split()
     if not 1 <= len(parts) <= 2 or parts[0].lower() not in ("on", "off"):
         await _say(ctx, event, text.INTERACTIONS_USAGE)

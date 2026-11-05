@@ -37,14 +37,15 @@ def wanted_emoji(card: Card, *, home: bool, play_now_target: bool) -> list[str]:
 
 
 def has_play_now_target(card: Card, config: Config, *, surface_kind: str, home: bool) -> bool:
-    """A card surface has a target when the card has its own play-now channel or the configured one is set. A copy has
-    one only at home, since it posts in its own channel. A play-now surface never does: its emoji are seeded
-    separately."""
+    """A card surface has a target when the card has its own verified play-now channel or the configured one is set. A
+    home copy always has one, since a press on it posts in the copy's own channel. A copy outside the games community
+    has none, and a play-now surface never does: its emoji are seeded separately."""
     if surface_kind == "play_now":
         return False
-    if surface_kind == "copy" and not home:
-        return False
-    return card.play_now_channel is not None or config.play_now_channel_id is not None
+    if surface_kind == "copy":
+        return home
+    own = card.play_now_channel is not None and card.play_now_channel.verified
+    return own or config.play_now_channel_id is not None
 
 
 def _bare(emoji: str) -> str:

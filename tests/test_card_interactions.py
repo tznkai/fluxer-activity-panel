@@ -158,16 +158,31 @@ async def test_a_tap_after_off_reaches_no_handler_and_makes_no_request(world: Wo
 
 # on ----------------------------------------------------------------------------------------------------
 
-async def test_on_adds_the_wake_reaction_to_the_card_and_its_copy(world: World) -> None:
+async def test_on_adds_the_wake_and_play_now_reactions_to_the_card_and_its_home_copy(world: World) -> None:
     card = await live_card(world, "mc", CARD_MSG)
     await add_copy(world, card, COPY_CHANNEL, GUILD, COPY_MSG)
     await world.run("!card interactions off")
     world.clear_requests()
     await world.run("!card interactions on")
+    # A home copy posts in its own channel, so it always takes the play-now emoji. The card has no play-now channel.
     assert sent(world, "PUT") == [reaction_path(GAMES, CARD_MSG, WAKE_EMOJI) + "/@me",
-                                  reaction_path(COPY_CHANNEL, COPY_MSG, WAKE_EMOJI) + "/@me"]
+                                  reaction_path(COPY_CHANNEL, COPY_MSG, WAKE_EMOJI) + "/@me",
+                                  reaction_path(COPY_CHANNEL, COPY_MSG, PLAY_NOW_EMOJI) + "/@me"]
     assert world.last_reply() == text.INTERACTIONS_ON
     assert await world.db.run(interaction_settings.enabled) is True
+
+
+async def test_on_gives_the_play_now_emoji_to_home_copies_only(world: World) -> None:
+    card = await live_card(world, "mc", CARD_MSG)
+    await add_copy(world, card, COPY_CHANNEL, GUILD, COPY_MSG)
+    await add_copy(world, card, OTHER_CHANNEL, OTHER_GUILD, OTHER_COPY_MSG)
+    await world.run("!card interactions off")
+    world.clear_requests()
+    await world.run("!card interactions on")
+    assert sent(world, "PUT") == [reaction_path(GAMES, CARD_MSG, WAKE_EMOJI) + "/@me",
+                                  reaction_path(COPY_CHANNEL, COPY_MSG, WAKE_EMOJI) + "/@me",
+                                  reaction_path(COPY_CHANNEL, COPY_MSG, PLAY_NOW_EMOJI) + "/@me",
+                                  reaction_path(OTHER_CHANNEL, OTHER_COPY_MSG, WAKE_EMOJI) + "/@me"]
 
 
 async def test_on_adds_the_follow_reaction_to_home_surfaces_with_a_follow_role(world: World) -> None:
@@ -178,7 +193,8 @@ async def test_on_adds_the_follow_reaction_to_home_surfaces_with_a_follow_role(w
     world.clear_requests()
     await world.run("!card interactions on")
     expected = [reaction_path(GAMES, CARD_MSG, WAKE_EMOJI), reaction_path(GAMES, CARD_MSG, FOLLOW_EMOJI),
-                reaction_path(COPY_CHANNEL, COPY_MSG, WAKE_EMOJI), reaction_path(COPY_CHANNEL, COPY_MSG, FOLLOW_EMOJI)]
+                reaction_path(COPY_CHANNEL, COPY_MSG, WAKE_EMOJI), reaction_path(COPY_CHANNEL, COPY_MSG, FOLLOW_EMOJI),
+                reaction_path(COPY_CHANNEL, COPY_MSG, PLAY_NOW_EMOJI)]
     assert sent(world, "PUT") == [path + "/@me" for path in expected]
 
 
@@ -238,7 +254,8 @@ async def test_on_for_one_card_restores_only_its_reactions(world: World) -> None
     world.clear_requests()
     await world.run("!card interactions on mc")
     assert sent(world, "PUT") == [reaction_path(GAMES, CARD_MSG, WAKE_EMOJI) + "/@me",
-                                  reaction_path(COPY_CHANNEL, COPY_MSG, WAKE_EMOJI) + "/@me"]
+                                  reaction_path(COPY_CHANNEL, COPY_MSG, WAKE_EMOJI) + "/@me",
+                                  reaction_path(COPY_CHANNEL, COPY_MSG, PLAY_NOW_EMOJI) + "/@me"]
     assert world.last_reply() == text.INTERACTIONS_CARD_ON.format(slug="mc")
 
 
@@ -284,6 +301,19 @@ async def test_a_bad_interactions_command_gets_the_usage_and_changes_nothing(wor
     await world.run(command)
     assert world.last_reply() == text.INTERACTIONS_USAGE
     assert sent(world, "DELETE") == [] and sent(world, "PUT") == []
+
+
+@pytest.mark.parametrize("command", ["!card interactions off", "!card interactions off mc"])
+async def test_missing_reaction_wiring_changes_no_state(world: World, command: str) -> None:
+    """The wiring is checked before any write, so a command that cannot reach the reactions changes no setting."""
+    card = await live_card(world, "mc", CARD_MSG)
+    world.ctx.seeder = None
+    world.clear_requests()
+    with pytest.raises(RuntimeError):
+        await world.run(command)
+    assert await world.db.run(interaction_settings.enabled) is True
+    assert await world.db.run(lambda c: interaction_settings.card_off(c, card.id)) is False
+    assert sent(world, "DELETE") == []
 
 
 async def test_a_non_admin_gets_no_reply_and_no_request(world: World, caplog: pytest.LogCaptureFixture) -> None:

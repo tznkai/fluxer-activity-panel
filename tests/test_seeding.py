@@ -117,6 +117,9 @@ def test_play_now_is_wanted_only_with_a_play_now_target() -> None:
 
 # has_play_now_target: the three surfaces
 
+UNVERIFIED = ChannelLink(guild_id="1001", channel_id="2500", channel_name=None, verified=False)
+
+
 def test_a_card_surface_has_a_target_from_its_own_channel_or_the_configured_one() -> None:
     bare = make_config()
     configured = make_config(PLAY_NOW_CHANNEL_ID="2600")
@@ -124,6 +127,15 @@ def test_a_card_surface_has_a_target_from_its_own_channel_or_the_configured_one(
     assert has_play_now_target(make_card(play_now_channel=LINK), bare, surface_kind="card", home=True) is True
     assert has_play_now_target(make_card(), configured, surface_kind="card", home=True) is True
     assert has_play_now_target(make_card(), bare, surface_kind="card", home=True) is False
+
+
+def test_an_unverified_card_link_is_no_target_on_its_own() -> None:
+    bare = make_config()
+    configured = make_config(PLAY_NOW_CHANNEL_ID="2600")
+
+    assert has_play_now_target(make_card(play_now_channel=UNVERIFIED), bare, surface_kind="card", home=True) is False
+    assert has_play_now_target(make_card(play_now_channel=UNVERIFIED), configured, surface_kind="card",
+                               home=True) is True
 
 
 def test_a_copy_has_a_target_only_at_home() -> None:
@@ -134,8 +146,15 @@ def test_a_copy_has_a_target_only_at_home() -> None:
     assert has_play_now_target(card, config, surface_kind="copy", home=False) is False
 
 
-def test_a_copy_without_any_target_has_none_even_at_home() -> None:
-    assert has_play_now_target(make_card(), make_config(), surface_kind="copy", home=True) is False
+def test_a_home_copy_always_has_a_target_because_it_posts_in_its_own_channel() -> None:
+    assert has_play_now_target(make_card(), make_config(), surface_kind="copy", home=True) is True
+    assert has_play_now_target(make_card(play_now_channel=UNVERIFIED), make_config(), surface_kind="copy",
+                               home=True) is True
+
+
+def test_a_copy_outside_the_games_community_has_no_target_even_with_one_configured() -> None:
+    assert has_play_now_target(make_card(), make_config(PLAY_NOW_CHANNEL_ID="2600"), surface_kind="copy",
+                               home=False) is False
 
 
 def test_a_play_now_surface_never_has_a_target() -> None:
