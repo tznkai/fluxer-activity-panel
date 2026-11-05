@@ -263,6 +263,104 @@ channel ID.
 - The HTTP status is 403.
 - Decision: `get_guild` keeps the 403 and 404 handling. 404 still covers nonexistent communities.
 
+## Live reaction checks
+
+- Recorded 2026-11-05. Run by the operator with the live scripts in `tools/live/` (`seed_reactions.py`,
+  `role_ping.py`, `board_last.py`, `reaction_bulk.py`), against the server build in the Version section.
+- Messages, users, roles and emoji are referred to by label. Emoji are written as Unicode code points.
+- A source dive of the upstream server (`fluxerapp/fluxer`, commit `e20500ef`, 2026-11-05) is marked as read from
+  source. The live build may predate that commit, so each source claim below was checked against the live run where
+  the run could show it.
+
+### Seeding and echo
+
+- The bot added three reactions to a test message: U+25B6 U+FE0F, U+1F514 and U+1F64B. All three adds succeeded.
+- The gateway echoed the bot's own add for every reaction. The echoed `MESSAGE_REACTION_ADD` carried a member with
+  `user.bot` present and `true`.
+
+### Play emoji (U+25B6) stored name
+
+- The reaction the bot added was stored as U+25B6 U+FE0F, with count 1 and `me` true.
+- The play reaction the operator added from the client was also stored as U+25B6 U+FE0F. So the variation selector
+  is present whether the reaction comes from the bot or from a client.
+
+### Reactions after an edit
+
+- A reaction added after the message was edited still delivered its event. The edit did not stop reaction events.
+
+### Role ping and allowed_mentions
+
+- Shape A, `{"parse": [], "roles": [<role>], "replied_user": false}`, was accepted. Shape B, `{"roles": [<role>],
+  "replied_user": false}`, was accepted. Both sends returned success.
+- `create_role` ignores `mentionable`. The role was created with `mentionable` false even though the request asked
+  for true. A `PATCH` on the role with `{"mentionable": true}` set it, and the returned role read back `true`.
+- With the role mentionable, shape A and shape B each put the role in the message's `mention_roles`, with one entry
+  and `mention_everyone` false. A control send with `allowed_mentions` set to `{"parse": []}` alone left the role out
+  of `mention_roles`.
+- With the role made non-mentionable again (`PATCH` to `false`, read back `false`), a ping to the role was dropped
+  from `mention_roles`, which was then empty. The message itself was still delivered.
+- The human check of silence was not done. The operator chose to move on, so the drop is evidenced by
+  `mention_roles` and by the source only.
+- The bot had neither `MENTION_EVERYONE` nor `ADMINISTRATOR`, and it is not the guild owner. Only those users pass the
+  mention filter for a non-mentionable role.
+- The operator's notification setting in the first run was the default, `ALL_MESSAGES`, which notifies on every
+  message. In that run a ping to the non-mentionable role did notify. This is why the first run said "yes" and does
+  not show that the ping reached the role. The later run, with the role mentionable and the setting "Only @mentions",
+  gave an audible notification and an inbox notification for shape A, and the same for shape B. The two sends were
+  separated by about 60 seconds, and each gave its own notification.
+- Source (read from source): the mention filter keeps only mentionable roles in `mention_roles`, unless the sender has
+  `MENTION_EVERYONE`. Owners and admins pass it. A non-mentionable role is silently dropped and the message is still
+  delivered. There is no special case for bots. Webhooks bypass the filter. This matches the live run above.
+- Source (read from source): `allowed_mentions` rejects `parse` together with `roles` only when `parse` is
+  non-empty. So `parse: []` with `roles` is accepted, as shape A was live.
+
+### Created role position
+
+- The created role had position 1 and permissions 0. The source hard-codes position 1 on create.
+- The bot's top role was at position 4, so the created role sat below the bot.
+- One other role shared position 1 with it. Fluxer documents no tie rule for equal positions, and that was not tested
+  further.
+
+### Role assignment
+
+- Removing and then adding the test role on a member both passed. Each change was read back from the member's roles.
+- Adding a role above the bot was refused with 403 and code `MISSING_PERMISSIONS`. This is the same code as a missing
+  permission, so the two still cannot be told apart by code. This matches the earlier hierarchy check.
+
+### last_message_id and messages?limit=1
+
+- After messages A and B were sent, `last_message_id` was B.
+- After B was deleted, `last_message_id` was still B. It does not go back down when the newest message is deleted.
+- `messages?limit=1` after the deletion returned A, the newest surviving message. The design's assumption holds.
+- After C, D and C2 were sent and C was deleted, `last_message_id` was C2.
+
+### Unread and notifications after a re-post
+
+- The channel showed A, D and C2 in that order. A message re-posted in place of an earlier one lands at the bottom.
+- Unread markers and notification behaviour on web versus mobile were NOT tested. The operator did not answer that
+  question. It is deferred to testing with the real board.
+- The "board" in this script was only a test message. The panel bot was not running, because the live scripts use the
+  token alone.
+
+### Reactor list and bulk removal
+
+- The `/users` path returns a paged object with `items`, `has_more` and `next_after`. The client read the wrong key
+  (`users`) and returned no reactors until it was corrected to read `items`. A plain list from the bare
+  `.../reactions/{emoji}` path was also seen, and the client still accepts it.
+- Each user object carries `bot` true for the bot.
+- The operator added U+270B instead of U+1F64B, so the list for U+1F64B held only the bot.
+- A stored reaction the bot did not add has `me` null, not false. Treat a missing `me` as unknown.
+- Removing one emoji's reactions passed. `MESSAGE_REACTION_REMOVE_EMOJI` arrived, and the other reactions stayed.
+- Removing all reactions passed. `MESSAGE_REACTION_REMOVE_ALL` arrived, and the reactions list was empty.
+
+### Reaction rate limit
+
+- The probe made 30 alternating add and remove calls for one emoji on one message, as fast as possible.
+- The first 429 came at call index 28. There were two 429 responses in total, each with the message "You're being
+  rate limited."
+- So a burst of about 28 calls passed before the first limit, which is above the design's 20 calls per 10 seconds.
+  This was a burst probe, not a sustained rate, so the sustained limit is not measured here.
+
 ## First cards
 
 Three cards were run against the test community, all three checked on web and mobile:
@@ -273,3 +371,9 @@ Three cards were run against the test community, all three checked on web and mo
 
 Result: rendered as expected on web and mobile. The reply for the unverified voice channel and the outside
 placeholder for the location matched the design. A card message deleted by hand was posted again within seconds.
+
+### Abiotic Factor and Palworld probes
+
+- Neither game answered an A2S query, so both are manager-only (no probe).
+- Abiotic Factor: the game port timed out, and the game port + 1 was refused.
+- Palworld: the game port timed out. Palworld also has an RCON port, which is not an A2S port, so it was not probed.
