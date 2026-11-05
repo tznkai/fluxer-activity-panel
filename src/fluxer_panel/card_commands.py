@@ -45,9 +45,10 @@ SUBCOMMANDS = ("new", "set", "clear", "show", "list", "publish", "archive", "sub
                "help")
 SETTABLE = ("title", "description", "join", "first_time", "sort", "seats", "location", "voice",
             "text_channel1", "text_channel2", "text_channel3", "address", "address_public", "manager", "probe", "show",
-            "follow_role")
+            "follow_role", "play_now_channel")
 CLEARABLE = ("description", "join", "first_time", "sort", "seats", "location", "voice",
-             "text_channel1", "text_channel2", "text_channel3", "address", "manager", "probe", "show", "follow_role")
+             "text_channel1", "text_channel2", "text_channel3", "address", "manager", "probe", "show", "follow_role",
+             "play_now_channel")
 # Text channel fields and the slot each one writes. The slots are the store's, so no input picks a table or a slot.
 TEXT_CHANNEL_SLOTS = {"text_channel1": 1, "text_channel2": 2, "text_channel3": 3}
 # Settable fields that are stored as base columns, and the column each one writes.
@@ -58,7 +59,7 @@ BASE_CLEARS = {"description": ("description", None), "join": ("how_to_join", Non
                "first_time": ("first_time", None), "sort": ("sort_order", 0), "show": ("show_details", ())}
 SLOT_CLEARS = frozenset({"voice", "address", "location", "seats", "manager", "probe"})
 # Settable fields whose change shows on the posted messages' reactions, so a set re-seeds them.
-RESEED_FIELDS = frozenset({"follow_role"})
+RESEED_FIELDS = frozenset({"follow_role", "play_now_channel"})
 # Role outcomes after which a card has a working follow role, so its bell is seeded and the reply says following is on.
 _FOLLOWING = frozenset({follow_roles.Ensured.REUSED, follow_roles.Ensured.ADOPTED, follow_roles.Ensured.CREATED})
 _FIELD_NAMES = frozenset(SETTABLE) | {"slug"}
@@ -233,6 +234,8 @@ async def _prepare_set(ctx: CardContext, card: cards.Card, field_name: str,
         if link is None:
             return None, reply
         return (lambda c: cards.set_text_channel(c, card_id, slot, link)), reply
+    if field_name == "play_now_channel":
+        return await _set_play_now_channel(ctx, card_id, value)
     guild_id, channel_id = card_fields.channel_target("voice", value)
     voice, reply = await _check_channel(ctx.rest, guild_id, channel_id, VOICE_CHANNEL_TYPE)
     if voice is None:
@@ -254,6 +257,20 @@ async def _set_follow_role(ctx: CardContext, card: cards.Card, value: str) -> tu
     if res.outcome is follow_roles.Ensured.SET:
         return None, text.FOLLOW_ROLE_SET.format(slug=card.slug)
     return None, text.FOLLOW_REFUSED[res.reason or "lookup_failed"]
+
+
+async def _set_play_now_channel(ctx: CardContext, card_id: int, value: str) -> tuple[Callable[[Any], None] | None, str]:
+    """A play-now channel is a text channel, checked as a subscription is. The games channel is refused before any
+    Fluxer call, and an unverified community is refused too, so nothing unverified is stored."""
+    guild_id, channel_id = card_fields.channel_target("play_now_channel", value)
+    if channel_id == ctx.config.games_channel_id:
+        return None, text.PLAY_NOW_IS_GAMES
+    link, reply = await _check_channel(ctx.rest, guild_id, channel_id, TEXT_CHANNEL_TYPE)
+    if link is None:
+        return None, reply
+    if not link.verified:
+        return None, text.SUBSCRIPTION_NOT_IN_COMMUNITY
+    return (lambda c: cards.set_play_now_channel(c, card_id, link)), reply
 
 
 def _follow_deps(ctx: CardContext) -> follow_roles.FollowDeps | None:
@@ -336,6 +353,8 @@ async def _clear(event: MessageCreate, ctx: CardContext, rest: str) -> _Result:
     if field_name in TEXT_CHANNEL_SLOTS:
         slot = TEXT_CHANNEL_SLOTS[field_name]
         await ctx.db.run(lambda c: cards.clear_text_channel(c, card_id, slot))
+    elif field_name == "play_now_channel":
+        await ctx.db.run(lambda c: cards.clear_play_now_channel(c, card_id))
     elif field_name in SLOT_CLEARS:
         await ctx.db.run(lambda c: cards.clear_slot(c, card_id, field_name))
     else:

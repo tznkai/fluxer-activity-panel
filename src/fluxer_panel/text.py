@@ -81,7 +81,7 @@ HELP_COMMANDS = (
     "!card interactions on|off [slug]: turn the reaction taps on or off, for every card or for one\n"
     "!card help fields: each field, its format and its limits\n"
     "Fields: title, description, join, first_time, sort, seats, location, voice, text_channel1, text_channel2, "
-    "text_channel3, address, address_public, manager, probe, show, follow_role"
+    "text_channel3, address, address_public, manager, probe, show, follow_role, play_now_channel"
 )
 # `!card help fields`: one line per field. The placeholders are filled from the code's limits and kinds.
 HELP_FIELDS = (
@@ -102,7 +102,9 @@ HELP_FIELDS = (
     "probe: <{probe_kinds}> <host> <port>.\n"
     "show: any of {show_items}, comma separated, or none.\n"
     "follow_role: a role id, as a snowflake. The role must have permissions 0, be mentionable and sit below the bot's "
-    "top role. Clear it with !card clear <slug> follow_role."
+    "top role. Clear it with !card clear <slug> follow_role.\n"
+    "play_now_channel: a text channel, as voice: <community id> <channel id> or a pasted channel link. Not the games "
+    "channel. Play-now messages go there; without it they go to PLAY_NOW_CHANNEL_ID."
 )
 PUBLISHED_NO_CHANNEL = "Published, but GAMES_CHANNEL_ID isn't set, so nothing will be posted."
 # Used when the card has active copies: the card's own message is not posted, but its copies are.
@@ -140,6 +142,8 @@ CHANNEL_KIND_VOICE = "a voice channel"
 CHANNEL_KIND_TEXT = "a text channel"
 CHANNEL_OTHER_COMMUNITY = "That channel is in a different community."
 CHANNEL_RETRY = "I couldn't reach Fluxer to check that channel. Try again in a minute."
+# play_now_channel refuses the games channel: play-now messages never go there.
+PLAY_NOW_IS_GAMES = "Play-now messages can't go in the games channel."
 PROBE_ALERT = "Heads up: card {slug} reports its server running, but the game isn't answering queries."
 # Card subscriptions: a copy of a card in another text channel. The channel is shown as a mention, the only input here.
 SUBSCRIPTION_USAGE = ("Usage: !card subscribe <slug> <channel>, where <channel> is a channel link or "

@@ -274,6 +274,10 @@ requester gets one direct message when a request closes. Admins manage open requ
   role. The role must have no permissions, be mentionable and sit below the bot's top role. A role id that fails
   any of those is refused, and nothing is stored. `!card clear <slug> follow_role` forgets the role but keeps it in
   Fluxer. The bot never deletes a role. Following needs `GAMES_CHANNEL_ID`.
+- `play_now_channel <guild_id> <channel_id>`, or a pasted channel link: the text channel where the card's play-now
+  messages go. It is checked as a text channel slot is, but it must be verified: when the bot is not in that
+  community, the channel is refused and nothing is stored. The games channel is refused. Without it, play-now messages
+  go to `PLAY_NOW_CHANNEL_ID`, and without that the press is refused. `!card clear <slug> play_now_channel` removes it.
 
 Every reply names the field and the rule, never the value you sent. Replies use the word
 "community".
