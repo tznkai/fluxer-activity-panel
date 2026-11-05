@@ -194,6 +194,7 @@ class Live:
     version: dict[str, Any]          # {"x_fluxer_version": str|None, "api_code_version": int|None}
     events: asyncio.Queue[tuple[str, dict[str, Any]]]
     gateway: Gateway | None = None
+    bot_user_id: str | None = None
 
     seen_other: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
 
@@ -315,6 +316,7 @@ async def live(*, gateway: bool, extra_secrets: tuple[str, ...] = ()) -> AsyncIt
                     await events.put((event_type, data))
 
                 def on_ready(bot_user_id: str) -> None:
+                    lv.bot_user_id = bot_user_id
                     redactor.label(bot_user_id, "bot")
                     if not ready.done():
                         ready.set_result(None)

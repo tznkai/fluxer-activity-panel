@@ -254,6 +254,12 @@ async def test_next_event_times_out():
         await lv.next_event("NEVER_SENT", timeout=0.05)
 
 
+def test_live_bot_user_id_defaults_to_none_so_existing_constructors_still_work():
+    lv = Live(env={}, session=None, rest=None, redactor=Redactor(TOKEN), version={},  # type: ignore[arg-type]
+              events=asyncio.Queue())
+    assert lv.bot_user_id is None
+
+
 # check_safety and capture_version, against the fake REST server
 
 
