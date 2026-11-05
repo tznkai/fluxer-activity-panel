@@ -44,6 +44,13 @@ def get(conn: sqlite3.Connection, card_id: int, channel_id: str) -> Subscription
     return None if row is None else _load(row)
 
 
+def get_by_message_id(conn: sqlite3.Connection, message_id: str) -> Subscription | None:
+    """The copy that holds this message, for a lookup from a reaction or a message event."""
+    row = conn.execute(f"SELECT {_COLUMNS} FROM card_subscription WHERE message_id = ? ORDER BY rowid LIMIT 1",
+                       (message_id,)).fetchone()
+    return None if row is None else _load(row)
+
+
 def list_for_card(conn: sqlite3.Connection, card_id: int) -> list[Subscription]:
     """Every subscription of the card, paused ones included, in the order the channels were added."""
     rows = conn.execute(f"SELECT {_COLUMNS} FROM card_subscription WHERE card_id = ? ORDER BY rowid",

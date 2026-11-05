@@ -11,7 +11,16 @@ from pathlib import Path
 import pytest
 
 from fluxer_panel import cards
-from fluxer_panel.cards import Address, CardFieldError, ChannelLink, Location, ManagerRef, ProbeRef
+from fluxer_panel.cards import (
+    Address,
+    CardFieldError,
+    ChannelLink,
+    FollowRole,
+    FollowRoleTaken,
+    Location,
+    ManagerRef,
+    ProbeRef,
+)
 from fluxer_panel.db import Database
 
 NOW = 1_800_000_000
@@ -553,3 +562,106 @@ async def test_set_text_channel_name_if_never_inserts_a_cleared_slot(db: Databas
     card = await _get(db, "alpha")
     assert card is not None
     assert card.text_channels == (None, None, None)
+
+
+# Follow roles and play-now channels: one slot each, loaded with the card ----------------------------------
+
+GUILD = "1001"
+
+
+async def test_set_follow_role_for_another_card_with_a_taken_role_is_refused_and_stores_nothing(db: Database) -> None:
+    first = await _create(db, "alpha")
+    second = await _create(db, "beta", "Beta")
+    await db.run(lambda c: cards.set_follow_role(c, first, GUILD, "3001"))
+
+    with pytest.raises(FollowRoleTaken):
+        await db.run(lambda c: cards.set_follow_role(c, second, GUILD, "3001"))
+
+    assert await db.run(lambda c: cards.get_follow_role(c, second)) is None
+    assert await db.run(lambda c: cards.get_follow_role(c, first)) == FollowRole(GUILD, "3001")
+    assert await db.run(lambda c: cards.follow_role_ids(c)) == frozenset({"3001"})
+
+
+async def test_set_follow_role_on_the_same_card_again_replaces_it(db: Database) -> None:
+    card_id = await _create(db)
+    await db.run(lambda c: cards.set_follow_role(c, card_id, GUILD, "3001"))
+    await db.run(lambda c: cards.set_follow_role(c, card_id, GUILD, "3001"))
+    await db.run(lambda c: cards.set_follow_role(c, card_id, GUILD, "3002"))
+
+    assert await db.run(lambda c: cards.get_follow_role(c, card_id)) == FollowRole(GUILD, "3002")
+    assert await db.run(lambda c: cards.follow_role_ids(c)) == frozenset({"3002"})
+
+
+async def test_follow_role_ids_lists_every_stored_role_across_cards(db: Database) -> None:
+    first = await _create(db, "alpha")
+    second = await _create(db, "beta", "Beta")
+    await db.run(lambda c: cards.set_follow_role(c, first, GUILD, "3001"))
+    await db.run(lambda c: cards.set_follow_role(c, second, GUILD, "3002"))
+
+    assert await db.run(lambda c: cards.follow_role_ids(c)) == frozenset({"3001", "3002"})
+
+
+async def test_clear_follow_role_returns_the_old_value_and_removes_it(db: Database) -> None:
+    card_id = await _create(db)
+    await db.run(lambda c: cards.set_follow_role(c, card_id, GUILD, "3001"))
+
+    assert await db.run(lambda c: cards.clear_follow_role(c, card_id)) == FollowRole(GUILD, "3001")
+    assert await db.run(lambda c: cards.get_follow_role(c, card_id)) is None
+    assert await db.run(lambda c: cards.clear_follow_role(c, card_id)) is None
+    assert await db.run(lambda c: cards.follow_role_ids(c)) == frozenset()
+
+
+async def test_cards_load_their_follow_role_and_play_now_channel(db: Database) -> None:
+    card_id = await _create(db)
+    await db.run(lambda c: cards.set_follow_role(c, card_id, GUILD, "3001"))
+    await db.run(lambda c: cards.set_play_now_channel(c, card_id, ChannelLink(GUILD, "2003", "play", True)))
+
+    by_slug = await _get(db, "alpha")
+    by_id = await db.run(lambda c: cards.get_by_id(c, card_id))
+    listed = await db.run(lambda c: cards.list_cards(c))
+
+    for card in (by_slug, by_id, *listed):
+        assert card is not None
+        assert card.follow_role == FollowRole(GUILD, "3001")
+        assert card.play_now_channel == ChannelLink(GUILD, "2003", "play", True)
+
+
+async def test_a_message_lookup_loads_the_follow_role_and_play_now_channel(db: Database) -> None:
+    card_id = await _create(db)
+    await db.run(lambda c: cards.set_message(c, card_id, "2001", "5001", None))
+    await db.run(lambda c: cards.set_follow_role(c, card_id, GUILD, "3001"))
+    await db.run(lambda c: cards.set_play_now_channel(c, card_id, ChannelLink(GUILD, "2003", None, False)))
+
+    card = await db.run(lambda c: cards.get_by_message_id(c, "5001"))
+
+    assert card is not None
+    assert (card.follow_role, card.play_now_channel) == (FollowRole(GUILD, "3001"), ChannelLink(GUILD, "2003", None, False))
+
+
+async def test_a_card_with_no_follow_role_or_play_now_channel_loads_none(db: Database) -> None:
+    await _create(db)
+
+    card = await _get(db, "alpha")
+
+    assert card is not None
+    assert (card.follow_role, card.play_now_channel) == (None, None)
+
+
+async def test_set_play_now_channel_replaces_the_stored_channel(db: Database) -> None:
+    card_id = await _create(db)
+    await db.run(lambda c: cards.set_play_now_channel(c, card_id, ChannelLink(GUILD, "2003", "old", True)))
+    await db.run(lambda c: cards.set_play_now_channel(c, card_id, ChannelLink(GUILD, "2004", None, False)))
+
+    card = await _get(db, "alpha")
+    assert card is not None
+    assert card.play_now_channel == ChannelLink(GUILD, "2004", None, False)
+
+
+async def test_clear_play_now_channel_reports_whether_it_removed_a_row(db: Database) -> None:
+    card_id = await _create(db)
+    await db.run(lambda c: cards.set_play_now_channel(c, card_id, ChannelLink(GUILD, "2003", None, False)))
+
+    assert await db.run(lambda c: cards.clear_play_now_channel(c, card_id)) is True
+    assert await db.run(lambda c: cards.clear_play_now_channel(c, card_id)) is False
+    card = await _get(db, "alpha")
+    assert card is not None and card.play_now_channel is None

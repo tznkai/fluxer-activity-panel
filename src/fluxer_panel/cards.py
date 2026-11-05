@@ -49,6 +49,17 @@ class ChannelLink:
 
 
 @dataclass(frozen=True)
+class FollowRole:
+    """The Fluxer role a member takes to follow a card. A role follows one card only."""
+    guild_id: str
+    role_id: str
+
+
+class FollowRoleTaken(Exception):
+    """Another card already has this role as its follow role."""
+
+
+@dataclass(frozen=True)
 class Address:
     host: str
     port: int
@@ -102,6 +113,8 @@ class Card:
     manager: ManagerRef | None = None
     probe: ProbeRef | None = None
     runtime: Runtime = Runtime()
+    follow_role: FollowRole | None = None
+    play_now_channel: ChannelLink | None = None
 
     @property
     def has_status_source(self) -> bool:
@@ -185,6 +198,8 @@ def _load(conn: sqlite3.Connection, row: tuple) -> Card:
         manager=_load_manager(conn, card_id),
         probe=_load_probe(conn, card_id),
         runtime=_load_runtime(conn, card_id),
+        follow_role=get_follow_role(conn, card_id),
+        play_now_channel=_load_play_now_channel(conn, card_id),
     )
 
 
@@ -201,6 +216,12 @@ def _load_text_channels(conn: sqlite3.Connection, card_id: int) -> tuple[Channel
     for slot, guild_id, channel_id, channel_name, verified in rows:
         slots[slot - 1] = ChannelLink(guild_id, channel_id, channel_name, bool(verified))
     return tuple(slots)
+
+
+def _load_play_now_channel(conn: sqlite3.Connection, card_id: int) -> ChannelLink | None:
+    row = conn.execute("SELECT guild_id, channel_id, channel_name, verified FROM card_play_now_channel "
+                       "WHERE card_id = ?", (card_id,)).fetchone()
+    return None if row is None else ChannelLink(row[0], row[1], row[2], bool(row[3]))
 
 
 def _load_address(conn: sqlite3.Connection, card_id: int) -> Address | None:
@@ -349,6 +370,52 @@ def set_probe(conn: sqlite3.Connection, card_id: int, probe: ProbeRef) -> None:
 def clear_slot(conn: sqlite3.Connection, card_id: int, slot: str) -> None:
     table = SLOT_TABLES[slot]   # KeyError for an unknown slot; the table name is never built from input
     conn.execute(f"DELETE FROM {table} WHERE card_id = ?", (card_id,))
+
+
+# Follow roles and play-now channels ------------------------------------------------------------------
+
+def get_follow_role(conn: sqlite3.Connection, card_id: int) -> FollowRole | None:
+    row = conn.execute("SELECT guild_id, role_id FROM card_follow_role WHERE card_id = ?", (card_id,)).fetchone()
+    return None if row is None else FollowRole(row[0], row[1])
+
+
+def set_follow_role(conn: sqlite3.Connection, card_id: int, guild_id: str, role_id: str) -> None:
+    """Stores the card's follow role. Raises FollowRoleTaken, and stores nothing, when another card has this role.
+    The check and the write run in the caller's transaction."""
+    taken = conn.execute("SELECT card_id FROM card_follow_role WHERE role_id = ? AND card_id <> ?",
+                         (role_id, card_id)).fetchone()
+    if taken is not None:
+        raise FollowRoleTaken()
+    conn.execute(
+        "INSERT INTO card_follow_role (card_id, guild_id, role_id) VALUES (?, ?, ?) "
+        "ON CONFLICT(card_id) DO UPDATE SET guild_id = excluded.guild_id, role_id = excluded.role_id",
+        (card_id, guild_id, role_id))
+
+
+def clear_follow_role(conn: sqlite3.Connection, card_id: int) -> FollowRole | None:
+    """Removes the card's follow role and returns it, or None when it had none."""
+    row = conn.execute("DELETE FROM card_follow_role WHERE card_id = ? RETURNING guild_id, role_id",
+                       (card_id,)).fetchone()
+    return None if row is None else FollowRole(row[0], row[1])
+
+
+def follow_role_ids(conn: sqlite3.Connection) -> frozenset[str]:
+    """Every stored follow role id, across all cards: the allowlist for role changes."""
+    return frozenset(row[0] for row in conn.execute("SELECT role_id FROM card_follow_role").fetchall())
+
+
+def set_play_now_channel(conn: sqlite3.Connection, card_id: int, link: ChannelLink) -> None:
+    conn.execute(
+        "INSERT INTO card_play_now_channel (card_id, guild_id, channel_id, channel_name, verified) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(card_id) DO UPDATE SET guild_id = excluded.guild_id, channel_id = excluded.channel_id, "
+        "channel_name = excluded.channel_name, verified = excluded.verified",
+        (card_id, link.guild_id, link.channel_id, link.channel_name, int(link.verified)))
+
+
+def clear_play_now_channel(conn: sqlite3.Connection, card_id: int) -> bool:
+    cur = conn.execute("DELETE FROM card_play_now_channel WHERE card_id = ?", (card_id,))
+    return cur.rowcount == 1
 
 
 # Messages and runtime ----------------------------------------------------------------------------------

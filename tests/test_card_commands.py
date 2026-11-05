@@ -1058,3 +1058,17 @@ async def test_clear_logs_the_field_only_when_it_is_clearable(world: World, capl
     [record] = [r for r in caplog.records if r.name == "fluxer_panel.card_commands"
                 and r.getMessage() == "admin_command" and r.panel_fields["command"] == "card_clear"]
     assert record.panel_fields == {"command": "card_clear", "field": "unknown", "card_id": 1, "user_id": "1001"}
+
+
+# AC3.10: archive keeps the follow role ----------------------------------------------------------------------
+
+async def test_archive_keeps_the_stored_follow_role(world: World) -> None:
+    await _live_card_with_message(world)
+    card = await world.card("mc")
+    assert card is not None
+    await world.db.run(lambda c: cards.set_follow_role(c, card.id, "1001", "3001"))
+
+    await world.run("!card archive mc")
+
+    assert (await world.card("mc")).state == "archived"
+    assert await world.db.run(lambda c: cards.get_follow_role(c, card.id)) == cards.FollowRole("1001", "3001")

@@ -149,3 +149,20 @@ async def test_deleting_the_card_removes_its_subscriptions(db: Database, card_id
     await db.run(lambda c: subscriptions.add(c, card_id, GUILD, CHANNELS[0]))
     await db.run(lambda c: c.execute("DELETE FROM cards WHERE id = ?", (card_id,)))
     assert await db.run(lambda c: c.execute("SELECT COUNT(*) FROM card_subscription").fetchone()[0]) == 0
+
+
+async def test_get_by_message_id_finds_the_copy_holding_that_message(db: Database, card_id: int) -> None:
+    await db.run(lambda c: subscriptions.add(c, card_id, GUILD, CHANNELS[0]))
+    await db.run(lambda c: subscriptions.set_message(c, card_id, CHANNELS[0], MESSAGE, HASH))
+
+    found = await db.run(lambda c: subscriptions.get_by_message_id(c, MESSAGE))
+
+    assert found == subscriptions.Subscription(card_id=card_id, guild_id=GUILD, channel_id=CHANNELS[0],
+                                               message_id=MESSAGE, content_hash=HASH, paused=False)
+
+
+async def test_get_by_message_id_returns_none_for_an_unknown_message(db: Database, card_id: int) -> None:
+    await db.run(lambda c: subscriptions.add(c, card_id, GUILD, CHANNELS[0]))
+    await db.run(lambda c: subscriptions.set_message(c, card_id, CHANNELS[0], MESSAGE, HASH))
+
+    assert await db.run(lambda c: subscriptions.get_by_message_id(c, OTHER_MESSAGE)) is None
