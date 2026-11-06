@@ -52,6 +52,9 @@ class _ScheduleCache:
 # commit. That window is short, so the most recent few hundred deletes cover it.
 _DELETED_CAP = 256
 
+# The replaced boards whose delete failed and is still retried by each check. The oldest is dropped past this count.
+_STALE_BOARD_CAP = 10
+
 
 @dataclass(frozen=True)
 class _Evaluated:
@@ -452,7 +455,15 @@ class Poller:
         old_id = state.message_id
         await self._board_post(state.channel_id, payload)
         if not await self._delete_old_board(state.channel_id, old_id):
-            self._stale_boards.append((state.channel_id, old_id))
+            self._keep_stale_board(state.channel_id, old_id)
+
+    def _keep_stale_board(self, channel_id: str, message_id: str) -> None:
+        """Keeps a replaced board whose delete failed for the next check to retry. The list is capped: past
+        `_STALE_BOARD_CAP` the oldest entry is dropped and logged."""
+        self._stale_boards.append((channel_id, message_id))
+        while len(self._stale_boards) > _STALE_BOARD_CAP:
+            dropped_channel, _ = self._stale_boards.pop(0)
+            log_event(log, "board_stale_dropped", level=logging.WARNING, channel_id=dropped_channel)
 
     async def _retry_stale_deletes(self) -> None:
         for channel_id, message_id in list(self._stale_boards):
@@ -460,8 +471,11 @@ class Poller:
                 self._stale_boards.remove((channel_id, message_id))
 
     async def _delete_old_board(self, channel_id: str, message_id: str) -> bool:
-        """Deletes a board message the poller replaced. Its own delete event is remembered first, so the event does not
-        cause a post. A 404 means it is gone already. Returns whether it is gone."""
+        """Deletes a board message the poller replaced. The replacement is stored before this runs, so the old id matches
+        no stored row and its delete event clears nothing and causes no post. Remembering the id before the delete is a
+        backstop: it applies only if the event lands while the old id is still stored. A 404 means it is gone already. A
+        403 is refused by Fluxer, and a retry gets the same answer, so it is logged once here and not kept. Returns
+        whether no further attempt is needed: the message is gone, or it was refused."""
         self._remember_deleted(channel_id, message_id)
         try:
             await self._rest.delete_message(channel_id, message_id)
@@ -469,6 +483,10 @@ class Poller:
             raise
         except FluxerHTTPError as exc:
             if exc.status == 404:
+                return True
+            if exc.status == 403:
+                log_event(log, "board_old_delete_refused", level=logging.WARNING, channel_id=channel_id,
+                          reason=type(exc).__name__)
                 return True
             log_event(log, "board_old_delete_failed", level=logging.WARNING, reason=type(exc).__name__)
             return False

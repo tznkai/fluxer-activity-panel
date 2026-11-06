@@ -14,7 +14,7 @@ import aiohttp
 import pytest
 
 from fluxer_client.events import MessageDelete
-from fluxer_client.rest import FluxerREST
+from fluxer_client.rest import FluxerHTTPError, FluxerREST
 from fluxer_panel import cards
 from fluxer_panel.db import Database
 from tests.fakes import FakeFluxerState, Override, Recorded, make_rest_app
@@ -316,3 +316,52 @@ async def test_an_old_board_already_gone_when_retried_is_dropped_from_the_list(w
     assert len(deletes_of(world, old)) == 2
     await poller.tick()                   # nothing left to retry
     assert len(deletes_of(world, old)) == 2
+
+
+async def test_a_board_delete_refused_with_403_is_logged_once_and_never_retried(world: World, db: Database,
+                                                                               caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.DEBUG)
+    await seed(db, "alpha", title="Alpha")
+    poller = world.poller()
+    world.clock.now = 0.0
+    await poller.tick()
+    old = await board_id(world)
+    world.fluxer.overrides[old_board_path(old)] = Override(403, b'{"code": "MISSING_PERMISSIONS", "message": "x"}')
+    chat(world)
+    poller.on_games_message(GAMES)
+    await poller.tick()
+    assert poller._stale_boards == []     # refused: not kept for a retry
+
+    world.clock.now = 400.0               # a later re-post, and a later check
+    chat(world)
+    poller.on_games_message(GAMES)
+    await poller.tick()
+
+    assert len(board_posts(world.fluxer)) == 3
+    assert len(deletes_of(world, old)) == 1
+    assert [r.getMessage() for r in caplog.records].count("board_old_delete_refused") == 1
+    assert [r.getMessage() for r in caplog.records].count("board_old_delete_failed") == 0
+
+
+async def test_the_board_retry_list_is_capped_and_drops_its_oldest_entry_with_a_log(
+        world: World, db: Database, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.DEBUG)
+    await seed(db, "alpha", title="Alpha")
+    poller = world.poller()
+    world.clock.now = 0.0
+    await poller.tick()
+    first_old = await board_id(world)
+
+    async def fail_every_delete(channel_id: str, message_id: str) -> None:
+        raise FluxerHTTPError(500, None, "SENTINEL")
+
+    monkeypatch.setattr(world.rest, "delete_message", fail_every_delete)
+    for n in range(1, 12):                # eleven re-posts, each replacing a board whose delete keeps failing
+        world.clock.now = 300.0 * n
+        chat(world)
+        poller.on_games_message(GAMES)
+        await poller.tick()
+
+    assert len(poller._stale_boards) == 10
+    assert (GAMES, first_old) not in poller._stale_boards
+    assert [r.getMessage() for r in caplog.records].count("board_stale_dropped") == 1
