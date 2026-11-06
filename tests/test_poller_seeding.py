@@ -6,6 +6,7 @@ SQLite file, the fake Fluxer REST server and the card commands."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -414,3 +415,32 @@ async def test_reconcile_of_a_copy_in_another_community_adds_only_the_wake_emoji
 
     assert puts(world.state, OTHER_COPY, message_id) == [WAKE_EMOJI]
     assert reacted(world.state, OTHER_COPY, message_id) == {WAKE_EMOJI}
+
+
+# A cancelled publish drops the seed jobs it queued, so a later publish on the same Poller seeds nothing stale ---------
+
+
+async def test_a_cancelled_publish_drops_its_seed_jobs_and_a_later_publish_seeds_nothing_stale(
+        world: World, db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    card_id = await live_card(db, "mc")
+    poller = make_poller(world, Clock())
+    card = await db.run(lambda c: cards.get_by_id(c, card_id))
+    assert card is not None
+    evaluated = await poller._evaluate(card)
+    assert evaluated.embed is not None
+
+    async def cancel(self: Poller, *args: Any, **kwargs: Any) -> None:
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(Poller, "_publish_subscriptions", cancel)
+    with pytest.raises(asyncio.CancelledError):
+        await poller._publish(card_id, evaluated.embed)
+
+    # `_post` ran and queued the card's seed job before the cancel, so the cancel branch must drop it.
+    assert card_id not in poller._to_seed
+    assert puts(world.state, GAMES, await card_message(db, card_id)) == []
+
+    monkeypatch.undo()
+    await poller._publish(card_id, evaluated.embed)
+
+    assert puts(world.state, GAMES, await card_message(db, card_id)) == []
