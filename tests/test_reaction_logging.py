@@ -261,7 +261,7 @@ def escaped_forms(text: str) -> list[str]:
 
 async def test_no_line_has_an_emoji_the_content_or_a_name(run: Run) -> None:
     assert run.lines
-    emoji_chars = (WAKE_CHAR, BELL, HAND, WAKE_FE0F)
+    emoji_chars = (WAKE_CHAR, BELL, HAND, WAKE_FE0F, THUMBS_UP)
     # Decoded: every parsed entry, re-serialised with real characters, must hold none of the emoji characters.
     for entry in run.lines:
         decoded = json.dumps(entry, ensure_ascii=False)
