@@ -31,6 +31,8 @@ from fluxer_panel import text as panel_text
 from fluxer_panel.__main__ import IDENTIFY_PROPERTIES, purge_once, run
 from fluxer_panel.config import Config
 from fluxer_panel.db import LATEST_VERSION, Database
+from fluxer_panel.games import BotIdentity, GamesGuild
+from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.wake import WakeRequests
 from tests.fakes import (
     GATEWAY_STATE,
@@ -565,6 +567,8 @@ class _PollerProbe:
         self.rest_answered: bool | None = None
         self.wake: Any = None           # what `set_wake` was given, before the loop started
         self.interactions: Any = None   # what `set_interactions` was given, before the loop started
+        self.poller: Any = None         # the ProbePoller instance the composition root built
+        self.poller_kwargs: dict[str, Any] = {}   # the keyword arguments the composition root gave the poller
 
 
 def _probe_poller(monkeypatch: pytest.MonkeyPatch) -> _PollerProbe:
@@ -573,6 +577,8 @@ def _probe_poller(monkeypatch: pytest.MonkeyPatch) -> _PollerProbe:
     class ProbePoller:
         def __init__(self, **kwargs: Any) -> None:
             self._rest = kwargs["rest"]
+            probe.poller = self
+            probe.poller_kwargs = kwargs
 
         def kick(self) -> None:
             pass
@@ -717,6 +723,91 @@ async def test_interactions_and_the_bot_get_the_same_wake_requests_the_poller_ha
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task, BOUND)
     finally:
+        db.close()
+
+
+def _recording(real: Any, log: list[tuple[dict[str, Any], Any]]) -> Any:
+    def build(**kwargs: Any) -> Any:
+        made = real(**kwargs)
+        log.append((kwargs, made))
+        return made
+    return build
+
+
+def _record_constructions(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[tuple[dict[str, Any], Any]]]:
+    """Wraps the reaction components' constructors in the composition root. Each construction is recorded with the keyword
+    arguments it was given and the instance the real class made, so a test can see what each component was handed."""
+    made: dict[str, list[tuple[dict[str, Any], Any]]] = {}
+    for name in ("CardContext", "Seeder", "Presses", "Interactions", "Bot"):
+        made[name] = []
+        monkeypatch.setattr(panel_main, name, _recording(getattr(panel_main, name), made[name]))
+    return made
+
+
+async def test_the_bot_gets_the_presses_and_the_pollers_games_message_hook(aiohttp_server, tmp_path, monkeypatch):
+    probe = _probe_poller(monkeypatch)
+    made = _record_constructions(monkeypatch)
+    config, db = await _in_process_panel(aiohttp_server, tmp_path, _ready_gateway_script)
+    task = asyncio.create_task(run(config, db))
+    try:
+        await asyncio.wait_for(probe.started.wait(), BOUND)
+        [(bot_kwargs, _bot)] = made["Bot"]
+        [(_presses_kwargs, presses)] = made["Presses"]
+        assert bot_kwargs.get("presses") is presses
+        assert bot_kwargs.get("on_games_message") == probe.poller.on_games_message
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(task, BOUND)
+        db.close()
+
+
+async def test_one_channel_pacer_reaches_the_seeder_the_presses_and_the_interactions(
+        aiohttp_server, tmp_path, monkeypatch):
+    probe = _probe_poller(monkeypatch)
+    made = _record_constructions(monkeypatch)
+    config, db = await _in_process_panel(aiohttp_server, tmp_path, _ready_gateway_script)
+    task = asyncio.create_task(run(config, db))
+    try:
+        await asyncio.wait_for(probe.started.wait(), BOUND)
+        [(seeder_kwargs, _seeder)] = made["Seeder"]
+        [(presses_kwargs, _presses)] = made["Presses"]
+        [(interactions_kwargs, _interactions)] = made["Interactions"]
+        pacer = seeder_kwargs["pacer"]
+        assert isinstance(pacer, ChannelPacer)
+        assert presses_kwargs["pacer"] is pacer
+        assert interactions_kwargs["pacer"] is pacer
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(task, BOUND)
+        db.close()
+
+
+async def test_one_identity_and_one_games_guild_are_shared_by_every_component_that_takes_them(
+        aiohttp_server, tmp_path, monkeypatch):
+    probe = _probe_poller(monkeypatch)
+    made = _record_constructions(monkeypatch)
+    config, db = await _in_process_panel(aiohttp_server, tmp_path, _ready_gateway_script)
+    task = asyncio.create_task(run(config, db))
+    try:
+        await asyncio.wait_for(probe.started.wait(), BOUND)
+        [(ctx_kwargs, _)] = made["CardContext"]
+        [(interactions_kwargs, _)] = made["Interactions"]
+        [(presses_kwargs, _)] = made["Presses"]
+        [(bot_kwargs, _)] = made["Bot"]
+        identities = [ctx_kwargs["identity"], interactions_kwargs["identity"], presses_kwargs["identity"],
+                      bot_kwargs["identity"]]
+        guilds = [ctx_kwargs["games_guild"], probe.poller_kwargs["games_guild"],
+                  interactions_kwargs["games_guild"], presses_kwargs["games_guild"]]
+        assert isinstance(identities[0], BotIdentity)
+        assert all(identity is identities[0] for identity in identities)
+        assert isinstance(guilds[0], GamesGuild)
+        assert all(guild is guilds[0] for guild in guilds)
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(task, BOUND)
         db.close()
 
 
