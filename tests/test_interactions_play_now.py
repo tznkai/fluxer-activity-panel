@@ -6,6 +6,7 @@ as escapes (presses.PLAY_NOW_EMOJI and friends); the tests never contain a liter
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 import logging
 import sqlite3
@@ -67,6 +68,7 @@ BOT_ROLE_DATA = {"id": BOT_ROLE, "name": "bot", "permissions": "8", "position": 
 ALPHA_DATA = {"id": ALPHA_ROLE, "name": "card_subscription_mc", "permissions": "0", "position": 5,
               "mentionable": True}
 FORBIDDEN = b'{"code":"MISSING_PERMISSIONS","message":"no"}'
+BOUND = 30   # seconds: a hard stop for a wait that should never hang
 
 
 class Clock:
@@ -505,6 +507,50 @@ async def test_the_reactor_reads_and_the_edit_are_not_held_under_the_card_lock(h
     set_reactors(h.state, mid, [REACTOR_A])
     await h.presses.on_reaction(me_too(REACTOR_A, mid))
     assert pacer.held and not any(pacer.held)
+
+
+async def test_an_older_me_too_recount_that_finishes_last_does_not_overwrite_a_newer_count(harness, monkeypatch) -> None:
+    """Two Me Too recounts overlap. The older one reads its reactors first and finishes last, so its edit must be
+    skipped: the newer count stands."""
+    h = await harness()
+    mid = await post_play_now(h)
+    real_count = h.interactions._count_playing
+    reading = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def interleaved(pn: play_now.PlayNow) -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            count = await real_count(pn)     # the older recount reads the reactors as they are: 2
+            reading.set()
+            await release.wait()             # and finishes only after the newer recount has been applied
+            return count
+        return await real_count(pn)
+
+    monkeypatch.setattr(h.interactions, "_count_playing", interleaved)
+    set_reactors(h.state, mid, [REACTOR_A])
+    older = asyncio.create_task(h.presses.on_reaction(me_too(REACTOR_A, mid)))
+    await asyncio.wait_for(reading.wait(), BOUND)
+    set_reactors(h.state, mid, [REACTOR_A, REACTOR_B])
+    await h.presses.on_reaction(me_too(REACTOR_B, mid))      # the newer recount: 3
+    release.set()
+    await asyncio.wait_for(older, BOUND)
+
+    assert [status_field(edit) for edit in edits_to(h.state, mid)] == [text.PLAY_NOW_PLAYING.format(n=3)]
+
+
+async def test_an_expired_message_leaves_no_recount_ticket_behind(harness) -> None:
+    h = await harness()
+    h.clock.now = 100
+    mid = await post_play_now(h)           # expires at 100 + 3600
+    set_reactors(h.state, mid, [REACTOR_A])
+    await h.presses.on_reaction(me_too(REACTOR_A, mid))
+    assert mid in h.interactions._recount_applied
+    h.clock.now = 3700
+    await h.interactions.expire_play_now()
+    assert mid not in h.interactions._recount_applied
 
 
 async def test_a_play_now_message_ends_at_its_expiry_with_one_edit_and_one_bulk_removal(harness) -> None:

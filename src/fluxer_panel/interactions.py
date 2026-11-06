@@ -9,6 +9,7 @@ when aimed at the games channel, and it mentions only the card's follow role, th
 
 from __future__ import annotations
 
+import itertools
 import logging
 import time
 from collections.abc import Callable
@@ -81,6 +82,8 @@ class Interactions:
         self._status_of = status_of
         self._follow_deps = follow_roles.FollowDeps(db=db, rest=rest, config=config, roles=roles, identity=identity)
         self._follow_alerted: set[tuple[int, str]] = set()   # (card id, reason) whose admin alert was sent
+        self._recount_tickets = itertools.count(1)           # one ticket per Me Too recount, taken before its reactor reads
+        self._recount_applied: dict[str, int] = {}           # play-now message id -> ticket of the newest recount shown
 
     async def handle(self, press: Press) -> None:
         match press.action:
@@ -260,10 +263,13 @@ class Interactions:
         """A play-now reaction (PLAY_NOW_EMOJI) was added or removed on a live play-now message: the message's count is
         recounted and edited (AC4.9).
         The reactor pages are read outside the card lock, so a 429 retry never stalls the card. An edit never re-pings.
+        Each recount takes a ticket before it reads, and an edit is skipped when a newer recount's count is already on the
+        message. Overlapping recounts can therefore finish in any order, and the newest count still stands.
         `user_id` is not needed: the count is read from the message, not from the event."""
         pn = await self._db.run(lambda c: play_now.get_live_by_message(c, surface.message_id))
         if pn is None:
             return   # ended (AC4.10), or not a play-now message
+        ticket = next(self._recount_tickets)
         try:
             count = await self._count_playing(pn)
         except Exception as exc:  # noqa: BLE001 - a failed count leaves the message as it is
@@ -275,11 +281,14 @@ class Interactions:
             card = await self._db.run(lambda c: cards.get_by_id(c, card_id))
             if live is None or card is None:
                 return
+            if ticket < self._recount_applied.get(pn.message_id, 0):
+                return   # a newer recount has already been shown: this older count must not replace it
             try:
                 await self._edit_play_now(card, pn, playing=count, ended=False)
             except Exception as exc:  # noqa: BLE001 - a failed edit leaves the message as it is, and is logged
                 log_event(log, "play_now_edit_failed", level=logging.WARNING, card_id=card_id, **_failure_fields(exc))
                 return
+            self._recount_applied[pn.message_id] = ticket
         log_event(log, "play_now_count", card_id=card_id, count=count)
 
     async def _count_playing(self, pn: play_now.PlayNow) -> int:
@@ -333,6 +342,7 @@ class Interactions:
                 async with self._locks.get(pn.card_id):
                     expired = await self._expire(pn.id)
                     if expired:
+                        self._recount_applied.pop(pn.message_id, None)   # an ended message keeps no recount ticket
                         await self._end_message(pn, playing)
             except Exception as exc:  # noqa: BLE001 - one message's failure must not stop the others
                 log_event(log, "play_now_expire_failed", level=logging.WARNING, card_id=pn.card_id,
