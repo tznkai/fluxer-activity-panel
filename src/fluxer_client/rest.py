@@ -282,7 +282,7 @@ class FluxerREST:
         path = f"/channels/{require_snowflake(channel_id)}/messages/{require_snowflake(message_id)}"
         await self.request("DELETE", path)
 
-    REACTION_USERS_SUFFIX = "/users"   # the reactor-list path, per the design; Task 9 amends it if the live run disagrees
+    REACTION_USERS_SUFFIX = "/users"   # the reactor-list path, confirmed by the live run (docs/fluxer-notes.md)
 
     async def create_role(self, guild_id: str, *, name: str, mentionable: bool,
                           reason: str | None = None) -> dict[str, Any]:
