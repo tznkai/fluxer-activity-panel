@@ -70,10 +70,12 @@ class Seeder:
         self._forbidden: set[str] = set()   # channels whose 403 has already been logged
 
     async def seed(self, channel_id: str, message_id: str, wanted: Sequence[str],
-                   message: Mapping[str, Any] | None = None) -> None:
+                   message: Mapping[str, Any] | None = None, *, card_id: int) -> None:
         """Adds each wanted emoji the bot has not added yet, in order. `message` is a payload already fetched; without
-        one the message is fetched. A 403 stops this message and is logged once per channel. Any other failure is logged
-        and stops this message."""
+        one the message is fetched. Seeding is asked again for `card_id` after each emoji's budget wait and before its
+        add, so a kill switch turned off meanwhile stops the seed. A PUT already sent when the switch flips can still
+        land; a later `!card interactions off` removes it. A 403 stops this message and is logged once per channel. Any
+        other failure is logged and stops this message."""
         try:
             if message is None:
                 message = await self._rest.get_message(channel_id, message_id)
@@ -81,6 +83,8 @@ class Seeder:
                 if _present(message, emoji):
                     continue
                 await self._pacer.wait(channel_id)
+                if not await self.enabled_for(card_id):
+                    return
                 await self._rest.add_reaction(channel_id, message_id, emoji)
         except FluxerHTTPError as exc:
             if exc.status == 403:

@@ -340,9 +340,9 @@ async def test_no_card_lock_is_held_while_reactions_are_removed_or_added(world: 
         held.append(world.ctx.locks.get(card.id).locked())
         await real_unseed(channel_id, message_id, emojis)
 
-    async def seed(channel_id: str, message_id: str, wanted: Any, message: Any = None) -> None:
+    async def seed(channel_id: str, message_id: str, wanted: Any, message: Any = None, *, card_id: int) -> None:
         held.append(world.ctx.locks.get(card.id).locked())
-        await real_seed(channel_id, message_id, wanted, message)
+        await real_seed(channel_id, message_id, wanted, message, card_id=card_id)
 
     monkeypatch.setattr(seeder, "unseed", unseed)
     monkeypatch.setattr(seeder, "seed", seed)

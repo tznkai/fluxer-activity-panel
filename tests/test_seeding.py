@@ -71,6 +71,9 @@ async def db(tmp_path: Path) -> AsyncIterator[Database]:
         database.close()
 
 
+CARD_ID = 1   # the card the seeded messages belong to; the seeder asks the switches about it
+
+
 class RecordingPacer:
     def __init__(self) -> None:
         self.channels: list[str] = []
@@ -165,11 +168,11 @@ def test_a_play_now_surface_never_has_a_target() -> None:
 
 # seed: adds, skips and failures
 
-async def test_seeding_a_fresh_message_adds_the_wanted_emoji_in_order(fake, session) -> None:
+async def test_seeding_a_fresh_message_adds_the_wanted_emoji_in_order(fake, session, db) -> None:
     state, base = fake
-    seeder = Seeder(rest=FluxerREST(session, f"{base}/api", TOKEN), pacer=RecordingPacer(), db=None)
+    seeder = Seeder(rest=FluxerREST(session, f"{base}/api", TOKEN), pacer=RecordingPacer(), db=db)
 
-    await seeder.seed(GAMES, MSG, [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI])
+    await seeder.seed(GAMES, MSG, [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI], card_id=CARD_ID)
 
     assert raw_paths(state, "PUT") == [
         f"{REACTIONS}/{SEGMENTS[WAKE_EMOJI]}/@me",
@@ -178,76 +181,76 @@ async def test_seeding_a_fresh_message_adds_the_wanted_emoji_in_order(fake, sess
     ]
 
 
-async def test_seeding_fetches_the_message_when_no_payload_is_given(fake, session) -> None:
+async def test_seeding_fetches_the_message_when_no_payload_is_given(fake, session, db) -> None:
     state, base = fake
-    seeder = Seeder(rest=FluxerREST(session, f"{base}/api", TOKEN), pacer=RecordingPacer(), db=None)
+    seeder = Seeder(rest=FluxerREST(session, f"{base}/api", TOKEN), pacer=RecordingPacer(), db=db)
 
-    await seeder.seed(GAMES, MSG, [WAKE_EMOJI])
+    await seeder.seed(GAMES, MSG, [WAKE_EMOJI], card_id=CARD_ID)
 
     assert [r.method for r in state.requests if r.path == f"/api/v1/channels/{GAMES}/messages/{MSG}"] == ["GET"]
 
 
-async def test_seeding_with_a_payload_makes_no_fetch(fake, session) -> None:
+async def test_seeding_with_a_payload_makes_no_fetch(fake, session, db) -> None:
     state, base = fake
-    seeder = Seeder(rest=FluxerREST(session, f"{base}/api", TOKEN), pacer=RecordingPacer(), db=None)
+    seeder = Seeder(rest=FluxerREST(session, f"{base}/api", TOKEN), pacer=RecordingPacer(), db=db)
 
-    await seeder.seed(GAMES, MSG, [WAKE_EMOJI], message={"id": MSG, "reactions": []})
+    await seeder.seed(GAMES, MSG, [WAKE_EMOJI], card_id=CARD_ID, message={"id": MSG, "reactions": []})
 
     assert raw_paths(state, "GET") == []
     assert raw_paths(state, "PUT") == [f"{REACTIONS}/{SEGMENTS[WAKE_EMOJI]}/@me"]
 
 
-async def test_seeding_adds_only_what_the_bot_has_not_added(fake, session) -> None:
+async def test_seeding_adds_only_what_the_bot_has_not_added(fake, session, db) -> None:
     state, base = fake
     state.reactions[(GAMES, MSG)] = {WAKE_EMOJI: [BOT]}
-    seeder = Seeder(rest=FluxerREST(session, f"{base}/api", TOKEN), pacer=RecordingPacer(), db=None)
+    seeder = Seeder(rest=FluxerREST(session, f"{base}/api", TOKEN), pacer=RecordingPacer(), db=db)
 
-    await seeder.seed(GAMES, MSG, [WAKE_EMOJI, FOLLOW_EMOJI])
+    await seeder.seed(GAMES, MSG, [WAKE_EMOJI, FOLLOW_EMOJI], card_id=CARD_ID)
 
     assert raw_paths(state, "PUT") == [f"{REACTIONS}/{SEGMENTS[FOLLOW_EMOJI]}/@me"]
 
 
-async def test_a_stored_wake_without_the_variation_selector_still_counts_as_present(fake, session) -> None:
+async def test_a_stored_wake_without_the_variation_selector_still_counts_as_present(fake, session, db) -> None:
     state, base = fake
     bare = "\u25b6"
-    seeder = Seeder(rest=FluxerREST(session, f"{base}/api", TOKEN), pacer=RecordingPacer(), db=None)
+    seeder = Seeder(rest=FluxerREST(session, f"{base}/api", TOKEN), pacer=RecordingPacer(), db=db)
     message = {"id": MSG, "reactions": [{"emoji": {"name": bare, "id": None}, "count": 1, "me": True}]}
 
-    await seeder.seed(GAMES, MSG, [WAKE_EMOJI], message=message)
+    await seeder.seed(GAMES, MSG, [WAKE_EMOJI], card_id=CARD_ID, message=message)
 
     assert raw_paths(state, "PUT") == []
 
 
-async def test_a_reaction_the_bot_has_not_made_does_not_count_as_present(fake, session) -> None:
+async def test_a_reaction_the_bot_has_not_made_does_not_count_as_present(fake, session, db) -> None:
     state, base = fake
-    seeder = Seeder(rest=FluxerREST(session, f"{base}/api", TOKEN), pacer=RecordingPacer(), db=None)
+    seeder = Seeder(rest=FluxerREST(session, f"{base}/api", TOKEN), pacer=RecordingPacer(), db=db)
     message = {"id": MSG, "reactions": [{"emoji": {"name": WAKE_EMOJI, "id": None}, "count": 1, "me": False}]}
 
-    await seeder.seed(GAMES, MSG, [WAKE_EMOJI], message=message)
+    await seeder.seed(GAMES, MSG, [WAKE_EMOJI], card_id=CARD_ID, message=message)
 
     assert raw_paths(state, "PUT") == [f"{REACTIONS}/{SEGMENTS[WAKE_EMOJI]}/@me"]
 
 
-async def test_every_add_goes_through_the_pacer_for_its_channel(fake, session) -> None:
+async def test_every_add_goes_through_the_pacer_for_its_channel(fake, session, db) -> None:
     state, base = fake
     pacer = RecordingPacer()
-    seeder = Seeder(rest=FluxerREST(session, f"{base}/api", TOKEN), pacer=pacer, db=None)
+    seeder = Seeder(rest=FluxerREST(session, f"{base}/api", TOKEN), pacer=pacer, db=db)
 
-    await seeder.seed(GAMES, MSG, [WAKE_EMOJI, FOLLOW_EMOJI])
+    await seeder.seed(GAMES, MSG, [WAKE_EMOJI, FOLLOW_EMOJI], card_id=CARD_ID)
 
     assert pacer.channels == [GAMES, GAMES]
 
 
-async def test_a_403_is_logged_once_per_channel_and_stops_each_message(fake, session, caplog) -> None:
+async def test_a_403_is_logged_once_per_channel_and_stops_each_message(fake, session, db, caplog) -> None:
     state, base = fake
     caplog.set_level(logging.DEBUG)
     for mid in (MSG, OTHER_MSG):
         state.overrides[f"PUT /api/v1/channels/{GAMES}/messages/{mid}/reactions/{WAKE_EMOJI}/@me"] = Override(
             403, b'{"code":"MISSING_PERMISSIONS","message":"no"}')
-    seeder = Seeder(rest=FluxerREST(session, f"{base}/api", TOKEN), pacer=RecordingPacer(), db=None)
+    seeder = Seeder(rest=FluxerREST(session, f"{base}/api", TOKEN), pacer=RecordingPacer(), db=db)
 
-    await seeder.seed(GAMES, MSG, [WAKE_EMOJI, FOLLOW_EMOJI])
-    await seeder.seed(GAMES, OTHER_MSG, [WAKE_EMOJI, FOLLOW_EMOJI])
+    await seeder.seed(GAMES, MSG, [WAKE_EMOJI, FOLLOW_EMOJI], card_id=CARD_ID)
+    await seeder.seed(GAMES, OTHER_MSG, [WAKE_EMOJI, FOLLOW_EMOJI], card_id=CARD_ID)
 
     forbidden = [r for r in panel_records(caplog) if r.getMessage() == "seed_forbidden"]
     assert len(forbidden) == 1
@@ -255,26 +258,60 @@ async def test_a_403_is_logged_once_per_channel_and_stops_each_message(fake, ses
     assert len(raw_paths(state, "PUT")) == 2  # one refused add per message, and no add after a refusal
 
 
-async def test_another_failure_is_logged_and_stops_that_message(fake, session, caplog) -> None:
+async def test_another_failure_is_logged_and_stops_that_message(fake, session, db, caplog) -> None:
     state, base = fake
     caplog.set_level(logging.DEBUG)
     state.overrides[f"PUT /api/v1/channels/{GAMES}/messages/{MSG}/reactions/{WAKE_EMOJI}/@me"] = Override(
         500, b'{"code":"X","message":"x"}')
-    seeder = Seeder(rest=FluxerREST(session, f"{base}/api", TOKEN), pacer=RecordingPacer(), db=None)
+    seeder = Seeder(rest=FluxerREST(session, f"{base}/api", TOKEN), pacer=RecordingPacer(), db=db)
 
-    await seeder.seed(GAMES, MSG, [WAKE_EMOJI, FOLLOW_EMOJI])
+    await seeder.seed(GAMES, MSG, [WAKE_EMOJI, FOLLOW_EMOJI], card_id=CARD_ID)
 
     [failed] = [r for r in panel_records(caplog) if r.getMessage() == "seed_failed"]
     assert getattr(failed, FIELDS_ATTR)["channel_id"] == GAMES
     assert raw_paths(state, "PUT") == [f"{REACTIONS}/{SEGMENTS[WAKE_EMOJI]}/@me"]
 
 
+class FlippingPacer(RecordingPacer):
+    """Switches seeding off as the Nth reaction call waits for its budget. That wait sits between a seed's check and its
+    add, which is where a kill switch can land."""
+
+    def __init__(self, db: Database, *, on_wait: int) -> None:
+        super().__init__()
+        self._db = db
+        self._on_wait = on_wait
+
+    async def wait(self, channel_id: str) -> None:
+        await super().wait(channel_id)
+        if len(self.channels) == self._on_wait:
+            await self._db.run(lambda c: interaction_settings.set_enabled(c, False))
+
+
+async def test_switching_seeding_off_after_the_check_stops_the_add_it_was_about_to_make(fake, session, db) -> None:
+    state, base = fake
+    seeder = Seeder(rest=FluxerREST(session, f"{base}/api", TOKEN), pacer=FlippingPacer(db, on_wait=1), db=db)
+
+    assert await seeder.enabled_for(CARD_ID) is True      # the caller's check passes, as the poller's does
+    await seeder.seed(GAMES, MSG, [WAKE_EMOJI, FOLLOW_EMOJI], card_id=CARD_ID, message={"id": MSG, "reactions": []})
+
+    assert raw_paths(state, "PUT") == []
+
+
+async def test_a_switch_turned_off_before_the_second_add_stops_only_the_second_add(fake, session, db) -> None:
+    state, base = fake
+    seeder = Seeder(rest=FluxerREST(session, f"{base}/api", TOKEN), pacer=FlippingPacer(db, on_wait=2), db=db)
+
+    await seeder.seed(GAMES, MSG, [WAKE_EMOJI, FOLLOW_EMOJI], card_id=CARD_ID, message={"id": MSG, "reactions": []})
+
+    assert raw_paths(state, "PUT") == [f"{REACTIONS}/{SEGMENTS[WAKE_EMOJI]}/@me"]
+
+
 # unseed: the kill switch's removals
 
-async def test_unseed_sends_one_delete_per_emoji(fake, session) -> None:
+async def test_unseed_sends_one_delete_per_emoji(fake, session, db) -> None:
     state, base = fake
     state.reactions[(GAMES, MSG)] = {WAKE_EMOJI: [BOT], FOLLOW_EMOJI: [BOT], PLAY_NOW_EMOJI: [BOT]}
-    seeder = Seeder(rest=FluxerREST(session, f"{base}/api", TOKEN), pacer=RecordingPacer(), db=None)
+    seeder = Seeder(rest=FluxerREST(session, f"{base}/api", TOKEN), pacer=RecordingPacer(), db=db)
 
     await seeder.unseed(GAMES, MSG, [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI])
 
@@ -286,13 +323,13 @@ async def test_unseed_sends_one_delete_per_emoji(fake, session) -> None:
     assert state.reactions == {}
 
 
-async def test_unseed_ignores_a_404_and_goes_on_to_the_next_emoji(fake, session, caplog) -> None:
+async def test_unseed_ignores_a_404_and_goes_on_to_the_next_emoji(fake, session, db, caplog) -> None:
     state, base = fake
     caplog.set_level(logging.DEBUG)
     state.overrides[f"DELETE /api/v1/channels/{GAMES}/messages/{MSG}/reactions/{WAKE_EMOJI}"] = Override(
         404, b'{"code":"UNKNOWN_MESSAGE","message":"x"}')
     state.reactions[(GAMES, MSG)] = {FOLLOW_EMOJI: [BOT]}
-    seeder = Seeder(rest=FluxerREST(session, f"{base}/api", TOKEN), pacer=RecordingPacer(), db=None)
+    seeder = Seeder(rest=FluxerREST(session, f"{base}/api", TOKEN), pacer=RecordingPacer(), db=db)
 
     await seeder.unseed(GAMES, MSG, [WAKE_EMOJI, FOLLOW_EMOJI])
 

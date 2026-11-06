@@ -187,7 +187,7 @@ class Interactions:
             await self._dm_cooldown(press.user_id, card, cooling)
             return
         assert message_id is not None   # a cooled-down press returned above, and a post either stores its id or raises
-        await self._seeder.seed(channel_id, message_id, wanted)   # outside the lock: a 429 retry never stalls the card
+        await self._seeder.seed(channel_id, message_id, wanted, card_id=card.id)   # outside the card lock
         log_event(log, "play_now_posted", card_id=card.id, channel_id=channel_id)
 
     async def _play_now_target(self, press: Press, card: Card) -> tuple[str, str] | None:

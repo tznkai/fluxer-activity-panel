@@ -719,7 +719,7 @@ async def _seed_targets(ctx: CardContext, seeder: Seeder, targets: list[_Target]
         home = target.kind == "card" or target.guild_id == games_guild_id
         play_now = has_play_now_target(target.card, ctx.config, surface_kind=target.kind, home=home)
         await seeder.seed(target.channel_id, target.message_id,
-                          wanted_emoji(target.card, home=home, play_now_target=play_now))
+                          wanted_emoji(target.card, home=home, play_now_target=play_now), card_id=target.card.id)
 
 
 async def _reseed(ctx: CardContext, card_id: int) -> None:

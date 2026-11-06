@@ -77,9 +77,9 @@ class WatchingSeeder(Seeder):
         self._card_ids = card_ids
         self.held: list[bool] = []
 
-    async def seed(self, channel_id: str, message_id: str, wanted: Any, message: Any = None) -> None:
-        self.held.append(any(self._locks.get(card_id).locked() for card_id in self._card_ids))
-        await super().seed(channel_id, message_id, wanted, message)
+    async def seed(self, channel_id: str, message_id: str, wanted: Any, message: Any = None, *, card_id: int) -> None:
+        self.held.append(any(self._locks.get(held_id).locked() for held_id in self._card_ids))
+        await super().seed(channel_id, message_id, wanted, message, card_id=card_id)
 
 
 def base_roles() -> list[dict[str, Any]]:
