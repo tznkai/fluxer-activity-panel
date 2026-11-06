@@ -242,3 +242,77 @@ async def test_a_failed_repost_is_logged_keeps_the_tick_going_and_is_retried_aft
     assert [r.status for r in board_posts(world.fluxer)] == [200, 500, 200]
     assert await board_id(world) != old
     assert len(deletes_of(world, old)) == 1
+
+
+# A card below the board, and the delete of the board it replaces -------------------------------------------------
+
+
+def old_board_path(message_id: str) -> str:
+    return f"DELETE {GAMES_MESSAGES}/{message_id}"
+
+
+async def test_a_card_posted_below_a_stored_board_arms_the_check(world: World, db: Database) -> None:
+    await seed(db, "alpha", title="Alpha")
+    poller = world.poller()
+    await poller.tick()                   # consumes the startup check; the board is the newest message
+    old = await board_id(world)
+    gets_before = len(gets(world))
+    posts_before = len(board_posts(world.fluxer))
+
+    await seed(db, "beta", title="Beta")  # a new live card is posted in this tick, below the board
+    await poller.tick()
+
+    assert len(gets(world)) - gets_before == 1
+    assert len(board_posts(world.fluxer)) - posts_before == 1
+    assert await board_id(world) != old
+    assert len(deletes_of(world, old)) == 1
+
+
+async def test_a_failed_old_board_delete_is_retried_by_the_next_check(world: World, db: Database,
+                                                                      caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.DEBUG)
+    await seed(db, "alpha", title="Alpha")
+    poller = world.poller()
+    world.clock.now = 0.0
+    await poller.tick()
+    old = await board_id(world)
+    world.fluxer.overrides[old_board_path(old)] = Override(500, b'{"code": "INTERNAL", "message": "x"}')
+    chat(world)
+    poller.on_games_message(GAMES)
+
+    await poller.tick()
+
+    new = await board_id(world)
+    assert new != old
+    assert [r.getMessage() for r in caplog.records].count("board_old_delete_failed") == 1
+    assert poller._stale_boards == [(GAMES, old)]
+    assert len(deletes_of(world, old)) == 1
+
+    del world.fluxer.overrides[old_board_path(old)]
+    await poller.tick()
+
+    assert len(deletes_of(world, old)) == 2
+    assert poller._stale_boards == []
+    assert await board_id(world) == new
+    assert len(board_posts(world.fluxer)) == 2
+
+
+async def test_an_old_board_already_gone_when_retried_is_dropped_from_the_list(world: World, db: Database) -> None:
+    await seed(db, "alpha", title="Alpha")
+    poller = world.poller()
+    world.clock.now = 0.0
+    await poller.tick()
+    old = await board_id(world)
+    world.fluxer.overrides[old_board_path(old)] = Override(500, b'{"code": "INTERNAL", "message": "x"}')
+    chat(world)
+    poller.on_games_message(GAMES)
+    await poller.tick()
+    assert poller._stale_boards == [(GAMES, old)]
+
+    world.fluxer.overrides[old_board_path(old)] = Override(404, b'{"code": "UNKNOWN_MESSAGE", "message": "x"}')
+    await poller.tick()
+
+    assert poller._stale_boards == []
+    assert len(deletes_of(world, old)) == 2
+    await poller.tick()                   # nothing left to retry
+    assert len(deletes_of(world, old)) == 2
