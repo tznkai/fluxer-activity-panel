@@ -530,7 +530,7 @@ class Poller:
         return render.board_message(entries, games_channel_id=channel_id, games_guild_id=guild_id,
                                     instance_url=self._config.instance_url, requested=self._requested)
 
-    async def _board_post(self, channel_id: str, payload: dict[str, Any]) -> str:
+    async def _board_post(self, channel_id: str, payload: dict[str, Any]) -> None:
         sent = await self._rest.send_message(channel_id, embeds=payload["embeds"],
                                              allowed_mentions=payload["allowed_mentions"])
         message_id = sent["id"]
@@ -539,9 +539,8 @@ class Poller:
         rendered = render.rendered_hash(payload)
         await self._db.run(lambda c: board.set_message(c, channel_id, message_id, rendered))
         if await self._undo_if_deleted(channel_id, message_id):
-            return message_id  # deleted before its id was stored: forgotten, so it is posted again
+            return  # deleted before its id was stored: forgotten, so it is posted again
         log_event(log, "board_posted")
-        return message_id
 
     async def _board_edit(self, channel_id: str, message_id: str, payload: dict[str, Any], rendered: str) -> None:
         try:
@@ -565,39 +564,64 @@ class Poller:
         try:
             async with self._locks.get(card_id):
                 fresh = await self._db.run(lambda c: cards.get_by_id(c, card_id))
-                if fresh is None or fresh.state != "live":
-                    return
-                channel_id = self._config.games_channel_id
-                if channel_id is None:
-                    if not self._warned_no_channel:
-                        self._warned_no_channel = True
-                        log_event(log, "games_channel_unset", level=logging.WARNING)
-                else:
-                    try:
-                        await self._sync(card_id, post_channel=channel_id, edit_channel=fresh.channel_id,
-                                         message_id=fresh.message_id, stored_hash=fresh.runtime.rendered_hash,
-                                         rendered=rendered, payload=payload, subscription=False)
-                    except Exception as exc:  # noqa: BLE001 - logged here, and the copies below still run
-                        log_event(log, "card_poll_failed", level=logging.WARNING, card_id=card_id,
-                                  reason=type(exc).__name__)
-                await self._publish_subscriptions(card_id, fresh.slug, rendered, payload)
-        finally:
-            jobs = self._to_seed.pop(card_id, [])
-        # Outside the lock: a 429 retry in the seeding never stalls the card's next publish.
-        if fresh is not None:
-            for channel_id, message_id, kind, guild_id in jobs:
-                await self._seed_surface(fresh, channel_id, message_id, kind, guild_id)
+                if fresh is not None and fresh.state == "live":
+                    await self._publish_live(fresh, rendered, payload)
+        except asyncio.CancelledError:
+            self._to_seed.pop(card_id, None)
+            raise
+        except Exception:
+            # The surfaces posted before this failure still need their reactions. They are seeded here, and then the
+            # failure goes on to `_publish_guarded`, which logs it.
+            await self._seed_posted(card_id, fresh)
+            raise
+        await self._seed_posted(card_id, fresh)
+
+    async def _publish_live(self, fresh: cards.Card, rendered: str, payload: dict[str, Any]) -> None:
+        """Under the card's lock: the card's own message, then its copies. A failure of the card's own message is logged
+        and the copies still run."""
+        channel_id = self._config.games_channel_id
+        if channel_id is None:
+            if not self._warned_no_channel:
+                self._warned_no_channel = True
+                log_event(log, "games_channel_unset", level=logging.WARNING)
+        else:
+            try:
+                await self._sync(fresh.id, post_channel=channel_id, edit_channel=fresh.channel_id,
+                                 message_id=fresh.message_id, stored_hash=fresh.runtime.rendered_hash,
+                                 rendered=rendered, payload=payload, subscription=False)
+            except Exception as exc:  # noqa: BLE001 - logged here, and the copies below still run
+                log_event(log, "card_poll_failed", level=logging.WARNING, card_id=fresh.id,
+                          reason=type(exc).__name__)
+        await self._publish_subscriptions(fresh.id, fresh.slug, rendered, payload)
+
+    async def _seed_posted(self, card_id: int, fresh: cards.Card | None) -> None:
+        """Seeds the reactions of the surfaces this publish posted. It runs after the card's lock is released, so a 429
+        retry in the seeding never stalls the card's next publish."""
+        jobs = self._to_seed.pop(card_id, [])
+        if fresh is None:
+            return
+        for channel_id, message_id, kind, guild_id in jobs:
+            await self._seed_surface(fresh, channel_id, message_id, kind, guild_id)
 
     async def _seed_surface(self, card: cards.Card, channel_id: str, message_id: str, kind: str,
                             guild_id: str | None, message: dict[str, Any] | None = None) -> None:
         """Seeds the bot's reactions on one surface of a card: its card message ("card") or a copy ("copy"). Callers hold
-        no card lock. It does nothing while seeding is off for the card, and `message` is a payload already fetched."""
-        if self._seeder is None or not await self._seeder.enabled_for(card.id):
+        no card lock. It does nothing while seeding is off for the card, and `message` is a payload already fetched. It
+        never raises: a failure, a database error included, is logged with the card id and the exception type, and the
+        caller goes on to the next surface."""
+        if self._seeder is None:
             return
-        home = await self._is_home(kind, guild_id)
-        play_now = has_play_now_target(card, self._config, surface_kind=kind, home=home)
-        wanted = wanted_emoji(card, home=home, play_now_target=play_now)
-        await self._seeder.seed(channel_id, message_id, wanted, message)
+        try:
+            if not await self._seeder.enabled_for(card.id):
+                return
+            home = await self._is_home(kind, guild_id)
+            play_now = has_play_now_target(card, self._config, surface_kind=kind, home=home)
+            wanted = wanted_emoji(card, home=home, play_now_target=play_now)
+            await self._seeder.seed(channel_id, message_id, wanted, message)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - one surface's failed seeding must not stop the others
+            log_event(log, "seed_failed", level=logging.WARNING, card_id=card.id, reason=type(exc).__name__)
 
     async def _is_home(self, kind: str, guild_id: str | None) -> bool:
         """Whether the surface sits in the games community: every card message does, and a copy does when its community is

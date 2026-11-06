@@ -39,7 +39,7 @@ Paths are relative to this directory.
 - `src/fluxer_client/events.py:263` `log.warning("malformed %s payload: field %s", t, exc.field_name)` — a malformed payload is logged with the field name only.
 - `src/fluxer_client/events.py:267` `field "?"` — the catch-all logs a placeholder, not the exception text, which may carry the value.
 - `src/fluxer_client/gateway.py:76` `log.warning("gateway connection failed: %r", exc)` — a plain-text `fluxer_client` record. Its repr can include the instance host in stdout logs. That is acceptable because logs are not tracked, but reviewers should know it is there. Token redaction still applies.
-- `src/fluxer_panel/poller.py:743` `log_event(log, "subscription_failed", level=logging.WARNING, card_id=card_id, channel_id=channel_id,` — a failed copy is logged with its card id, channel id and exception type only. No title, slug, channel name or message text is logged.
+- `src/fluxer_panel/poller.py:767` `log_event(log, "subscription_failed", level=logging.WARNING, card_id=card_id, channel_id=channel_id,` — a failed copy is logged with its card id, channel id and exception type only. No title, slug, channel name or message text is logged.
 
 ## Admin authorization
 
@@ -218,7 +218,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/render.py:206` `fit(escape(card.title), LIMITS["board_title"])` — a board cell's title is escaped before it is fitted, so a title cannot ping anyone or form a link.
 - `src/fluxer_panel/render.py:230` `card.channel_id == games_channel_id` — a board status is a jump link only for a card whose message is in the board's channel, so the link's community is the one looked up for that channel, and no link leaves it.
 - `src/fluxer_panel/render.py:223` `return {"embeds": embeds, "allowed_mentions": {"parse": []}}` — the summary board message carries empty `allowed_mentions`.
-- `src/fluxer_panel/poller.py:563` `payload = render.card_message(embed)` — a subscription copy is sent with the card's own payload, whose `allowed_mentions` is `{"parse": []}`. A copy mentions nobody, the same as the card.
+- `src/fluxer_panel/poller.py:562` `payload = render.card_message(embed)` — a subscription copy is sent with the card's own payload, whose `allowed_mentions` is `{"parse": []}`. A copy mentions nobody, the same as the card.
 
 ## Card commands
 
@@ -234,24 +234,24 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 ## Card poller
 
 - `src/fluxer_panel/poller.py:267` `log_event(log, "card_poll_failed"` — one card's failure is logged with the card id and the exception type only. The other cards still run.
-- `src/fluxer_panel/poller.py:673` `await self._rest.edit_message(channel_id, message_id, embeds=` — the edit sends embeds and `allowed_mentions` and never `content`, so an edit cannot erase the message text.
+- `src/fluxer_panel/poller.py:697` `await self._rest.edit_message(channel_id, message_id, embeds=` — the edit sends embeds and `allowed_mentions` and never `content`, so an edit cannot erase the message text.
 - `src/fluxer_panel/poller.py:305` `cards.set_probe_tracking(c, card.id` — the alert state is saved before the DM goes out. A crash or a failed DM cannot send the alert a second time.
 - `src/fluxer_panel/poller.py:307` `await self._alert(card)` — the admin DM that follows that save.
 - `src/fluxer_panel/poller.py:350` `cards.set_voice_name_if(c, card_id` — a refreshed voice name is written only if the voice still matches the one that was read, so an admin's change during the lookup wins.
 - `src/fluxer_panel/poller.py:352` `cards.set_text_channel_name_if(c, card_id, slot` — the same compare-and-set for a text channel, keyed by slot: a name is written only while that slot still holds the link that was read.
 - `src/fluxer_panel/poller.py:339` `event = "voice_refresh_failed" if slot is None` — a failed name check is logged with the card id and the exception type only. No channel name reaches the log.
-- `src/fluxer_panel/poller.py:690` `cards.set_hash_if(c, card_id` — the rendered hash is stored only if the message is still the same one, so a delete during an edit is not written back.
+- `src/fluxer_panel/poller.py:714` `cards.set_hash_if(c, card_id` — the rendered hash is stored only if the message is still the same one, so a delete during an edit is not written back.
 - `src/fluxer_panel/poller.py:53` `_DELETED_CAP = 256` — the remembered deletes are bounded. The oldest entries are evicted, which covers the window between a send and its commit.
-- `src/fluxer_panel/poller.py:704` `self._deleted[(channel_id, message_id)] = None` — a repeated delete keeps its place, so eviction is by insertion order.
+- `src/fluxer_panel/poller.py:728` `self._deleted[(channel_id, message_id)] = None` — a repeated delete keeps its place, so eviction is by insertion order.
 - `src/fluxer_panel/__main__.py:125` `poller_task.cancel()` — the poller is cancelled and awaited before the purge task, so no card write is in flight when the session closes.
 
 - `src/fluxer_panel/poller.py:524` `log_event(log, "board_sync_failed"` — a failed board post or edit is logged with the exception type only, and the next tick retries it. No title or status is logged.
-- `src/fluxer_panel/poller.py:557` `board.set_hash_if(c, channel_id` — the board hash is stored only while the board still holds that message, so a delete during an edit is not written back.
-- `src/fluxer_panel/poller.py:726` `if cards.clear_message_if(conn, channel_id, message_id) is not None:` — a MESSAGE_DELETE forgets a card message, a card's copy or the board message, in one transaction. Message ids are unique, so only one of the three can match.
+- `src/fluxer_panel/poller.py:556` `board.set_hash_if(c, channel_id` — the board hash is stored only while the board still holds that message, so a delete during an edit is not written back.
+- `src/fluxer_panel/poller.py:750` `if cards.clear_message_if(conn, channel_id, message_id) is not None:` — a MESSAGE_DELETE forgets a card message, a card's copy or the board message, in one transaction. Message ids are unique, so only one of the three can match.
 - `src/fluxer_panel/poller.py:513` `channel_id = state.channel_id if state.channel_id is not None else games_channel_id` — a stored board is edited in the channel it was posted in, so a change of `GAMES_CHANNEL_ID` never moves it. Its community is looked up for that channel.
 - `src/fluxer_panel/poller.py:508` `if state.message_id is None and not may_post:` — when this tick's first read of the stored board failed, no new board is posted in that tick, so a board is never posted while the stored state is unknown.
-- `src/fluxer_panel/poller.py:615` `await self._sync(card_id, post_channel=sub.channel_id, edit_channel=sub.channel_id,` — a copy's post and edit run the card's own sync path, so each send carries the card's `allowed_mentions`. One copy's failure is caught here and does not stop the others.
-- `src/fluxer_panel/poller.py:638` `await self._dm_admins(alert.format(slug=slug, channel_id=channel_id),` — the pause DM takes a fixed text, the card's slug (a-z, 0-9 and -) and a channel id. No title or other card text reaches it, and the channel is shown as a mention.
+- `src/fluxer_panel/poller.py:639` `await self._sync(card_id, post_channel=sub.channel_id, edit_channel=sub.channel_id,` — a copy's post and edit run the card's own sync path, so each send carries the card's `allowed_mentions`. One copy's failure is caught here and does not stop the others.
+- `src/fluxer_panel/poller.py:662` `await self._dm_admins(alert.format(slug=slug, channel_id=channel_id),` — the pause DM takes a fixed text, the card's slug (a-z, 0-9 and -) and a channel id. No title or other card text reaches it, and the channel is shown as a mention.
 - `src/fluxer_panel/text.py:178` `SUBSCRIPTION_PAUSED_ALERT = (` — the 403 pause DM's text. Its placeholders are the card's slug and the channel id, and nothing else.
 - `src/fluxer_panel/text.py:181` `SUBSCRIPTION_CHANNEL_GONE_ALERT = (` — the 404 pause DM's text. Its placeholders are the card's slug and the channel id, and nothing else.
 

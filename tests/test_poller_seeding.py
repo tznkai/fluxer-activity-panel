@@ -16,9 +16,10 @@ import pytest
 
 from fluxer_client.rest import FluxerHTTPError
 from fluxer_client.roles import RoleCache
-from fluxer_panel import cards, interaction_settings, subscriptions
+from fluxer_panel import board, cards, interaction_settings, subscriptions
 from fluxer_panel.db import Database
 from fluxer_panel.games import BotIdentity, GamesGuild
+from fluxer_panel.logs import FIELDS_ATTR
 from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.poller import Poller
 from fluxer_panel.presses import FOLLOW_EMOJI, PLAY_NOW_EMOJI, WAKE_EMOJI
@@ -295,3 +296,56 @@ async def test_a_403_on_seeding_is_logged_once_per_channel_and_both_cards_post(w
     assert len(forbidden) == 1
     for card_id in card_ids:
         assert await card_message(db, card_id)
+
+
+# A failed publish or a failed surface does not drop the reactions of the surfaces that were posted -----------------
+
+
+def gets_to(state: FakeFluxerState, channel_id: str, message_id: str) -> int:
+    path = f"/api/v1/channels/{channel_id}/messages/{message_id}"
+    return len([r for r in state.requests if r.method == "GET" and r.path == path])
+
+
+async def test_the_card_posted_before_a_failed_copy_pass_is_still_seeded(world: World, db: Database,
+                                                                         monkeypatch: pytest.MonkeyPatch,
+                                                                         caplog: pytest.LogCaptureFixture) -> None:
+    card_id = await live_card(db, "mc")
+    caplog.set_level(logging.WARNING)
+
+    async def fail(self: Poller, *args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("SENTINEL")
+
+    monkeypatch.setattr(Poller, "_publish_subscriptions", fail)
+    await make_poller(world, Clock()).tick()
+
+    assert puts(world.state, GAMES, await card_message(db, card_id)) == [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI]
+    assert [r.getMessage() for r in caplog.records].count("card_poll_failed") == 1
+
+
+async def test_a_seeding_error_on_one_surface_stops_neither_the_other_surfaces_nor_the_board(
+        world: World, db: Database, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    card_ids = [await live_card(db, "c0"), await live_card(db, "c1")]
+    await db.run(lambda c: subscriptions.add(c, card_ids[0], GUILD, HOME_COPY))
+    await make_poller(world, Clock()).tick()          # posts both cards, the copy and the board
+    caplog.set_level(logging.WARNING)
+    card_messages = [await card_message(db, card_id) for card_id in card_ids]
+    copy = await db.run(lambda c: subscriptions.list_for_card(c, card_ids[0]))
+    assert copy[0].message_id is not None
+    stored_board = await db.run(board.get)
+    assert stored_board.message_id is not None
+    world.state.requests.clear()
+
+    async def fail(card_id: int) -> bool:
+        raise RuntimeError("SENTINEL")
+
+    monkeypatch.setattr(world.ctx.seeder, "enabled_for", fail)
+    await make_poller(world, Clock()).reconcile()
+
+    assert gets_to(world.state, GAMES, card_messages[0]) == 1
+    assert gets_to(world.state, GAMES, card_messages[1]) == 1
+    assert gets_to(world.state, HOME_COPY, copy[0].message_id) == 1
+    assert gets_to(world.state, GAMES, stored_board.message_id) == 1
+    failed = [r for r in caplog.records if r.getMessage() == "seed_failed"]
+    assert len(failed) == 3
+    assert sorted(getattr(r, FIELDS_ATTR)["card_id"] for r in failed) == sorted([card_ids[0], card_ids[0], card_ids[1]])
+    assert all(getattr(r, FIELDS_ATTR)["reason"] == "RuntimeError" for r in failed)
