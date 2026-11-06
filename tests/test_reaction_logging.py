@@ -59,7 +59,7 @@ DM_FAILING = "9500"        # PRESSER_3's DM channel, set before the run so the 4
 URL = "https://fluxer.invalid"
 THUMBS_UP = "\U0001F44D"
 # The three press emoji and the sentinels, as escapes: the test file itself never holds a literal emoji.
-WAKE_CHAR = "▶"
+WAKE_CHAR = "\u25b6"
 BELL = "\U0001F514"
 HAND = "\U0001F64B"
 FORBIDDEN = b'{"code":"MISSING_PERMISSIONS","message":"no"}'
