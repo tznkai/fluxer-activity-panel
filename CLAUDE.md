@@ -30,7 +30,7 @@ user-facing description, the purge status file format and the "Exit 3" recovery 
   reactions), `interactions.py` (the press handler), `seeding.py` (adds and removes the bot's own reactions),
   `pacer.py` (the per-channel reaction budget), `games.py` (the games community lookup and the bot's identity),
   `notify.py` (DMs to the admins and to one user), `interaction_settings.py` (the global switch, the per-card off
-  switch and the degraded channels) and `follow_roles.py` (the only module that changes a role: the 🔔 follow toggle
+  switch and the degraded channels) and `follow_roles.py` (the only module that changes a role: the bell (U+1F514) follow toggle
   and each card's follow role).
   `wake.py` (wake presses, and closing a request on ready or expiry), `wake_requests.py` (the request store),
   `request_commands.py` (`!request list|clear`).
@@ -142,6 +142,7 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   needs a line in `text.HELP_FIELDS`. A manager plugin must give a ref hint for the help.
 - Every send, edit and store for a card (its message, its copies) runs under that card's lock from
   `card_commands.CardLocks`, which `!card archive` also takes, so a card cannot be posted after it is archived.
+  The exception is the reaction seeding after a post, which runs after the lock is released (see Reactions rules).
 - A plugin's `power_state` and `probe` never raise. `validate_ref` raises only `CardFieldError`, and
   `next_power_action` may raise `SourceError`, which the caller hides.
 - No library message, Panel body, player name or command payload leaves a plugin. Errors leave as fixed reason keys.
@@ -193,6 +194,15 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
 - `presses.py` is the only code that knows presses are reactions.
 - Every reaction REST call in `fluxer_panel` goes through `ChannelPacer.wait()`, so each channel's reaction calls share
   one budget.
+- Seeding (`seeding.py`; the poller's `_seed_posted` and `_seed_surface`): the poller seeds a card's message or a copy
+  after posting it, never after an edit, and on reconcile it checks each stored card message and copy. It adds only the
+  emoji that are missing and never removes one. Wanted: the wake emoji (U+25B6 U+FE0F) always; the follow emoji (bell,
+  U+1F514) only at home with a follow role; the play-now emoji (U+1F64B) when the surface has a play-now target. A card
+  message is always at home, and a copy is at home when its community is the games channel's. A card message's play-now
+  target is its own verified play-now channel or `PLAY_NOW_CHANNEL_ID`; a home copy always has one. Seeding runs only
+  while `Seeder.enabled_for` allows it (the global switch on and the card not switched off). It runs after the card's
+  lock is released, so a reaction send is the one card call not under the lock. A failure is logged as `seed_failed`
+  with the card id and the exception type, and the next surface is still seeded.
 
 ## Database
 
