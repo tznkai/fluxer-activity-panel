@@ -338,7 +338,7 @@ channel ID.
 
 - The channel showed A, D and C2 in that order. A message re-posted in place of an earlier one lands at the bottom.
 - Unread markers and notification behaviour on web versus mobile were NOT tested. The operator did not answer that
-  question. It is deferred to testing with the real board.
+  question. It is deferred to testing with the real board (deferred to the post-deploy human test plan).
 - The "board" in this script was only a test message. The panel bot was not running, because the live scripts use the
   token alone.
 

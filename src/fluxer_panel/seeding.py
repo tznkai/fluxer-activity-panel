@@ -96,9 +96,9 @@ class Seeder:
             log_event(log, "seed_failed", level=logging.WARNING, channel_id=channel_id, reason=type(exc).__name__)
 
     async def unseed(self, channel_id: str, message_id: str, emojis: Sequence[str]) -> None:
-        """Removes the bot's reaction for each emoji, through the pacer (the kill switch). A 404 means the reaction is
-        already gone, and the next emoji is still removed. A 403 stops this message and is logged once per channel. Any
-        other failure is logged and stops this message."""
+        """Removes all reactions of each emoji (the bot's seeds and any users' left over), through the pacer (the kill
+        switch). A 404 means none are left, and the next emoji is still removed. A 403 stops this message and is logged
+        once per channel. Any other failure is logged and stops this message."""
         for emoji in emojis:
             await self._pacer.wait(channel_id)
             try:

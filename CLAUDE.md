@@ -206,11 +206,13 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   U+1F514) only at home with a follow role; the play-now emoji (U+1F64B) when the surface has a play-now target. A card
   message is always at home, and a copy is at home when its community is the games channel's. A card message's play-now
   target is its own verified play-now channel or `PLAY_NOW_CHANNEL_ID`; a home copy always has one. Seeding runs only
-  while `Seeder.enabled_for` allows it (the global switch on and the card not switched off). It runs after the card's
+  while `Seeder.enabled_for` allows it (the global switch on and the card not switched off), and `Seeder.seed` asks again
+  before each add. It runs after the card's
   lock is released, so a reaction send is the one card call not under the lock. A failure is logged as `seed_failed`
   with the card id and the exception type, and the next surface is still seeded.
-- `!card interactions on|off [slug]` (the kill switch, `interaction_settings`): off removes the bot's own wake, follow and
-  play-now reactions (`Seeder.unseed`) from every card message and active copy in scope; on re-seeds them. It runs with
+- `!card interactions on|off [slug]` (the kill switch, `interaction_settings`): off removes all reactions of the wake,
+  follow and play-now emoji (`Seeder.unseed`: the bot's seeds and any users' left over) from every card message and
+  active copy in scope; on re-seeds them. It runs with
   no card lock held. Unseeding is the only place the bot removes its own seeded reactions.
 - Press logs: a `press` log carries `event_type`, `card_id`, `action` and `surface`, and never a `user_id`. `user_id` is
   logged only on `press_absorbed`. Me Too on a play-now post is a state change, so it is never rate limited or removed.
