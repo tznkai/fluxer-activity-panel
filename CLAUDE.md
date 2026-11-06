@@ -124,6 +124,11 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   8, 3 and 600. `README.md` lists every variable.
   `FLUXER_INSTANCE_URL` is at most 128 UTF-16 code units (`config.INSTANCE_URL_MAX`; an astral character counts two),
   which keeps the card's Channels field inside Fluxer's 1024-unit field limit. `FLUXER_API_URL` has no cap.
+- Reaction config: `PLAY_NOW_CHANNEL_ID` (a snowflake, optional, never `GAMES_CHANNEL_ID`) and `FOLLOW_ROLE_PREFIX`
+  (1-40 of `a-z0-9_-`, default `card_subscription_`; it becomes part of a visible role name). `WAKE_REQUEST_EXPIRY_SECONDS`,
+  `PLAY_NOW_EXPIRY_SECONDS`, `PLAY_NOW_COOLDOWN_SECONDS`, `BOARD_REPOST_MIN_INTERVAL_SECONDS`,
+  `PRESS_USER_WINDOW_SECONDS`, `PRESS_CARD_WINDOW_SECONDS` and `PRESS_CARD_BURST` are positive integers with defaults
+  7200, 3600, 1800, 300, 10, 10 and 10.
 
 ## Cards and sources rules
 
@@ -204,10 +209,16 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   while `Seeder.enabled_for` allows it (the global switch on and the card not switched off). It runs after the card's
   lock is released, so a reaction send is the one card call not under the lock. A failure is logged as `seed_failed`
   with the card id and the exception type, and the next surface is still seeded.
+- `!card interactions on|off [slug]` (the kill switch, `interaction_settings`): off removes the bot's own wake, follow and
+  play-now reactions (`Seeder.unseed`) from every card message and active copy in scope; on re-seeds them. It runs with
+  no card lock held. Unseeding is the only place the bot removes its own seeded reactions.
 - Press logs: a `press` log carries `event_type`, `card_id`, `action` and `surface`, and never a `user_id`. `user_id` is
   logged only on `press_absorbed`. Me Too on a play-now post is a state change, so it is never rate limited or removed.
 - Play-now posts are sent only by `interactions.send_play_now`, which refuses a games-channel target before any REST
   call (`GamesChannelRefused`). `PLAY_NOW_CHANNEL_ID` must differ from `GAMES_CHANNEL_ID`, or the bot refuses to start.
+- A play-now post is the only send that may mention anyone: `interactions.play_now_mentions` allows the card's own
+  follow role only, and only when it belongs to the target's community (`_role_in`); otherwise `{"parse": []}`. Never
+  users, `@everyone` or another role. `REVIEW.md` anchors these lines.
 
 ## Database
 
