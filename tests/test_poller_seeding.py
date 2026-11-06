@@ -69,7 +69,10 @@ class TimedPacer(ChannelPacer):
 
 
 class WatchingSeeder(Seeder):
-    """Records, at each seed call, whether any card's lock is held."""
+    """Records, at each seed call, whether the seeded card's own lock is held.
+
+    Only the card's own lock counts: cards publish concurrently, so another card's publish may hold its lock at that
+    moment, which is correct and was the cause of a 1-in-25 flake when this checked every card's lock."""
 
     def __init__(self, *, locks: Any, card_ids: list[int], **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -78,7 +81,8 @@ class WatchingSeeder(Seeder):
         self.held: list[bool] = []
 
     async def seed(self, channel_id: str, message_id: str, wanted: Any, message: Any = None, *, card_id: int) -> None:
-        self.held.append(any(self._locks.get(held_id).locked() for held_id in self._card_ids))
+        assert card_id in self._card_ids
+        self.held.append(self._locks.get(card_id).locked())
         await super().seed(channel_id, message_id, wanted, message, card_id=card_id)
 
 
