@@ -33,7 +33,8 @@ user-facing description, the purge status file format and the "Exit 3" recovery 
   switch and the degraded channels) and `follow_roles.py` (the only module that changes a role: the bell (U+1F514) follow toggle
   and each card's follow role).
   `wake.py` (wake presses, and closing a request on ready or expiry), `wake_requests.py` (the request store),
-  `request_commands.py` (`!request list|clear`).
+  `request_commands.py` (`!request list|clear`). `play_now.py` is the play-now store: one row per press, live until
+  its expiry, then expired. The play-now send itself is `interactions.send_play_now`.
 - `src/fluxer_panel/sources/`: `base.py` (result types and the `HostManager`/`Probe` protocols), `registry.py`
   (the kind-to-plugin map), `pterodactyl.py` (host manager), `minecraft.py` (Bedrock and Java probes), `a2s.py`
   (A2S probe), `_probe_util.py` (the shared guard and limits).
@@ -203,6 +204,10 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   while `Seeder.enabled_for` allows it (the global switch on and the card not switched off). It runs after the card's
   lock is released, so a reaction send is the one card call not under the lock. A failure is logged as `seed_failed`
   with the card id and the exception type, and the next surface is still seeded.
+- Press logs: a `press` log carries `event_type`, `card_id`, `action` and `surface`, and never a `user_id`. `user_id` is
+  logged only on `press_absorbed`. Me Too on a play-now post is a state change, so it is never rate limited or removed.
+- Play-now posts are sent only by `interactions.send_play_now`, which refuses a games-channel target before any REST
+  call (`GamesChannelRefused`). `PLAY_NOW_CHANNEL_ID` must differ from `GAMES_CHANNEL_ID`, or the bot refuses to start.
 
 ## Database
 
@@ -226,6 +231,10 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
 - `board` (migration 0004) holds one row, `id = 1`, seeded by the migration. Its `channel_id` and `message_id` are set
   together or not at all, and `content_hash` is set only with a message. The board's writes are compare-and-set, as
   the cards' are: `clear_message_if`, and `set_hash_if` for the hash.
+- Reaction tables (migration 0006): `requests` is rebuilt with statuses `open`, `ready`, `expired` and `cleared`, and a
+  partial unique index `requests_open_once` keeps one open row per card and requester. New tables: `wake_request_dm`
+  (the admin DMs about a request), `card_follow_role` (`role_id` unique: a role follows one card), `card_play_now_channel`,
+  `play_now`, `interactions` (one row, the global switch), `card_interactions_off` and `reaction_degraded`.
 - Schema: every table is `STRICT`. Ids are `TEXT` with CHECKs that they are digits only and at most 25 long; names are
   not stored, except a verified voice or text channel's display name (`card_voice.channel_name`,
   `card_text_channel.channel_name`). The snowflake bound is 25 in code and schema; Fluxer documents at most 19, so do
@@ -263,6 +272,10 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   Run them in a real terminal, not a non-interactive prompt.
 - Scripts: `reactions.py`, `edit.py`, `reaction_remove.py`, `roles.py`, `dm.py`. Removal is exercised only in a guild channel;
   DM removal is untested (see `docs/fluxer-notes.md`).
+- Reaction scripts, run by hand against the private guild: `seed_reactions.py` (the three seeded reactions, their echo and
+  the stored names), `role_ping.py` (a test role's `mention_roles`, the role's mentionable flag and the above-the-bot 403,
+  which needs `LIVE_HIGH_ROLE_ID`; it never deletes a role), `board_last.py` (`last_message_id` and `messages?limit=1` after
+  deletes; it deletes only its own test messages) and `reaction_bulk.py` (reactor paging, bulk removal and a rate probe).
 - Card and Panel scripts, run by hand. Each prints only redacted labels:
   - `ptero_live.py` (needs `PTERODACTYL_URL`, `PTERODACTYL_API_KEY` and `LIVE_PTERO_SERVERS`): for each server, the bot
     user's permissions, the power state and the filtered schedules. A schedule name is printed as its length only.
