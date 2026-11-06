@@ -95,7 +95,7 @@ Paths are relative to this directory.
 - `src/fluxer_panel/presses.py:207` `if len(times) >= self._config.press_card_burst:` — the per-card burst limit. A card's presses past the burst are absorbed.
 - `src/fluxer_panel/presses.py:265` `await self._pacer.wait(event.channel_id)` — the reaction removal waits for the channel's shared budget before the call.
 - `src/fluxer_panel/presses.py:266` `await self._rest.remove_reaction(event.channel_id, event.message_id, event.emoji.name, event.user_id)` — after a press is handled, the user's reaction is removed, so the button resets for the next tap.
-- `src/fluxer_panel/presses.py:269` `newly = await self._db.run(lambda c: interaction_settings.mark_degraded(c, channel, int(now)))` — a removal refused with 403 marks its channel degraded, and the admins are DMed once. Later presses in that channel retry the removal, and a success clears the mark.
+- `src/fluxer_panel/presses.py:269` `newly = await self._db.run(lambda c: interaction_settings.mark_degraded(c, channel, int(now)))` — a removal refused with 403 marks its channel degraded, and the admins are DMed once. A later press retries the removal at most once a day, and a success clears the mark.
 
 ## Play-now mentions
 

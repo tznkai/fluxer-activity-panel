@@ -17,13 +17,12 @@ never loads `.env`; the operator sources it in the shell.
 The operator does these steps in the Fluxer community the panel serves:
 
 1. Give the bot these permissions. Manage Roles creates follow roles and adds or removes a member's follow role.
-   Manage Messages removes a member's reaction after a press. Add Reactions lets the bot seed the buttons, and
-   lets members press them. Fluxer has no "Mention Roles" permission: a follow role is pinged only while it is
-   mentionable.
+   Manage Messages removes a member's reaction after a press. Add Reactions lets the bot seed the buttons.
+   Fluxer has no "Mention Roles" permission: a follow role is pinged only while it is mentionable.
 2. Place the bot's top role above every follow role it changes. A role at or above the bot is refused. Fluxer
    answers that refusal with the same 403 as a missing permission, so the bot checks the hierarchy before it acts.
 3. Make the games channel (`GAMES_CHANNEL_ID`) read-only for members, so the bot's posts are the only messages
-   in it. Members still need Add Reactions there, because a press is a reaction.
+   in it.
 4. Follow roles: when a card is published, the bot creates a role named `<FOLLOW_ROLE_PREFIX><slug>` with no
    permissions. Fluxer ignores the mentionable flag on create, so the bot then makes the role mentionable in a
    second call and reads it back. It adopts a matching role instead when exactly one exists. It never deletes a
