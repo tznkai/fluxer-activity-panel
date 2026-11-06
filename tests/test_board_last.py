@@ -365,3 +365,19 @@ async def test_the_board_retry_list_is_capped_and_drops_its_oldest_entry_with_a_
     assert len(poller._stale_boards) == 10
     assert (GAMES, first_old) not in poller._stale_boards
     assert [r.getMessage() for r in caplog.records].count("board_stale_dropped") == 1
+
+
+async def test_the_old_board_id_is_remembered_before_its_delete_call(world: World, db: Database,
+                                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    await seed(db, "alpha", title="Alpha")
+    poller = world.poller()
+    await poller.tick()
+    old = await board_id(world)
+    seen_at_delete: list[bool] = []
+
+    async def record_delete(channel_id: str, message_id: str) -> None:
+        seen_at_delete.append((channel_id, message_id) in poller._deleted)
+
+    monkeypatch.setattr(world.rest, "delete_message", record_delete)
+    assert await poller._delete_old_board(GAMES, old) is True
+    assert seen_at_delete == [True]        # the backstop: the id is remembered before the call goes out
