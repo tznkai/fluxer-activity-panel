@@ -40,7 +40,10 @@ TOPICS = [
     "Logging",
     "Admin authorization",
     "Role assignment",
+    "Role creation",
     "Reaction removal",
+    "Reactions and presses",
+    "Play-now mentions",
     "Purge deletion",
     "Emoji and path encoding",
     "DB quarantine and backups",
@@ -57,10 +60,15 @@ TOPICS = [
     "Private denylist",
     "What the phase 1 prompt got wrong",
     "What the phase 2 prompt got wrong",
+    "What the phase 3 prompt got wrong",
 ]
 
 # Prose sections state findings in words and cite no code. Every other topic must hold a reference.
-PROSE_TOPICS = {"What the phase 1 prompt got wrong", "What the phase 2 prompt got wrong"}
+PROSE_TOPICS = {
+    "What the phase 1 prompt got wrong",
+    "What the phase 2 prompt got wrong",
+    "What the phase 3 prompt got wrong",
+}
 
 
 def _sections(text: str) -> dict[str, str]:

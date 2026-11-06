@@ -72,12 +72,38 @@ Paths are relative to this directory.
 - `src/fluxer_client/rest.py:296` `"permissions": "0"` — every role the client creates has no permissions, and there is no parameter that changes it.
 - `tests/test_role_callers.py:33` `assert files == {"follow_roles.py"}` — the structural test that fails when any module other than `follow_roles.py` uses a role method.
 
+## Role creation
+
+- `src/fluxer_panel/follow_roles.py:241` `created = await deps.rest.create_role(` — the only role creation in the bot. The role is created with the name, and its permissions are fixed at 0 by the REST client.
+- `src/fluxer_client/rest.py:296` `"permissions": "0"` — every role the client creates has no permissions, and there is no parameter that changes it.
+- `src/fluxer_panel/follow_roles.py:221` `if not zero_permissions(target):` — the adopt branch refuses any existing role with permissions other than 0 before it writes to it.
+- `src/fluxer_panel/follow_roles.py:223` `if not manageable(target, roles, bot_roles, guild_id):` — the adopt branch's hierarchy check, against freshly fetched roles, runs before the PATCH.
+- `src/fluxer_panel/follow_roles.py:266` `if role_id == guild_id:` — a manual set refuses the community's `@everyone` role, whose id is the guild id.
+
 ## Reaction removal
 
 - `src/fluxer_client/rest.py:233` `def _reaction_path(` — builds the path from snowflake-checked ids and an encoded emoji.
 - `src/fluxer_client/rest.py:240` `async def remove_reaction(` — a DELETE of one user's reaction. Fluxer requires Manage Messages for it. Removal has been exercised only in a guild channel. The DM case is not covered (see the phase 1 section).
 - `tools/live/reaction_remove.py:80` `await rest.remove_reaction(channel, message_id, emoji, user)` — the only live exercise of removal.
 - `tools/live/_live.py:224` `LIVE_CHANNEL_ID is not in LIVE_GUILD_ID` — the safety check that makes that live removal guild-only.
+
+## Reactions and presses
+
+- `src/fluxer_panel/presses.py:144` `if event.guild_id is None or event.user_id == self._identity.user_id or event.user_is_bot:` — DM reactions, the bot's own reactions and another bot's reactions never reach the press adapter.
+- `src/fluxer_panel/presses.py:152` `if found is None or not found.switched_on:` — the kill switch, the global one and the card's own, is read before any rate limit, so a switched-off surface absorbs nothing and counts nothing.
+- `src/fluxer_panel/presses.py:199` `if last is not None and now - last < self._config.press_user_window_seconds:` — the per-user window. A repeated press from one user inside it is absorbed.
+- `src/fluxer_panel/presses.py:207` `if len(times) >= self._config.press_card_burst:` — the per-card burst limit. A card's presses past the burst are absorbed.
+- `src/fluxer_panel/presses.py:265` `await self._pacer.wait(event.channel_id)` — the reaction removal waits for the channel's shared budget before the call.
+- `src/fluxer_panel/presses.py:266` `await self._rest.remove_reaction(event.channel_id, event.message_id, event.emoji.name, event.user_id)` — after a press is handled, the user's reaction is removed, so the button resets for the next tap.
+- `src/fluxer_panel/presses.py:269` `newly = await self._db.run(lambda c: interaction_settings.mark_degraded(c, channel, int(now)))` — a removal refused with 403 marks its channel degraded, and the admins are DMed once. Later presses in that channel retry the removal, and a success clears the mark.
+
+## Play-now mentions
+
+- `src/fluxer_panel/interactions.py:46` `return {"parse": []}` — a play-now message with no follow role mentions nobody.
+- `src/fluxer_panel/interactions.py:47` `return {"parse": [], "roles": [role_id], "replied_user": False}` — the play-now role ping. Only the card's own follow role can be mentioned, and only when `_role_in` has matched it.
+- `src/fluxer_panel/interactions.py:53` `return follow.role_id if follow is not None and follow.guild_id == guild_id else None` — the follow-role community check: a role from another community is never mentioned.
+- `src/fluxer_panel/interactions.py:244` `if channel_id == self._config.games_channel_id:` — the play-now guard in `send_play_now`. A play-now message is never sent to the games channel.
+- `src/fluxer_panel/interactions.py:245` `raise GamesChannelRefused` — the refusal happens before any REST call.
 
 ## Purge deletion
 
@@ -283,6 +309,19 @@ This section compares the phase 2 brief and plan with what the design and the im
 - **Hosts:** an IPv6 zone id is refused in a host, and so is a host whose last label is all digits, because that label could be read as an IPv4 address.
 - **Message deletes:** a MESSAGE_DELETE can race a post or an edit. The poller keeps a bounded set of remembered deletes, and it stores the rendered hash only if the message is still the same one.
 - **Voice name refresh:** the refresh writes with a compare-and-set, so a concurrent admin change to the voice wins.
+
+## What the phase 3 prompt got wrong
+
+This section compares the phase 3 brief and prompt with the design and with the phase 1 live run recorded in `docs/fluxer-notes.md` under "Live reaction checks". The design's "Out of date in the brief and the prompt" list is the source for the first four items. The others come from the live run.
+
+- **Mention Roles:** the brief names a "Mention Roles" permission. Fluxer has no such permission. A role ping needs the role to be mentionable, or the bot to hold Mention Everyone.
+- **Managed roles:** Fluxer has no managed roles, so the brief's checks for them have nothing to test.
+- **Status unknown and Unavailable:** the brief's states remain in the resolver, and both refuse open requests.
+- **Scheduling emoji:** the brief's calendar emoji (U+1F4C5) belongs to a later phase. No code in phase 3 reacts with it.
+- **Role creation:** the create call ignores `mentionable`, so a role is created as not mentionable. The bot changes it with a second call, and reads the change back.
+- **allowed_mentions shape:** the docs implied that `parse` together with `roles` is refused. Live, `{"parse": [], "roles": [...]}` was accepted, and the role was mentioned.
+- **Reactor list:** the `/users` reply is a paged object with `items`, `has_more` and `next_after`, not a plain list.
+- **last_message_id:** it does not go back down after the newest message is deleted. The board check therefore reads the newest surviving message with `messages?limit=1` and does not trust `last_message_id`.
 
 ## What the phase 1 prompt got wrong
 
