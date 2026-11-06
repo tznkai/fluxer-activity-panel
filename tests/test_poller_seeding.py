@@ -25,7 +25,7 @@ from fluxer_panel.poller import Poller
 from fluxer_panel.presses import FOLLOW_EMOJI, PLAY_NOW_EMOJI, WAKE_EMOJI
 from fluxer_panel.seeding import Seeder
 from fluxer_panel.sources.registry import Sources
-from tests.fakes import FakeFluxerState, make_rest_app
+from tests.fakes import FakeFluxerState, Override, make_rest_app
 from tests.test_card_commands import World, build
 
 GUILD = "1001"                  # the games community
@@ -349,3 +349,68 @@ async def test_a_seeding_error_on_one_surface_stops_neither_the_other_surfaces_n
     assert len(failed) == 3
     assert sorted(getattr(r, FIELDS_ATTR)["card_id"] for r in failed) == sorted([card_ids[0], card_ids[0], card_ids[1]])
     assert all(getattr(r, FIELDS_ATTR)["reason"] == "RuntimeError" for r in failed)
+
+
+async def test_a_home_copy_reposted_after_a_404_edit_keeps_its_community_and_gets_all_three_emoji(
+        world: World, db: Database) -> None:
+    card_id = await live_card(db, "mc")
+    await db.run(lambda c: subscriptions.add(c, card_id, GUILD, HOME_COPY))
+    poller = make_poller(world, Clock())
+    await poller.tick()
+    old = (await db.run(lambda c: subscriptions.list_for_card(c, card_id)))[0].message_id
+    assert old is not None
+    await db.run(lambda c: cards.update_fields(c, card_id, 0, title="Beta"))   # the copy's rendering changes
+    world.state.overrides[f"PATCH /api/v1/channels/{HOME_COPY}/messages/{old}"] = Override(
+        404, b'{"code": "UNKNOWN_MESSAGE", "message": "x"}')
+
+    await poller.tick()
+
+    copy = (await db.run(lambda c: subscriptions.list_for_card(c, card_id)))[0]
+    assert copy.message_id is not None and copy.message_id != old
+    assert puts(world.state, HOME_COPY, copy.message_id) == [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI]
+
+
+# AC5.6: reconcile seeds a copy the way it seeds a card ---------------------------------------------------------
+
+
+async def stored_copy(world: World, db: Database, channel_id: str, guild_id: str, message_id: str,
+                      reacted_with: list[str]) -> int:
+    card_id = await live_card(db, "mc")
+    await db.run(lambda c: subscriptions.add(c, card_id, guild_id, channel_id))
+    world.state.messages[(channel_id, message_id)] = {"content": "copy"}
+    if reacted_with:
+        world.state.reactions[(channel_id, message_id)] = {emoji: [BOT] for emoji in reacted_with}
+    await db.run(lambda c: subscriptions.set_message(c, card_id, channel_id, message_id, "0" * 64))
+    return card_id
+
+
+async def test_reconcile_of_a_home_copy_that_has_the_wake_emoji_adds_only_bell_and_play_now(
+        world: World, db: Database) -> None:
+    message_id = "5002"
+    await stored_copy(world, db, HOME_COPY, GUILD, message_id, [WAKE_EMOJI])
+
+    await make_poller(world, Clock()).reconcile()
+
+    assert puts(world.state, HOME_COPY, message_id) == [FOLLOW_EMOJI, PLAY_NOW_EMOJI]
+    assert reacted(world.state, HOME_COPY, message_id) == {WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI}
+
+
+async def test_reconcile_of_a_copy_in_another_community_adds_nothing_when_it_has_the_wake_emoji(
+        world: World, db: Database) -> None:
+    message_id = "5003"
+    await stored_copy(world, db, OTHER_COPY, OTHER_GUILD, message_id, [WAKE_EMOJI])
+
+    await make_poller(world, Clock()).reconcile()
+
+    assert [r for r in world.state.requests if r.method == "PUT" and OTHER_COPY in r.path] == []
+
+
+async def test_reconcile_of_a_copy_in_another_community_adds_only_the_wake_emoji_when_missing(
+        world: World, db: Database) -> None:
+    message_id = "5004"
+    await stored_copy(world, db, OTHER_COPY, OTHER_GUILD, message_id, [])
+
+    await make_poller(world, Clock()).reconcile()
+
+    assert puts(world.state, OTHER_COPY, message_id) == [WAKE_EMOJI]
+    assert reacted(world.state, OTHER_COPY, message_id) == {WAKE_EMOJI}
