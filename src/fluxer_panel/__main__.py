@@ -81,7 +81,7 @@ async def run(config: Config, db: Database) -> None:
                                    games_guild=games_guild, seeder=seeder, identity=identity)
             # One lock registry for the commands and the poller, so an archive never interleaves with a post.
             poller = Poller(db=db, rest=rest, sources=sources, config=config, locks=card_ctx.locks,
-                            games_guild=games_guild)
+                            games_guild=games_guild, seeder=seeder)
             card_ctx.kick = poller.kick
             # The wake requests read the poller's statuses, so they are built after the poller and handed to it here.
             wake = WakeRequests(db=db, rest=rest, config=config, sources=sources, locks=card_ctx.locks,

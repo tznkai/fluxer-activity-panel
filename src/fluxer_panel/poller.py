@@ -29,6 +29,7 @@ from fluxer_panel.db import Database
 from fluxer_panel.games import GamesGuild
 from fluxer_panel.logs import log_event
 from fluxer_panel.resolver import CardStatus, next_action_text, resolve
+from fluxer_panel.seeding import Seeder, has_play_now_target, wanted_emoji
 from fluxer_panel.sources.base import HostManager, PowerAction, PowerState, ProbeFailed, ProbeResult
 from fluxer_panel.sources.registry import Sources
 from fluxer_panel.wake import WakeRequests
@@ -63,13 +64,18 @@ class _Evaluated:
 
 class Poller:
     def __init__(self, *, db: Database, rest: FluxerREST, sources: Sources, config: Config, locks: CardLocks,
-                 clock: Callable[[], float] = time.time, games_guild: GamesGuild | None = None) -> None:
+                 clock: Callable[[], float] = time.time, games_guild: GamesGuild | None = None,
+                 seeder: Seeder | None = None) -> None:
         self._db = db
         self._rest = rest
         self._sources = sources
         self._config = config
         self._locks = locks
         self._clock = clock
+        self._seeder = seeder                                # None: no reactions are seeded
+        # Each card's surfaces posted in the current publish: (channel, message, "card" or "copy", copy's community).
+        # Filled under the card's lock, and taken by `_publish` once the lock is released, so seeding never holds it.
+        self._to_seed: dict[int, list[tuple[str, str, str, str | None]]] = {}
         self._kick = asyncio.Event()
         self._schedules: dict[int, _ScheduleCache] = {}
         self._names_checked: dict[int, float] = {}
@@ -151,7 +157,7 @@ class Poller:
             if card.channel_id is None or card.message_id is None:
                 continue
             try:
-                await self._rest.get_message(card.channel_id, card.message_id)
+                message = await self._rest.get_message(card.channel_id, card.message_id)
             except FluxerHTTPError as exc:
                 if exc.status == 404:
                     await self._forget_message(card.channel_id, card.message_id)
@@ -159,23 +165,28 @@ class Poller:
                     _reconcile_failed(card.id, exc)
             except Exception as exc:  # noqa: BLE001 - a failed lookup leaves this card alone; the others still run
                 _reconcile_failed(card.id, exc)
+            else:
+                await self._seed_surface(card, card.channel_id, card.message_id, "card", None, message)
         for card in live:
             for sub in await self._subscriptions_of(card.id):
                 if sub.message_id is not None:
-                    await self._reconcile_copy(card.id, sub.channel_id, sub.message_id)
+                    await self._reconcile_copy(card, sub, sub.message_id)
         await self._reconcile_board()
 
-    async def _reconcile_copy(self, card_id: int, channel_id: str, message_id: str) -> None:
-        """Checks one stored copy, the way the card's message is checked. A copy that is gone is forgotten."""
+    async def _reconcile_copy(self, card: cards.Card, sub: subscriptions.Subscription, message_id: str) -> None:
+        """Checks one stored copy, the way the card's message is checked, and seeds the reactions it is missing. A copy
+        that is gone is forgotten."""
         try:
-            await self._rest.get_message(channel_id, message_id)
+            message = await self._rest.get_message(sub.channel_id, message_id)
         except FluxerHTTPError as exc:
             if exc.status == 404:
-                await self._forget_message(channel_id, message_id)
+                await self._forget_message(sub.channel_id, message_id)
             else:
-                _reconcile_copy_failed(card_id, channel_id, exc)
+                _reconcile_copy_failed(card.id, sub.channel_id, exc)
         except Exception as exc:  # noqa: BLE001 - a failed lookup keeps the stored copy
-            _reconcile_copy_failed(card_id, channel_id, exc)
+            _reconcile_copy_failed(card.id, sub.channel_id, exc)
+        else:
+            await self._seed_surface(card, sub.channel_id, message_id, "copy", sub.guild_id, message)
 
     async def _subscriptions_of(self, card_id: int) -> list[subscriptions.Subscription]:
         return await self._db.run(lambda c: subscriptions.list_for_card(c, card_id))
@@ -532,24 +543,50 @@ class Poller:
         card's own message is logged and the copies still run, and a failure in one copy never stops the others."""
         rendered = render.rendered_hash(embed)
         payload = render.card_message(embed)
-        async with self._locks.get(card_id):
-            fresh = await self._db.run(lambda c: cards.get_by_id(c, card_id))
-            if fresh is None or fresh.state != "live":
-                return
-            channel_id = self._config.games_channel_id
-            if channel_id is None:
-                if not self._warned_no_channel:
-                    self._warned_no_channel = True
-                    log_event(log, "games_channel_unset", level=logging.WARNING)
-            else:
-                try:
-                    await self._sync(card_id, post_channel=channel_id, edit_channel=fresh.channel_id,
-                                     message_id=fresh.message_id, stored_hash=fresh.runtime.rendered_hash,
-                                     rendered=rendered, payload=payload, subscription=False)
-                except Exception as exc:  # noqa: BLE001 - logged here, and the copies below still run
-                    log_event(log, "card_poll_failed", level=logging.WARNING, card_id=card_id,
-                              reason=type(exc).__name__)
-            await self._publish_subscriptions(card_id, fresh.slug, rendered, payload)
+        fresh: cards.Card | None = None
+        try:
+            async with self._locks.get(card_id):
+                fresh = await self._db.run(lambda c: cards.get_by_id(c, card_id))
+                if fresh is None or fresh.state != "live":
+                    return
+                channel_id = self._config.games_channel_id
+                if channel_id is None:
+                    if not self._warned_no_channel:
+                        self._warned_no_channel = True
+                        log_event(log, "games_channel_unset", level=logging.WARNING)
+                else:
+                    try:
+                        await self._sync(card_id, post_channel=channel_id, edit_channel=fresh.channel_id,
+                                         message_id=fresh.message_id, stored_hash=fresh.runtime.rendered_hash,
+                                         rendered=rendered, payload=payload, subscription=False)
+                    except Exception as exc:  # noqa: BLE001 - logged here, and the copies below still run
+                        log_event(log, "card_poll_failed", level=logging.WARNING, card_id=card_id,
+                                  reason=type(exc).__name__)
+                await self._publish_subscriptions(card_id, fresh.slug, rendered, payload)
+        finally:
+            jobs = self._to_seed.pop(card_id, [])
+        # Outside the lock: a 429 retry in the seeding never stalls the card's next publish.
+        if fresh is not None:
+            for channel_id, message_id, kind, guild_id in jobs:
+                await self._seed_surface(fresh, channel_id, message_id, kind, guild_id)
+
+    async def _seed_surface(self, card: cards.Card, channel_id: str, message_id: str, kind: str,
+                            guild_id: str | None, message: dict[str, Any] | None = None) -> None:
+        """Seeds the bot's reactions on one surface of a card: its card message ("card") or a copy ("copy"). Callers hold
+        no card lock. It does nothing while seeding is off for the card, and `message` is a payload already fetched."""
+        if self._seeder is None or not await self._seeder.enabled_for(card.id):
+            return
+        home = await self._is_home(kind, guild_id)
+        play_now = has_play_now_target(card, self._config, surface_kind=kind, home=home)
+        wanted = wanted_emoji(card, home=home, play_now_target=play_now)
+        await self._seeder.seed(channel_id, message_id, wanted, message)
+
+    async def _is_home(self, kind: str, guild_id: str | None) -> bool:
+        """Whether the surface sits in the games community: every card message does, and a copy does when its community is
+        the games channel's. The lookup runs only for a copy."""
+        if kind == "card":
+            return True
+        return guild_id is not None and guild_id == await self._games_guild.get()
 
     async def _publish_subscriptions(self, card_id: int, slug: str, rendered: str, payload: dict[str, Any]) -> None:
         """Brings each active copy up to date, in the order the channels were added. A copy that fails is logged by ids
@@ -559,7 +596,7 @@ class Poller:
             try:
                 await self._sync(card_id, post_channel=sub.channel_id, edit_channel=sub.channel_id,
                                  message_id=sub.message_id, stored_hash=sub.content_hash, rendered=rendered,
-                                 payload=payload, subscription=True)
+                                 payload=payload, subscription=True, guild_id=sub.guild_id)
             except FluxerHTTPError as exc:
                 if exc.status == 403:
                     await self._pause_subscription(card_id, slug, sub.channel_id, text.SUBSCRIPTION_PAUSED_ALERT)
@@ -584,16 +621,19 @@ class Poller:
                               failed_event="subscription_alert_failed")
 
     async def _sync(self, card_id: int, *, post_channel: str, edit_channel: str | None, message_id: str | None,
-                    stored_hash: str | None, rendered: str, payload: dict[str, Any], subscription: bool) -> None:
+                    stored_hash: str | None, rendered: str, payload: dict[str, Any], subscription: bool,
+                    guild_id: str | None = None) -> None:
         """Posts the message when none is stored, and edits it when its rendering changed. The card's own message and each
-        copy both go through here, so they share the post, the edit, the repost after a 404 and the conditional store."""
+        copy both go through here, so they share the post, the edit, the repost after a 404 and the conditional store.
+        `guild_id` is a copy's community, and None for the card's own message."""
         if message_id is None or edit_channel is None:
-            await self._post(card_id, post_channel, rendered, payload, subscription=subscription)
+            await self._post(card_id, post_channel, rendered, payload, subscription=subscription, guild_id=guild_id)
         elif rendered != stored_hash:
-            await self._edit(card_id, edit_channel, message_id, rendered, payload, subscription=subscription)
+            await self._edit(card_id, edit_channel, message_id, rendered, payload, subscription=subscription,
+                             guild_id=guild_id)
 
     async def _post(self, card_id: int, channel_id: str, rendered: str, payload: dict[str, Any], *,
-                    subscription: bool = False) -> None:
+                    subscription: bool = False, guild_id: str | None = None) -> None:
         sent = await self._rest.send_message(channel_id, embeds=payload["embeds"],
                                              allowed_mentions=payload["allowed_mentions"])
         message_id = sent["id"]
@@ -603,10 +643,14 @@ class Poller:
             await self._db.run(lambda c: subscriptions.set_message(c, card_id, channel_id, message_id, rendered))
         else:
             await self._db.run(lambda c: cards.set_message(c, card_id, channel_id, message_id, rendered))
-        await self._undo_if_deleted(channel_id, message_id)
+        if await self._undo_if_deleted(channel_id, message_id):
+            return                              # deleted before its id was stored: forgotten, so nothing to seed
+        # Seeded by `_publish` after the card's lock is released. Posting makes no REST call for this.
+        kind = "copy" if subscription else "card"
+        self._to_seed.setdefault(card_id, []).append((channel_id, message_id, kind, guild_id))
 
     async def _edit(self, card_id: int, channel_id: str, message_id: str, rendered: str,
-                    payload: dict[str, Any], *, subscription: bool = False) -> None:
+                    payload: dict[str, Any], *, subscription: bool = False, guild_id: str | None = None) -> None:
         try:
             await self._rest.edit_message(channel_id, message_id, embeds=payload["embeds"],
                                           allowed_mentions=payload["allowed_mentions"])
@@ -617,7 +661,7 @@ class Poller:
                 log_event(log, "subscription_message_recreated", card_id=card_id, channel_id=channel_id)
             else:
                 log_event(log, "card_message_recreated", card_id=card_id)
-            await self._post(card_id, channel_id, rendered, payload, subscription=subscription)
+            await self._post(card_id, channel_id, rendered, payload, subscription=subscription, guild_id=guild_id)
             return
         # Conditional: a message deleted while the edit was in flight is not written back. A delete that commits
         # before this write leaves the card without the message, and one that commits after it clears the message,
