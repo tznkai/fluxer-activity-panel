@@ -60,6 +60,7 @@ URL = "https://fluxer.invalid"
 THUMBS_UP = "\U0001F44D"
 # The three press emoji and the sentinels, as escapes: the test file itself never holds a literal emoji.
 WAKE_CHAR = "\u25b6"
+WAKE_FE0F = "\ufe0f"   # the variation selector the wake emoji carries as the bot sends and Fluxer stores it
 BELL = "\U0001F514"
 HAND = "\U0001F64B"
 FORBIDDEN = b'{"code":"MISSING_PERMISSIONS","message":"no"}'
@@ -253,14 +254,27 @@ async def test_a_failed_dm_logs_the_type_only(run: Run) -> None:
     assert set(failed[0]) <= {"event", "level", "logger", "ts", "reason"}
 
 
+def escaped_forms(text: str) -> list[str]:
+    """How a character appears in the JSON stream: the logger writes ensure_ascii escapes, so a literal check misses it."""
+    return [json.dumps(ch)[1:-1] for ch in text]
+
+
 async def test_no_line_has_an_emoji_the_content_or_a_name(run: Run) -> None:
     assert run.lines
-    for line in run.raw.splitlines():
-        assert WAKE_CHAR not in line
-        assert BELL not in line
-        assert HAND not in line
-        assert CONTENT not in line
-        assert NAME not in line
+    emoji_chars = (WAKE_CHAR, BELL, HAND, WAKE_FE0F)
+    # Decoded: every parsed entry, re-serialised with real characters, must hold none of the emoji characters.
+    for entry in run.lines:
+        decoded = json.dumps(entry, ensure_ascii=False)
+        for ch in emoji_chars:
+            assert ch not in decoded, f"{entry.get('event')} carries an emoji character"
+        assert CONTENT not in decoded
+        assert NAME not in decoded
+    # Raw: the stream holds the escaped forms (\\u25b6, the surrogate pair for U+1F514), so those are checked too.
+    for ch in emoji_chars:
+        for escaped in escaped_forms(ch):
+            assert escaped not in run.raw, f"the stream carries an escaped emoji character {escaped}"
+    assert CONTENT not in run.raw
+    assert NAME not in run.raw
     assert TOKEN not in run.raw
 
 
