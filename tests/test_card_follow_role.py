@@ -242,6 +242,70 @@ async def test_publish_seeds_the_bell_on_the_card_and_its_home_copy_but_not_anot
     assert bell_puts(world, *OTHER_COPY) == []
 
 
+# Publishing a card that is already live gives it the follow role step too ------------------------------
+
+async def test_publish_on_a_live_card_with_no_role_creates_one_and_says_following_is_on(world: World) -> None:
+    await posted_draft(world)
+    await make_live(world)
+    card = await world.card("mc")
+    assert card is not None
+    await add_copies(world, card.id)
+    world.kicks.clear()
+    await world.run("!card publish mc")
+
+    assert role_writes(world) == [("POST", ROLES), ("PATCH", f"{ROLES}/{NEW_ROLE}")]
+    created = next(r for r in world.state.requests if r.method == "POST" and r.path == ROLES)
+    assert (created.payload["name"], created.payload["permissions"]) == ("card_subscription_mc", "0")
+    patch = next(r for r in world.state.requests if r.method == "PATCH")
+    assert patch.payload == {"mentionable": True}
+    card = await world.card("mc")
+    assert card is not None
+    assert (card.state, card.follow_role) == ("live", FollowRole(GAMES_GUILD, NEW_ROLE))
+    assert world.last_reply() == text.ALREADY_LIVE + text.FOLLOW_ON
+    assert len(bell_puts(world, GAMES_CHANNEL, POSTED)) == 1
+    assert len(bell_puts(world, *HOME_COPY)) == 1
+    assert bell_puts(world, *OTHER_COPY) == []
+    assert world.kicks == []
+
+
+async def test_publish_on_a_live_card_reuses_the_stored_role_without_a_write(world: World) -> None:
+    add_role(world, role("6000", "card_subscription_mc"))
+    await make_mc(world)
+    await make_live(world)
+    card = await world.card("mc")
+    assert card is not None
+    await world.db.run(lambda c: cards.set_follow_role(c, card.id, GAMES_GUILD, "6000"))
+    await world.run("!card publish mc")
+
+    assert role_writes(world) == []
+    assert world.last_reply() == text.ALREADY_LIVE + text.FOLLOW_ON
+
+
+async def test_publish_on_a_live_card_with_a_forbidden_role_create_says_following_is_off(world: World) -> None:
+    await posted_draft(world)
+    await make_live(world)
+    world.state.overrides[f"POST {ROLES}"] = Override(403, FORBIDDEN)
+    await world.run("!card publish mc")
+
+    card = await world.card("mc")
+    assert card is not None
+    assert (card.state, card.follow_role) == ("live", None)
+    assert world.last_reply() == text.ALREADY_LIVE + text.FOLLOW_OFF
+    assert bell_puts(world, GAMES_CHANNEL, POSTED) == []
+
+
+async def test_publish_on_a_live_card_without_a_games_channel_makes_no_role_call(db, fake, session) -> None:
+    world = await make_world(db, fake, session, games=False)
+    await make_mc(world)
+    await make_live(world)
+    world.kicks.clear()
+    await world.run("!card publish mc")
+
+    assert role_requests(world) == []
+    assert world.last_reply() == text.ALREADY_LIVE
+    assert world.kicks == []
+
+
 # AC3.5 through !card set --------------------------------------------------------------------------------
 
 async def test_set_follow_role_stores_a_mentionable_zero_permission_role_below_the_bot(world: World) -> None:

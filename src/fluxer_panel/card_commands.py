@@ -453,23 +453,25 @@ async def _publish(event: MessageCreate, ctx: CardContext, rest: str) -> _Result
     if outcome == "missing":
         await _say(ctx, event, text.NO_SUCH_CARD)
         return _Result()
-    if outcome == "live":
-        await _say(ctx, event, text.ALREADY_LIVE)
-        return _Result(card_id)
     # The role step runs after the lock, so its REST calls never hold the card's lock. It runs before the kick, so the
-    # poller's first post already sees the stored role.
+    # poller's first post already sees the stored role. A card that is already live gets the same step (a card published
+    # before following existed has no role), but nothing is kicked for it: its posts are already up to date.
     follow = await _publish_follow(ctx, found)
-    ctx.kick()
+    if outcome == "published":
+        ctx.kick()
     if follow is not None and follow.outcome in _FOLLOWING:
         await _reseed(ctx, card_id)
-    # The reply says what the next check will post: the card when a games channel is set, otherwise only its active
-    # copies (the poller posts those without a games channel), otherwise nothing.
-    if ctx.config.games_channel_id is not None:
-        reply = text.CARD_PUBLISHED
-    elif await ctx.db.run(lambda c: subscriptions.list_active(c, card_id)):
-        reply = text.PUBLISHED_COPIES_ONLY
+    if outcome == "live":
+        reply = text.ALREADY_LIVE
     else:
-        reply = text.PUBLISHED_NO_CHANNEL
+        # The reply says what the next check will post: the card when a games channel is set, otherwise only its active
+        # copies (the poller posts those without a games channel), otherwise nothing.
+        if ctx.config.games_channel_id is not None:
+            reply = text.CARD_PUBLISHED
+        elif await ctx.db.run(lambda c: subscriptions.list_active(c, card_id)):
+            reply = text.PUBLISHED_COPIES_ONLY
+        else:
+            reply = text.PUBLISHED_NO_CHANNEL
     if follow is not None:
         reply += text.FOLLOW_ON if follow.outcome in _FOLLOWING else text.FOLLOW_OFF
     await _say(ctx, event, reply)
