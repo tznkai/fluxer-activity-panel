@@ -444,6 +444,27 @@ async def test_concurrent_publishes_of_a_draft_create_one_role(world: World) -> 
     assert (card.state, card.follow_role) == ("live", FollowRole(GAMES_GUILD, NEW_ROLE))
 
 
+async def test_a_clear_waits_for_a_role_step_already_running_on_the_card(world: World) -> None:
+    add_role(world, role("6000", "manual_role"))
+    await make_mc(world)
+    await world.run("!card set mc follow_role 6000")
+    card = await world.card("mc")
+    assert card is not None and card.follow_role == FollowRole(GAMES_GUILD, "6000")
+    lock = world.ctx.follow_locks.get(card.id)
+    await lock.acquire()   # a publish's role step is running on this card
+    try:
+        task = asyncio.ensure_future(world.run("!card clear mc follow_role"))
+        done, _ = await asyncio.wait({task}, timeout=0.5)
+        assert done == set()   # the clear does not run while the role step holds the card's role lock
+        card = await world.card("mc")
+        assert card is not None and card.follow_role == FollowRole(GAMES_GUILD, "6000")
+    finally:
+        lock.release()
+    await task
+    card = await world.card("mc")
+    assert card is not None and card.follow_role is None
+
+
 async def test_a_manual_set_waits_for_a_role_step_already_running_on_the_card(world: World) -> None:
     add_role(world, role("6000", "manual_role"))
     await make_mc(world)

@@ -346,7 +346,9 @@ async def _clear(event: MessageCreate, ctx: CardContext, rest: str) -> _Result:
     card_id = card.id
     if field_name == "follow_role":
         # The bell already on the card stays. A press on it then gets "Following isn't available", which is correct.
-        old = await ctx.db.run(lambda c: cards.clear_follow_role(c, card_id))
+        # The clear takes the card's role lock, so it can't land in the middle of a publish's role step.
+        async with ctx.follow_locks.get(card_id):
+            old = await ctx.db.run(lambda c: cards.clear_follow_role(c, card_id))
         if old is None:
             await _say(ctx, event, text.FOLLOW_ROLE_NONE.format(slug=card.slug))
         else:

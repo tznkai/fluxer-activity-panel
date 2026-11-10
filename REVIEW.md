@@ -255,8 +255,8 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/card_commands.py:313` `if channel.get("type") != channel_type:` — the channel must be the type its slot takes: a voice channel for the voice slot, a text channel for a text slot.
 - `src/fluxer_panel/card_commands.py:39` `TEXT_CHANNEL_TYPE = 0` — the text channel type, the same value as Discord's. It was confirmed on a live instance: `tools/live/markup_live.py` printed type 0 for the posting channel.
 - `src/fluxer_panel/card_commands.py:315` `str(channel.get("guild_id")) != guild_id` — the channel must belong to the community the admin named.
-- `src/fluxer_panel/card_commands.py:541` `cards.set_state(conn, card_id, "archived", now)` — archive keeps the card row and its slots. It clears the message and sets the state, so the card can be read again.
-- `src/fluxer_panel/card_commands.py:632` `return text.SUBSCRIPTION_NOT_IN_COMMUNITY` — a subscription is refused unless the bot is in the community. `_check_channel` answers a 403 or 404 on the community lookup with an unverified link, and a subscription never stores one.
+- `src/fluxer_panel/card_commands.py:543` `cards.set_state(conn, card_id, "archived", now)` — archive keeps the card row and its slots. It clears the message and sets the state, so the card can be read again.
+- `src/fluxer_panel/card_commands.py:634` `return text.SUBSCRIPTION_NOT_IN_COMMUNITY` — a subscription is refused unless the bot is in the community. `_check_channel` answers a 403 or 404 on the community lookup with an unverified link, and a subscription never stores one.
 
 ## Card poller
 
