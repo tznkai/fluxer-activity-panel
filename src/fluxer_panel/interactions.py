@@ -216,6 +216,8 @@ class Interactions:
         A press on a home copy posts in the copy's channel, and also in the card's target when that is another channel."""
         if press.surface.kind == "copy" and press.surface.guild_id is not None:
             copy_target = (press.surface.channel_id, press.surface.guild_id)
+            # The target is looked up before the cooldown check, by design: a cooled-down copy press still costs one
+            # channel lookup. Moving the lookup under the card lock would hold the lock across a REST call.
             card_target, _ = await self._card_target(card)
             if card_target is None or card_target[0] == copy_target[0]:
                 return [copy_target]
@@ -239,7 +241,7 @@ class Interactions:
         try:
             channel = await self._rest.get_channel(configured)
         except Exception as exc:  # noqa: BLE001 - an unreachable channel is refused, never raised
-            log_event(log, "play_now_failed", level=logging.WARNING, channel_id=configured,
+            log_event(log, "play_now_failed", level=logging.WARNING, card_id=card.id, channel_id=configured,
                       reason=type(exc).__name__)
             return None, "unavailable"
         guild_id = channel.get("guild_id")
