@@ -117,6 +117,8 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   (`cards.follow_role_ids`) and the hierarchy check against freshly fetched roles, because Fluxer returns the same 403
   for a hierarchy refusal and a missing permission. The bot never deletes roles and never creates a role with
   permissions.
+- The publish-time role step and a manual `!card set <slug> follow_role` are serialised per card by their own lock
+  (`follow_roles.FollowLocks`), separate from the card lock, and no role call runs under the card lock.
 
 - Card config: `GAMES_CHANNEL_ID` (a snowflake, optional). `PTERODACTYL_URL` and `PTERODACTYL_API_KEY` are both or
   neither, and setting one refuses to start with exit 2. `POLL_INTERVAL_SECONDS`, `SCHEDULE_REFRESH_SECONDS`,
