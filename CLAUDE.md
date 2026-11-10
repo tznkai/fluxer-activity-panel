@@ -3,7 +3,7 @@
 
 # Fluxer Activity Panel
 
-Last verified: 2026-11-09
+Last verified: 2026-11-10
 
 Standalone project with two packages under `src/`: `fluxer_client` (a panel-agnostic Fluxer REST and
 gateway client) and `fluxer_panel` (the activity panel bot built on it). `README.md` has the
