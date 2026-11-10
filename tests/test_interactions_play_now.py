@@ -342,6 +342,37 @@ async def test_when_both_home_posts_fail_the_press_is_unavailable_by_dm(harness)
     assert await h.db.run(_play_now_rows) == 0
 
 
+async def test_a_store_failure_on_one_of_two_copy_posts_keeps_the_other_and_tells_no_one(harness, monkeypatch,
+                                                                                         caplog) -> None:
+    caplog.set_level(logging.INFO, logger="fluxer_panel")
+    h = await harness(PLAY_NOW_CHANNEL_ID=CONFIG_PLAY)
+    real_add = play_now.add
+    calls: list[int] = []
+
+    def fail_first_store(conn: Any, **kwargs: Any) -> int:
+        calls.append(1)
+        if len(calls) == 1:
+            raise sqlite3.OperationalError("disk I/O error")
+        return real_add(conn, **kwargs)
+
+    monkeypatch.setattr(play_now, "add", fail_first_store)
+    await h.presses.on_reaction(play_press(channel=COPY, message=COPY_MSG))
+
+    assert [r.path for r in channel_posts(h.state)] == [f"/api/v1/channels/{COPY}/messages",
+                                                        f"/api/v1/channels/{CONFIG_PLAY}/messages"]
+    [copy_mid] = play_now_message_ids(h.state, COPY)
+    [lfg_mid] = play_now_message_ids(h.state, CONFIG_PLAY)
+    assert (COPY, copy_mid) in h.state.deleted
+    assert (CONFIG_PLAY, lfg_mid) not in h.state.deleted
+    assert seeded(h.state, COPY, copy_mid) == set()
+    assert seeded(h.state, CONFIG_PLAY, lfg_mid) == {PLAY_NOW_EMOJI}
+    assert await h.db.run(_play_now_rows) == 1
+    assert dm_channel_texts(h.state, PRESSER) == []
+    assert "play_now_store_failed" in event_names(caplog)
+    [failed] = [r for r in panel_records(caplog) if r.getMessage() == "play_now_failed"]
+    assert getattr(failed, FIELDS_ATTR) == {"card_id": CARD_ID, "channel_id": COPY, "reason": "OperationalError"}
+
+
 async def test_the_follow_role_is_the_only_mention_and_allowed_mentions_names_it(harness) -> None:
     h = await harness()
     await set_card_play_channel(h, CARD_ID, GUILD, PLAY_CH)
@@ -479,6 +510,24 @@ async def test_without_an_instance_url_the_cooldown_text_has_no_link(harness) ->
     assert len(channel_posts(h.state)) == 1
     assert dm_channel_texts(h.state, PRESSER_2) == [
         text.PLAY_NOW_COOLDOWN_NO_LINK.format(card=render.escape(CARD_TITLE))]
+
+
+async def test_concurrent_home_copy_presses_post_twice_once_and_the_loser_is_cooled_down(harness) -> None:
+    h = await harness(PLAY_NOW_CHANNEL_ID=CONFIG_PLAY)
+    h.clock.now = 100
+    await asyncio.gather(
+        h.presses.on_reaction(play_press(channel=COPY, message=COPY_MSG, user=PRESSER)),
+        h.presses.on_reaction(play_press(channel=COPY, message=COPY_MSG, user=PRESSER_2)),
+    )
+    assert len(channel_posts(h.state)) == 2
+    assert await h.db.run(_play_now_rows) == 2
+    [lfg_mid] = play_now_message_ids(h.state, CONFIG_PLAY)
+    link = render.jump_link(text.JUMP_LABEL_MESSAGE, JUMP_URL, GUILD, CONFIG_PLAY, lfg_mid)
+    cooled = text.PLAY_NOW_COOLDOWN.format(card=render.escape(CARD_TITLE), link=link)
+    # Whichever presser reached the card lock second is the one told about the cooldown; the other gets no DM.
+    dms = {user: dm_channel_texts(h.state, user) for user in (PRESSER, PRESSER_2)}
+    assert sorted(len(texts) for texts in dms.values()) == [0, 1]
+    assert [cooled] in dms.values()
 
 
 # Seeding and wake -------------------------------------------------------------------------------------
