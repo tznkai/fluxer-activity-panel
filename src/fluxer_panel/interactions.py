@@ -155,65 +155,97 @@ class Interactions:
         if not press.surface.home_community:
             await notify.dm_user(self._rest, press.user_id, text.PLAY_NOW_ELSEWHERE)
             return
-        target = await self._play_now_target(press, card)
-        if target is None:
+        targets = await self._play_now_targets(press, card)
+        if targets is None:
             return
-        channel_id, guild_id = target
-        role_id = _role_in(card, guild_id)
         status = self._status_of(card.id)
         offers_wake = status is not None and status.kind is StatusKind.ASLEEP
         wanted = [PLAY_NOW_EMOJI] + ([WAKE_EMOJI] if offers_wake else [])
         now = int(self._clock())
         cooling = None
-        message_id = None
-        try:
-            # The cooldown check and the post share the card's lock, so two presses cannot both post (AC4.7).
-            async with self._locks.get(card.id):
-                last = await self._db.run(lambda c: play_now.latest_for_card(c, card.id))
-                if last is not None and now - last.created_at < self._config.play_now_cooldown_seconds:
-                    cooling = last
-                else:
-                    message_id = await self._send_and_store(card, channel_id, guild_id, role_id, press.user_id,
-                                                            offers_wake=offers_wake, now=now)
-        except GamesChannelRefused:
-            log_event(log, "play_now_refused", level=logging.WARNING, card_id=card.id, reason="games_channel")
-            return
-        except FluxerHTTPError as exc:
-            log_event(log, "play_now_failed", level=logging.WARNING, card_id=card.id, channel_id=channel_id,
-                      status=exc.status)
-            await self._dm_presser(press.user_id, text.PLAY_NOW_UNAVAILABLE, card)
-            return
+        posted: list[tuple[str, str]] = []   # (channel id, message id) of each message this press posted
+        failures: list[Exception] = []
+        # The cooldown check and the posts share the card's lock, so two presses cannot both post (AC4.7). One press
+        # counts once for the cooldown, however many messages it posts.
+        async with self._locks.get(card.id):
+            last = await self._db.run(lambda c: play_now.latest_for_card(c, card.id))
+            if last is not None and now - last.created_at < self._config.play_now_cooldown_seconds:
+                cooling = last
+            else:
+                for channel_id, guild_id in targets:
+                    try:
+                        message_id = await self._send_and_store(card, channel_id, guild_id,
+                                                                _role_in(card, guild_id), press.user_id,
+                                                                offers_wake=offers_wake, now=now)
+                    except Exception as exc:  # noqa: BLE001 - a failed target is logged; another target can still post
+                        failures.append(exc)
+                        self._log_target_failure(card.id, channel_id, exc)
+                        continue
+                    posted.append((channel_id, message_id))
         if cooling is not None:
             await self._dm_cooldown(press.user_id, card, cooling)
             return
-        assert message_id is not None   # a cooled-down press returned above, and a post either stores its id or raises
-        await self._seeder.seed(channel_id, message_id, wanted, card_id=card.id)   # outside the card lock
-        log_event(log, "play_now_posted", card_id=card.id, channel_id=channel_id)
+        if not posted:
+            await self._press_failed(press, card, failures)
+            return
+        for channel_id, message_id in posted:
+            await self._seeder.seed(channel_id, message_id, wanted, card_id=card.id)   # outside the card lock
+            log_event(log, "play_now_posted", card_id=card.id, channel_id=channel_id)
 
-    async def _play_now_target(self, press: Press, card: Card) -> tuple[str, str] | None:
-        """(channel id, community id) for the play-now message, or None after the presser has been told why not. The
-        order is fixed: a copy at home, then the card's own verified channel, then PLAY_NOW_CHANNEL_ID."""
+    def _log_target_failure(self, card_id: int, channel_id: str, exc: Exception) -> None:
+        """Logs one target's failed send with ids and status or reason only. The other target is not affected."""
+        if isinstance(exc, GamesChannelRefused):
+            log_event(log, "play_now_refused", level=logging.WARNING, card_id=card_id, reason="games_channel")
+        else:
+            log_event(log, "play_now_failed", level=logging.WARNING, card_id=card_id, channel_id=channel_id,
+                      **_failure_fields(exc))
+
+    async def _press_failed(self, press: Press, card: Card, failures: list[Exception]) -> None:
+        """A press that posted nothing. A refusal is silent, a failed send is told by DM, and any other failure is raised
+        as it was before there were two targets."""
+        if any(isinstance(exc, FluxerHTTPError) for exc in failures):
+            await self._dm_presser(press.user_id, text.PLAY_NOW_UNAVAILABLE, card)
+            return
+        for exc in failures:
+            if not isinstance(exc, GamesChannelRefused):
+                raise exc
+
+    async def _play_now_targets(self, press: Press, card: Card) -> list[tuple[str, str]] | None:
+        """The (channel id, community id) pairs a press posts to, or None after the presser has been told why not.
+        A press on the card posts once, in the card's target: its verified play-now channel, else PLAY_NOW_CHANNEL_ID.
+        A press on a home copy posts in the copy's channel, and also in the card's target when that is another channel."""
         if press.surface.kind == "copy" and press.surface.guild_id is not None:
-            return press.surface.channel_id, press.surface.guild_id
+            copy_target = (press.surface.channel_id, press.surface.guild_id)
+            card_target, _ = await self._card_target(card)
+            if card_target is None or card_target[0] == copy_target[0]:
+                return [copy_target]
+            return [copy_target, card_target]
+        card_target, reason = await self._card_target(card)
+        if card_target is None:
+            template = text.PLAY_NOW_NO_CHANNEL if reason == "no_channel" else text.PLAY_NOW_UNAVAILABLE
+            await self._dm_presser(press.user_id, template, card)
+            return None
+        return [card_target]
+
+    async def _card_target(self, card: Card) -> tuple[tuple[str, str] | None, str | None]:
+        """The card's play-now target as (channel id, community id), with no DM: the verified play-now channel, else
+        PLAY_NOW_CHANNEL_ID. The second item is the reason there is none: "no_channel" or "unavailable"."""
         own = card.play_now_channel
         if own is not None and own.verified:
-            return own.channel_id, own.guild_id
+            return (own.channel_id, own.guild_id), None
         configured = self._config.play_now_channel_id
         if configured is None:
-            await self._dm_presser(press.user_id, text.PLAY_NOW_NO_CHANNEL, card)
-            return None
+            return None, "no_channel"
         try:
             channel = await self._rest.get_channel(configured)
-        except Exception as exc:  # noqa: BLE001 - an unreachable channel is refused by DM, never raised
+        except Exception as exc:  # noqa: BLE001 - an unreachable channel is refused, never raised
             log_event(log, "play_now_failed", level=logging.WARNING, channel_id=configured,
                       reason=type(exc).__name__)
-            await self._dm_presser(press.user_id, text.PLAY_NOW_UNAVAILABLE, card)
-            return None
+            return None, "unavailable"
         guild_id = channel.get("guild_id")
         if not is_snowflake(guild_id):
-            await self._dm_presser(press.user_id, text.PLAY_NOW_UNAVAILABLE, card)
-            return None
-        return configured, guild_id
+            return None, "unavailable"
+        return (configured, guild_id), None
 
     async def _send_and_store(self, card: Card, channel_id: str, guild_id: str, role_id: str | None, presser_id: str,
                               *, offers_wake: bool, now: int) -> str:

@@ -252,6 +252,96 @@ async def test_a_press_on_a_home_copy_posts_in_the_copy_channel(harness) -> None
     assert post.path == f"/api/v1/channels/{COPY}/messages"
 
 
+async def test_a_press_on_a_home_copy_posts_in_both_the_copy_and_the_play_now_channel(harness) -> None:
+    h = await harness(PLAY_NOW_CHANNEL_ID=CONFIG_PLAY)
+    await h.presses.on_reaction(play_press(channel=COPY, message=COPY_MSG))
+    posts = {r.path: r for r in channel_posts(h.state)}
+    assert set(posts) == {f"/api/v1/channels/{COPY}/messages", f"/api/v1/channels/{CONFIG_PLAY}/messages"}
+    [copy_mid] = play_now_message_ids(h.state, COPY)
+    [lfg_mid] = play_now_message_ids(h.state, CONFIG_PLAY)
+    assert await h.db.run(_play_now_rows) == 2
+    assert seeded(h.state, COPY, copy_mid) == {PLAY_NOW_EMOJI}
+    assert seeded(h.state, CONFIG_PLAY, lfg_mid) == {PLAY_NOW_EMOJI}
+    for post in posts.values():
+        assert post.payload["allowed_mentions"] == {"parse": [], "roles": [ALPHA_ROLE], "replied_user": False}
+
+
+async def test_a_home_copy_press_posts_to_the_cards_own_play_now_channel_as_well(harness) -> None:
+    h = await harness(PLAY_NOW_CHANNEL_ID=CONFIG_PLAY)
+    await set_card_play_channel(h, CARD_ID, GUILD, PLAY_CH)
+    await h.presses.on_reaction(play_press(channel=COPY, message=COPY_MSG))
+    assert {r.path for r in channel_posts(h.state)} == {f"/api/v1/channels/{COPY}/messages",
+                                                        f"/api/v1/channels/{PLAY_CH}/messages"}
+    assert play_now_message_ids(h.state, CONFIG_PLAY) == []
+
+
+async def test_a_home_copy_press_with_no_play_now_target_posts_once_in_the_copy_channel(harness) -> None:
+    h = await harness()
+    await h.presses.on_reaction(play_press(channel=COPY, message=COPY_MSG))
+    assert [r.path for r in channel_posts(h.state)] == [f"/api/v1/channels/{COPY}/messages"]
+    assert await h.db.run(_play_now_rows) == 1
+
+
+async def test_a_home_copy_press_whose_copy_channel_is_the_play_now_channel_posts_once(harness) -> None:
+    h = await harness()
+    await set_card_play_channel(h, CARD_ID, GUILD, COPY)
+    await h.presses.on_reaction(play_press(channel=COPY, message=COPY_MSG))
+    assert [r.path for r in channel_posts(h.state)] == [f"/api/v1/channels/{COPY}/messages"]
+    assert await h.db.run(_play_now_rows) == 1
+
+
+async def test_a_home_copy_press_with_the_configured_channel_as_copy_channel_posts_once(harness) -> None:
+    h = await harness(PLAY_NOW_CHANNEL_ID=COPY)
+    await h.presses.on_reaction(play_press(channel=COPY, message=COPY_MSG))
+    assert [r.path for r in channel_posts(h.state)] == [f"/api/v1/channels/{COPY}/messages"]
+
+
+async def test_a_press_on_the_card_posts_once_in_its_target_even_with_a_copy_and_a_configured_channel(harness) -> None:
+    h = await harness(PLAY_NOW_CHANNEL_ID=CONFIG_PLAY)
+    await set_card_play_channel(h, CARD_ID, GUILD, PLAY_CH)
+    await h.presses.on_reaction(play_press())
+    assert [r.path for r in channel_posts(h.state)] == [f"/api/v1/channels/{PLAY_CH}/messages"]
+
+
+async def test_a_failed_lfg_post_keeps_the_copy_post_and_logs_the_status_only(harness, caplog) -> None:
+    caplog.set_level(logging.INFO, logger="fluxer_panel")
+    h = await harness(PLAY_NOW_CHANNEL_ID=CONFIG_PLAY)
+    h.state.overrides[f"POST /api/v1/channels/{CONFIG_PLAY}/messages"] = Override(403, FORBIDDEN)
+    await h.presses.on_reaction(play_press(channel=COPY, message=COPY_MSG))
+    assert [r.path for r in channel_posts(h.state)] == [f"/api/v1/channels/{COPY}/messages",
+                                                        f"/api/v1/channels/{CONFIG_PLAY}/messages"]
+    [copy_mid] = play_now_message_ids(h.state, COPY)
+    assert seeded(h.state, COPY, copy_mid) == {PLAY_NOW_EMOJI}
+    assert await h.db.run(_play_now_rows) == 1
+    assert dm_channel_texts(h.state, PRESSER) == []
+    [failed] = [r for r in panel_records(caplog) if r.getMessage() == "play_now_failed"]
+    assert getattr(failed, FIELDS_ATTR) == {"card_id": CARD_ID, "channel_id": CONFIG_PLAY, "status": 403}
+
+
+async def test_a_failed_copy_post_keeps_the_lfg_post_and_logs_the_status_only(harness, caplog) -> None:
+    caplog.set_level(logging.INFO, logger="fluxer_panel")
+    h = await harness(PLAY_NOW_CHANNEL_ID=CONFIG_PLAY)
+    h.state.overrides[f"POST /api/v1/channels/{COPY}/messages"] = Override(403, FORBIDDEN)
+    await h.presses.on_reaction(play_press(channel=COPY, message=COPY_MSG))
+    assert [r.path for r in channel_posts(h.state)] == [f"/api/v1/channels/{COPY}/messages",
+                                                        f"/api/v1/channels/{CONFIG_PLAY}/messages"]
+    [lfg_mid] = play_now_message_ids(h.state, CONFIG_PLAY)
+    assert seeded(h.state, CONFIG_PLAY, lfg_mid) == {PLAY_NOW_EMOJI}
+    assert await h.db.run(_play_now_rows) == 1
+    assert dm_channel_texts(h.state, PRESSER) == []
+    [failed] = [r for r in panel_records(caplog) if r.getMessage() == "play_now_failed"]
+    assert getattr(failed, FIELDS_ATTR) == {"card_id": CARD_ID, "channel_id": COPY, "status": 403}
+
+
+async def test_when_both_home_posts_fail_the_press_is_unavailable_by_dm(harness) -> None:
+    h = await harness(PLAY_NOW_CHANNEL_ID=CONFIG_PLAY)
+    h.state.overrides[f"POST /api/v1/channels/{COPY}/messages"] = Override(403, FORBIDDEN)
+    h.state.overrides[f"POST /api/v1/channels/{CONFIG_PLAY}/messages"] = Override(403, FORBIDDEN)
+    await h.presses.on_reaction(play_press(channel=COPY, message=COPY_MSG))
+    assert dm_channel_texts(h.state, PRESSER) == [text.PLAY_NOW_UNAVAILABLE.format(card=render.escape(CARD_TITLE))]
+    assert await h.db.run(_play_now_rows) == 0
+
+
 async def test_the_follow_role_is_the_only_mention_and_allowed_mentions_names_it(harness) -> None:
     h = await harness()
     await set_card_play_channel(h, CARD_ID, GUILD, PLAY_CH)
@@ -352,6 +442,29 @@ async def test_a_press_at_the_end_of_the_cooldown_posts_again(harness) -> None:
     h.clock.now = 100 + h.config.play_now_cooldown_seconds
     await h.presses.on_reaction(play_press(user=PRESSER_2))
     assert len(channel_posts(h.state)) == 2
+
+
+async def test_both_messages_of_one_copy_press_count_as_one_press_for_the_cooldown(harness) -> None:
+    h = await harness(PLAY_NOW_CHANNEL_ID=CONFIG_PLAY)
+    h.clock.now = 100
+    await h.presses.on_reaction(play_press(channel=COPY, message=COPY_MSG, user=PRESSER))
+    [lfg_mid] = play_now_message_ids(h.state, CONFIG_PLAY)
+    h.clock.now = 200
+    await h.presses.on_reaction(play_press(user=PRESSER_2))
+    assert len(channel_posts(h.state)) == 2
+    link = render.jump_link(text.JUMP_LABEL_MESSAGE, JUMP_URL, GUILD, CONFIG_PLAY, lfg_mid)
+    assert dm_channel_texts(h.state, PRESSER_2) == [
+        text.PLAY_NOW_COOLDOWN.format(card=render.escape(CARD_TITLE), link=link)]
+
+
+async def test_a_copy_press_inside_the_cooldown_of_a_card_press_posts_nothing(harness) -> None:
+    h = await harness(PLAY_NOW_CHANNEL_ID=CONFIG_PLAY)
+    h.clock.now = 100
+    await h.presses.on_reaction(play_press(user=PRESSER))
+    h.clock.now = 200
+    await h.presses.on_reaction(play_press(channel=COPY, message=COPY_MSG, user=PRESSER_2))
+    assert len(channel_posts(h.state)) == 1
+    assert play_now_message_ids(h.state, COPY) == []
 
 
 async def test_without_an_instance_url_the_cooldown_text_has_no_link(harness) -> None:
