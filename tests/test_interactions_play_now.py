@@ -423,6 +423,9 @@ async def test_an_unreachable_configured_channel_is_unavailable_by_dm(harness, c
     await h.presses.on_reaction(press_event(PLAY_NOW_EMOJI, message=SECOND_MSG))
     assert channel_posts(h.state) == []
     assert dm_channel_texts(h.state, PRESSER) == [text.PLAY_NOW_UNAVAILABLE.format(card=render.escape(SECOND_TITLE))]
+    [failed] = [r for r in panel_records(caplog) if r.getMessage() == "play_now_failed"]
+    assert getattr(failed, FIELDS_ATTR)["card_id"] == SECOND_ID
+    assert getattr(failed, FIELDS_ATTR)["channel_id"] == MISSING
 
 
 async def test_a_refused_post_is_unavailable_by_dm(harness) -> None:
@@ -454,9 +457,6 @@ async def test_a_play_now_channel_set_to_the_games_channel_posts_nothing_there(h
 async def test_a_press_within_the_cooldown_posts_nothing_and_links_the_first_message(harness) -> None:
     h = await harness()
     await set_card_play_channel(h, CARD_ID, GUILD, PLAY_CH)
-    [failed] = [r for r in panel_records(caplog) if r.getMessage() == "play_now_failed"]
-    assert getattr(failed, FIELDS_ATTR)["card_id"] == SECOND_ID
-    assert getattr(failed, FIELDS_ATTR)["channel_id"] == MISSING
     h.clock.now = 100
     await h.presses.on_reaction(play_press(user=PRESSER))
     [first] = play_now_message_ids(h.state, PLAY_CH)
