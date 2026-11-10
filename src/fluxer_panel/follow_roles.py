@@ -34,8 +34,8 @@ REASON = "card follow role"   # X-Audit-Log-Reason: a fixed string, never user t
 
 
 class FollowLocks:
-    """One asyncio.Lock per card id for the card's role step: the publish step and the manual set. Separate from
-    `card_commands.CardLocks`, so role REST calls never run under the card's lock."""
+    """One asyncio.Lock per card id for the card's role step (publish, manual set, clear). Separate from
+    `card_commands.CardLocks`, so the role step never runs under the card's lock (the bell toggle does, by design)."""
 
     def __init__(self) -> None:
         self._locks: dict[int, asyncio.Lock] = {}
