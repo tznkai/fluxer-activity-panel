@@ -9,10 +9,11 @@ record. Role ids come only from `card_follow_role`, never from event or command 
 
 from __future__ import annotations
 
+import asyncio
 import enum
 import logging
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import aiohttp
@@ -32,6 +33,17 @@ log = logging.getLogger(__name__)
 REASON = "card follow role"   # X-Audit-Log-Reason: a fixed string, never user text
 
 
+class FollowLocks:
+    """One asyncio.Lock per card id for the card's role step: the publish step and the manual set. Separate from
+    `card_commands.CardLocks`, so role REST calls never run under the card's lock."""
+
+    def __init__(self) -> None:
+        self._locks: dict[int, asyncio.Lock] = {}
+
+    def get(self, card_id: int) -> asyncio.Lock:
+        return self._locks.setdefault(card_id, asyncio.Lock())
+
+
 @dataclass(frozen=True)
 class FollowDeps:
     db: Database
@@ -39,6 +51,8 @@ class FollowDeps:
     config: Config
     roles: RoleCache
     identity: BotIdentity
+    # The publish and set role steps of one bot share one FollowLocks: a context builds its deps with its own.
+    locks: FollowLocks = field(default_factory=FollowLocks)
 
 
 class Toggle(enum.Enum):
@@ -189,6 +203,13 @@ async def ensure_follow_role(deps: FollowDeps, guild_id: str, card: Card, *,
     bot_id = deps.identity.user_id
     if bot_id is None:
         return _ensured(card, EnsureResult(Ensured.REFUSED, reason="no_bot_id"))
+    # One role step per card at a time. The stored role is read under this lock, so a publish that waits behind another
+    # one (or behind a manual set) reuses the role that one stored, instead of creating a second.
+    async with deps.locks.get(card.id):
+        return await _role_step(deps, guild_id, card, role_id, bot_id)
+
+
+async def _role_step(deps: FollowDeps, guild_id: str, card: Card, role_id: str | None, bot_id: str) -> EnsureResult:
     try:
         roles = await deps.rest.get_roles(guild_id)
         bot_roles = _role_ids(await deps.rest.get_member(guild_id, bot_id))

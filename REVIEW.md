@@ -63,22 +63,23 @@ Paths are relative to this directory.
 - `src/fluxer_client/rest.py:248` `async def add_member_role(` — a PUT that grants a role. This is a privilege change, so the role allowlist and the role hierarchy must be checked before the call. Fluxer answers both a hierarchy refusal and a missing permission with the same 403 code.
 - `src/fluxer_client/rest.py:252` `async def remove_member_role(` — a DELETE that removes a role. The same checks apply.
 - `tools/live/roles.py:32` `await rest.add_member_role(guild, user, role, reason=REASON)` — the live tool's call, which runs only in the private guild.
-- `src/fluxer_panel/follow_roles.py:98` `stored.role_id not in allow` — `toggle_follow` re-reads the card's stored role and the allowlist at press time. A role not in the allowlist is refused before any REST call.
-- `src/fluxer_panel/follow_roles.py:114` `not manageable(` — the hierarchy check in `toggle_follow`, against freshly fetched roles and the bot's own member record, runs before the add or remove.
-- `src/fluxer_panel/follow_roles.py:221` `if not zero_permissions(target):` — the adopt branch of `ensure_follow_role` refuses any role with permissions other than 0, so the bot never writes to a role that grants something.
-- `src/fluxer_panel/follow_roles.py:229` `await deps.rest.set_role_mentionable(` — an adopted role is made mentionable only after every check passes, and nothing is stored if the call fails.
-- `src/fluxer_panel/follow_roles.py:241` `deps.rest.create_role(` — the only role creation in the bot. The REST client fixes its permissions at 0.
-- `src/fluxer_panel/follow_roles.py:251` `await deps.rest.set_role_mentionable(` — a created role is made mentionable and checked before its id is stored.
+- `src/fluxer_panel/follow_roles.py:112` `stored.role_id not in allow` — `toggle_follow` re-reads the card's stored role and the allowlist at press time. A role not in the allowlist is refused before any REST call.
+- `src/fluxer_panel/follow_roles.py:128` `not manageable(` — the hierarchy check in `toggle_follow`, against freshly fetched roles and the bot's own member record, runs before the add or remove.
+- `src/fluxer_panel/follow_roles.py:242` `if not zero_permissions(target):` — the adopt branch of `ensure_follow_role` refuses any role with permissions other than 0, so the bot never writes to a role that grants something.
+- `src/fluxer_panel/follow_roles.py:250` `await deps.rest.set_role_mentionable(` — an adopted role is made mentionable only after every check passes, and nothing is stored if the call fails.
+- `src/fluxer_panel/follow_roles.py:262` `deps.rest.create_role(` — the only role creation in the bot. The REST client fixes its permissions at 0.
+- `src/fluxer_panel/follow_roles.py:272` `await deps.rest.set_role_mentionable(` — a created role is made mentionable and checked before its id is stored.
 - `src/fluxer_client/rest.py:296` `"permissions": "0"` — every role the client creates has no permissions, and there is no parameter that changes it.
 - `tests/test_role_callers.py:33` `assert files == {"follow_roles.py"}` — the structural test that fails when any module other than `follow_roles.py` uses a role method.
 
 ## Role creation
 
-- `src/fluxer_panel/follow_roles.py:241` `created = await deps.rest.create_role(` — the only role creation in the bot. The role is created with the name, and its permissions are fixed at 0 by the REST client.
+- `src/fluxer_panel/follow_roles.py:262` `created = await deps.rest.create_role(` — the only role creation in the bot. The role is created with the name, and its permissions are fixed at 0 by the REST client.
 - `src/fluxer_client/rest.py:296` `"permissions": "0"` — every role the client creates has no permissions, and there is no parameter that changes it.
-- `src/fluxer_panel/follow_roles.py:221` `if not zero_permissions(target):` — the adopt branch refuses any existing role with permissions other than 0 before it writes to it.
-- `src/fluxer_panel/follow_roles.py:223` `if not manageable(target, roles, bot_roles, guild_id):` — the adopt branch's hierarchy check, against freshly fetched roles, runs before the PATCH.
-- `src/fluxer_panel/follow_roles.py:266` `if role_id == guild_id:` — a manual set refuses the community's `@everyone` role, whose id is the guild id.
+- `src/fluxer_panel/follow_roles.py:242` `if not zero_permissions(target):` — the adopt branch refuses any existing role with permissions other than 0 before it writes to it.
+- `src/fluxer_panel/follow_roles.py:244` `if not manageable(target, roles, bot_roles, guild_id):` — the adopt branch's hierarchy check, against freshly fetched roles, runs before the PATCH.
+- `src/fluxer_panel/follow_roles.py:287` `if role_id == guild_id:` — a manual set refuses the community's `@everyone` role, whose id is the guild id.
+- `src/fluxer_panel/follow_roles.py:208` `async with deps.locks.get(card.id):` — the publish and the manual set take the card's own role lock, not the card lock. A second role step on the card waits and then reuses the role the first one stored, so it never creates a second role.
 
 ## Reaction removal
 
@@ -250,12 +251,12 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 
 - `src/fluxer_panel/admin.py:60` `if head == "card":` — the `!card` branch runs only after `authorize` has passed, so card commands share the DM-only, admin-only check.
 - `src/fluxer_panel/cards.py:37` `super().__init__(f"{field}: {rule}")` — `CardFieldError` carries a field name and a rule key. The submitted value is never in the message.
-- `src/fluxer_panel/card_commands.py:298` `exc.status in (403, 404)` — a 403 or a 404 from `get_guild` means the bot is not in that community. Both get the same "unverified" reply.
-- `src/fluxer_panel/card_commands.py:311` `if channel.get("type") != channel_type:` — the channel must be the type its slot takes: a voice channel for the voice slot, a text channel for a text slot.
+- `src/fluxer_panel/card_commands.py:300` `exc.status in (403, 404)` — a 403 or a 404 from `get_guild` means the bot is not in that community. Both get the same "unverified" reply.
+- `src/fluxer_panel/card_commands.py:313` `if channel.get("type") != channel_type:` — the channel must be the type its slot takes: a voice channel for the voice slot, a text channel for a text slot.
 - `src/fluxer_panel/card_commands.py:39` `TEXT_CHANNEL_TYPE = 0` — the text channel type, the same value as Discord's. It was confirmed on a live instance: `tools/live/markup_live.py` printed type 0 for the posting channel.
-- `src/fluxer_panel/card_commands.py:313` `str(channel.get("guild_id")) != guild_id` — the channel must belong to the community the admin named.
-- `src/fluxer_panel/card_commands.py:539` `cards.set_state(conn, card_id, "archived", now)` — archive keeps the card row and its slots. It clears the message and sets the state, so the card can be read again.
-- `src/fluxer_panel/card_commands.py:630` `return text.SUBSCRIPTION_NOT_IN_COMMUNITY` — a subscription is refused unless the bot is in the community. `_check_channel` answers a 403 or 404 on the community lookup with an unverified link, and a subscription never stores one.
+- `src/fluxer_panel/card_commands.py:315` `str(channel.get("guild_id")) != guild_id` — the channel must belong to the community the admin named.
+- `src/fluxer_panel/card_commands.py:541` `cards.set_state(conn, card_id, "archived", now)` — archive keeps the card row and its slots. It clears the message and sets the state, so the card can be read again.
+- `src/fluxer_panel/card_commands.py:632` `return text.SUBSCRIPTION_NOT_IN_COMMUNITY` — a subscription is refused unless the bot is in the community. `_check_channel` answers a 403 or 404 on the community lookup with an unverified link, and a subscription never stores one.
 
 ## Card poller
 

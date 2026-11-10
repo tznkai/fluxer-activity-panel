@@ -84,6 +84,7 @@ class CardContext:
     kick: Callable[[], None] = lambda: None
     clock: Callable[[], float] = time.time
     locks: CardLocks = field(default_factory=CardLocks)
+    follow_locks: follow_roles.FollowLocks = field(default_factory=follow_roles.FollowLocks)
     roles: RoleCache | None = None
     games_guild: GamesGuild | None = None
     seeder: Seeder | None = None
@@ -277,7 +278,8 @@ def _follow_deps(ctx: CardContext) -> follow_roles.FollowDeps | None:
     """The role dependencies, or None when following is off: a context built without them makes no role call."""
     if ctx.roles is None or ctx.identity is None:
         return None
-    return follow_roles.FollowDeps(db=ctx.db, rest=ctx.rest, config=ctx.config, roles=ctx.roles, identity=ctx.identity)
+    return follow_roles.FollowDeps(db=ctx.db, rest=ctx.rest, config=ctx.config, roles=ctx.roles,
+                                   identity=ctx.identity, locks=ctx.follow_locks)
 
 
 def _base_value(field_name: str, value: str) -> Any:
