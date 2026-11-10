@@ -28,6 +28,9 @@ The operator does these steps in the Fluxer community the panel serves:
    second call and reads it back. It adopts a matching role instead when exactly one exists. It never deletes a
    role. To drop a card's follow role, use `!card clear <slug> follow_role`, then delete the role by hand in Fluxer
    if you want it gone.
+   Cards published before following existed have no role. To give one a role and its bell, run `!card publish <slug>`
+   on it again: the reply still says the card is already live, then adds the following line. The bot makes the role
+   the same way as for a fresh publish, and seeds the bell on the card and its copies in the games community.
 
 ## Configuration
 
@@ -73,7 +76,9 @@ Cards and sources:
 - `PROBE_GRACE_SECONDS` (default `600`): how long a running server's failing probe is tolerated
   before its card shows Ready without counts. The admins then get one direct message.
 - `PLAY_NOW_CHANNEL_ID` (optional): the channel where play-now posts are made. It must differ from
-  `GAMES_CHANNEL_ID`, and the bot refuses to start when they are equal.
+  `GAMES_CHANNEL_ID`, and the bot refuses to start when they are equal. A press on a card posts there (or in
+  the card's own `play_now_channel`). A press on a copy in the games community posts in the copy's channel too,
+  and in the card's play-now channel when that is a different channel (see Play now).
 - `FOLLOW_ROLE_PREFIX` (default `card_subscription_`): the prefix for follow-role names. It is 1 to 40
   characters of `a-z`, `0-9`, `_` or `-`.
 - `WAKE_REQUEST_EXPIRY_SECONDS` (default `7200`): how long a wake request stays open before it expires.
@@ -153,7 +158,8 @@ server can also show a status line, such as Asleep, Waking up or Ready with a pl
 - **Draft:** `!card new` creates a card as a draft. A draft is never posted.
 - **Live:** `!card publish` makes the card live. The poller posts it in the games channel on its
   next tick, and edits the message when its content changes. Without `GAMES_CHANNEL_ID` the card is not
-  posted, but its active copies are.
+  posted, but its active copies are. Publishing a card that is already live does not repost it, but it does
+  give the card a follow role if it has none (see Follow roles).
 - **Archived:** `!card archive` deletes the card's message and keeps the card. Publishing it again
   makes it live.
 
@@ -268,6 +274,19 @@ requester gets one direct message when a request closes. Admins manage open requ
 !request clear <slug>                      closes the card's open requests as cleared
 ```
 
+### Play now
+
+A press on a card's play-now reaction (the raised hand) posts "Someone wants to play <card> now" in the card's
+play-now channel, or in `PLAY_NOW_CHANNEL_ID` when the card has none. The post is never made in the games channel.
+It mentions only the card's follow role, and only when that role is in the same community as the post.
+
+A press on the raised hand on a copy of the card in the games community posts in two places: the copy's own
+channel, and the card's play-now channel when that is a different channel. Each post gets its own reactions and
+expires on its own. The cooldown (`PLAY_NOW_COOLDOWN_SECONDS`) counts the press once, so a press inside it posts
+nothing in either channel and the presser gets a link to the latest post. If one of the two posts fails and the
+other succeeds, the one that succeeded stays and the failure is logged. A press on a copy outside the games
+community is refused by a direct message.
+
 ### Fields
 
 - `title` (up to 200 characters), `description`, `join` (how to join) and `first_time` (up to 1000
@@ -295,7 +314,8 @@ requester gets one direct message when a request closes. Admins manage open requ
 - `play_now_channel <guild_id> <channel_id>`, or a pasted channel link: the text channel where the card's play-now
   messages go. It is checked as a text channel slot is, but it must be verified: when the bot is not in that
   community, the channel is refused and nothing is stored. The games channel is refused. Without it, play-now messages
-  go to `PLAY_NOW_CHANNEL_ID`, and without that the press is refused. `!card clear <slug> play_now_channel` removes it.
+  go to `PLAY_NOW_CHANNEL_ID`, and without that the press is refused. A press on a copy in the games community posts
+  in the copy's channel and also here, when this is a different channel. `!card clear <slug> play_now_channel` removes it.
 
 Every reply names the field and the rule, never the value you sent. Replies use the word
 "community".

@@ -3,7 +3,7 @@
 
 # Fluxer Activity Panel
 
-Last verified: 2026-11-05
+Last verified: 2026-11-09
 
 Standalone project with two packages under `src/`: `fluxer_client` (a panel-agnostic Fluxer REST and
 gateway client) and `fluxer_panel` (the activity panel bot built on it). `README.md` has the
@@ -139,6 +139,10 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   (`poller._publish`), so `!card publish` replies with one of three texts: `text.CARD_PUBLISHED` (a games channel is
   set), `text.PUBLISHED_COPIES_ONLY` (no games channel, at least one active copy) or `text.PUBLISHED_NO_CHANNEL`
   (no games channel and no active copy, so nothing is posted). Rows without a slug (v1 data) are never read or listed.
+  `!card publish` on a card that is already live replies `text.ALREADY_LIVE` and runs the same follow-role step as a
+  fresh publish (`_publish_follow`), so a card published before following existed gets its role and bell. A live card
+  is not kicked, and the role step makes no call without a games channel. Its only effects are the stored role and
+  the bell seeds that follow from it.
 - `!request list` and `!request clear <slug>` are the admin head `request`, routed by `admin.handle` after `authorize`
   to `request_commands.handle`, and documented in `README.md`. `clear` closes the card's open rows as `cleared` through
   `WakeRequests.close`, so each requester gets one close DM.
@@ -216,6 +220,11 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   no card lock held. Unseeding is the only place the bot removes its own seeded reactions.
 - Press logs: a `press` log carries `event_type`, `card_id`, `action` and `surface`, and never a `user_id`. `user_id` is
   logged only on `press_absorbed`. Me Too on a play-now post is a state change, so it is never rate limited or removed.
+- Play-now targets (`interactions._play_now_targets`): a press on the card posts once, in the card's target (its
+  verified `play_now_channel`, else `PLAY_NOW_CHANNEL_ID`). A press on a home copy posts in the copy's channel and, when
+  the card's target is another channel, in that too. Each post gets its own play-now row and seeds, and both count as
+  one press for the cooldown. One failed post is logged (ids and status only) and the other is kept; the presser is
+  DMed only when no post succeeds.
 - Play-now posts are sent only by `interactions.send_play_now`, which refuses a games-channel target before any REST
   call (`GamesChannelRefused`). `PLAY_NOW_CHANNEL_ID` must differ from `GAMES_CHANNEL_ID`, or the bot refuses to start.
 - A play-now post is the only send that may mention anyone: `interactions.play_now_mentions` allows the card's own
