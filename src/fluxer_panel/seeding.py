@@ -20,21 +20,35 @@ from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.logs import log_event
 from fluxer_panel.pacer import ChannelPacer
-from fluxer_panel.presses import FOLLOW_EMOJI, PLAY_NOW_EMOJI, WAKE_EMOJI
+from fluxer_panel.presses import FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, WAKE_EMOJI
 
 log = logging.getLogger(__name__)
 
 
-def wanted_emoji(card: Card, *, play_now_target: bool) -> list[str]:
+def wanted_emoji(card: Card, *, play_now_target: bool, session_target: bool = False) -> list[str]:
     """WAKE_EMOJI always; FOLLOW_EMOJI only when the card has a follow role; PLAY_NOW_EMOJI only when there is a
-    play-now target. A copy outside the games community carries the same emoji, and a press there gets a DM that points
-    at the card."""
+    play-now target; SESSION_EMOJI last, only when there is a session channel. A copy outside the games community
+    carries the same emoji, and a press there gets a DM that points at the card."""
     wanted = [WAKE_EMOJI]
     if card.follow_role is not None:
         wanted.append(FOLLOW_EMOJI)
     if play_now_target:
         wanted.append(PLAY_NOW_EMOJI)
+    if session_target:
+        wanted.append(SESSION_EMOJI)
     return wanted
+
+
+def has_session_channel(card: Card, config: Config, *, surface_kind: str, home: bool) -> bool:
+    """A card surface can plan sessions when the card has its own verified play-now channel, or PLAY_NOW_CHANNEL_ID is
+    set (the session channel is the card's, else the configured one, as for play-now). A home copy the same. A far copy
+    never gets the calendar: its press only points at the card. A play-now post never gets it either."""
+    if surface_kind == "play_now":
+        return False
+    if surface_kind == "copy" and not home:
+        return False
+    own = card.play_now_channel is not None and card.play_now_channel.verified
+    return own or config.play_now_channel_id is not None
 
 
 def has_play_now_target(card: Card, config: Config, *, surface_kind: str, home: bool) -> bool:

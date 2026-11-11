@@ -29,7 +29,7 @@ from fluxer_panel.db import Database
 from fluxer_panel.games import GamesGuild
 from fluxer_panel.logs import log_event
 from fluxer_panel.resolver import CardStatus, next_action_text, resolve
-from fluxer_panel.seeding import Seeder, has_play_now_target, wanted_emoji
+from fluxer_panel.seeding import Seeder, has_play_now_target, has_session_channel, wanted_emoji
 from fluxer_panel.sources.base import HostManager, PowerAction, PowerState, ProbeFailed, ProbeResult
 from fluxer_panel.sources.registry import Sources
 from fluxer_panel.wake import WakeRequests
@@ -621,7 +621,8 @@ class Poller:
                 return
             home = await self._is_home(kind, guild_id)
             play_now = has_play_now_target(card, self._config, surface_kind=kind, home=home)
-            wanted = wanted_emoji(card, play_now_target=play_now)
+            session = has_session_channel(card, self._config, surface_kind=kind, home=home)
+            wanted = wanted_emoji(card, play_now_target=play_now, session_target=session)
             await self._seeder.seed(channel_id, message_id, wanted, message, card_id=card.id)
         except asyncio.CancelledError:
             raise

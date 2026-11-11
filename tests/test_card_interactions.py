@@ -18,11 +18,12 @@ import pytest
 
 from fluxer_client import events
 from fluxer_client.rest import encode_emoji
-from fluxer_panel import cards, interaction_settings, subscriptions, text
+from fluxer_panel import cards, interaction_settings, sessions, subscriptions, text
 from fluxer_panel.db import Database
 from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.pacer import ChannelPacer
-from fluxer_panel.presses import FOLLOW_EMOJI, PLAY_NOW_EMOJI, WAKE_EMOJI, Press, Presses, Surface
+from fluxer_panel.presses import (
+    FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, WAKE_EMOJI, Action, Press, Presses, Surface)
 from fluxer_panel.seeding import Seeder
 from tests.fakes import FakeFluxerState, make_rest_app
 from tests.test_card_commands import World, build
@@ -36,11 +37,13 @@ CARD_MSG = "5101"
 COPY_MSG = "5102"
 OTHER_COPY_MSG = "5302"
 AB_MSG = "5201"                   # a second live card's message in the games channel
+SESSION_MSG = "5401"              # a session message in COPY_CHANNEL: its RSVP reactions are never the kill switch's
+STARTS = 1_800_000_000
 PRESSER = "3001"
 BOT_ID = "9001"
 ROLE = "7001"
 HASH = "c" * 64
-EMOJI = (WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI)
+EMOJI = (WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI)
 
 
 def reaction_path(channel: str, message: str, emoji: str) -> str:
@@ -194,8 +197,11 @@ async def test_on_gives_the_play_now_emoji_to_a_copy_outside_the_games_community
     await world.run("!card interactions off")
     world.clear_requests()
     await world.run("!card interactions on")
+    # The card's verified channel is a session channel, so the card (home) gets the calendar. The copy outside the
+    # games community gets the play-now emoji but never the calendar.
     assert sent(world, "PUT") == [reaction_path(GAMES, CARD_MSG, WAKE_EMOJI) + "/@me",
                                   reaction_path(GAMES, CARD_MSG, PLAY_NOW_EMOJI) + "/@me",
+                                  reaction_path(GAMES, CARD_MSG, SESSION_EMOJI) + "/@me",
                                   reaction_path(OTHER_CHANNEL, OTHER_COPY_MSG, WAKE_EMOJI) + "/@me",
                                   reaction_path(OTHER_CHANNEL, OTHER_COPY_MSG, PLAY_NOW_EMOJI) + "/@me"]
 
@@ -235,6 +241,34 @@ async def test_on_after_off_restores_the_presses(world: World) -> None:
     await world.run("!card interactions on")
     await presses.on_reaction(tap(GAMES, CARD_MSG))
     assert [press.card_id for press in handler.presses] == [card.id]
+
+
+async def test_a_calendar_tap_reaches_the_handler_while_on_and_nothing_while_off(world: World) -> None:
+    card = await live_card(world, "mc", CARD_MSG)
+    presses, handler = presses_for(world)
+    await presses.on_reaction(tap(GAMES, CARD_MSG, name=SESSION_EMOJI))
+    assert [(press.card_id, press.action) for press in handler.presses] == [(card.id, Action.SESSION)]
+    await world.run("!card interactions off")
+    world.clear_requests()
+    await presses.on_reaction(tap(GAMES, CARD_MSG, name=SESSION_EMOJI))
+    assert len(handler.presses) == 1
+    assert world.state.requests == []
+
+
+async def test_off_and_on_never_touch_a_session_message_or_its_rsvp_reactions(world: World) -> None:
+    card = await live_card(world, "mc", CARD_MSG)
+    await add_copy(world, card, COPY_CHANNEL, GUILD, COPY_MSG)
+    await world.db.run(lambda c: sessions.add(c, card_id=card.id, guild_id=GUILD, channel_id=COPY_CHANNEL,
+                                              message_id=SESSION_MSG, starts_at=STARTS, ends_at=STARTS + 7200,
+                                              proposer_id=PRESSER, now=1))
+    world.state.messages[(COPY_CHANNEL, SESSION_MSG)] = {"embeds": []}
+    world.clear_requests()
+    await world.run("!card interactions off")
+    await world.run("!card interactions on")
+    touched = [r.raw_path for r in world.state.requests if f"/messages/{SESSION_MSG}" in r.raw_path]
+    assert touched == []
+    assert sent(world, "DELETE") == [reaction_path(GAMES, CARD_MSG, emoji) for emoji in EMOJI] + \
+        [reaction_path(COPY_CHANNEL, COPY_MSG, emoji) for emoji in EMOJI]
 
 
 # one card -----------------------------------------------------------------------------------------------

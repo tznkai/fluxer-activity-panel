@@ -19,8 +19,8 @@ from fluxer_panel.cards import ChannelLink, FollowRole
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.logs import FIELDS_ATTR
-from fluxer_panel.presses import FOLLOW_EMOJI, PLAY_NOW_EMOJI, WAKE_EMOJI
-from fluxer_panel.seeding import Seeder, has_play_now_target, wanted_emoji
+from fluxer_panel.presses import FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, WAKE_EMOJI
+from fluxer_panel.seeding import Seeder, has_play_now_target, has_session_channel, wanted_emoji
 from tests.fakes import FakeFluxerState, Override, make_rest_app
 
 TOKEN = "SENTINEL-TOKEN-seeding"
@@ -94,7 +94,9 @@ def raw_paths(state: FakeFluxerState, method: str) -> list[str]:
 WAKE_SEGMENT = "%E2%96%B6%EF%B8%8F"
 FOLLOW_SEGMENT = "%F0%9F%94%94"
 PLAY_NOW_SEGMENT = "%F0%9F%99%8B"
-SEGMENTS = {WAKE_EMOJI: WAKE_SEGMENT, FOLLOW_EMOJI: FOLLOW_SEGMENT, PLAY_NOW_EMOJI: PLAY_NOW_SEGMENT}
+SESSION_SEGMENT = "%F0%9F%93%85"   # U+1F4C5, the calendar
+SEGMENTS = {WAKE_EMOJI: WAKE_SEGMENT, FOLLOW_EMOJI: FOLLOW_SEGMENT, PLAY_NOW_EMOJI: PLAY_NOW_SEGMENT,
+            SESSION_EMOJI: SESSION_SEGMENT}
 
 
 # wanted_emoji: the three rules
@@ -162,6 +164,49 @@ def test_a_play_now_surface_never_has_a_target() -> None:
     config = make_config(PLAY_NOW_CHANNEL_ID="2600")
 
     assert has_play_now_target(make_card(play_now_channel=LINK), config, surface_kind="play_now", home=True) is False
+
+
+# wanted_emoji: the calendar rule
+
+def test_the_calendar_is_wanted_only_with_a_session_target() -> None:
+    card = make_card(follow_role=ROLE)
+
+    assert wanted_emoji(card, play_now_target=True, session_target=True) == [
+        WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI]
+    assert wanted_emoji(card, play_now_target=True) == [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI]
+    assert wanted_emoji(make_card(), play_now_target=False, session_target=True) == [WAKE_EMOJI, SESSION_EMOJI]
+
+
+# has_session_channel: where a session can be planned
+
+def test_a_card_surface_has_a_session_channel_from_its_verified_own_channel_or_the_configured_one() -> None:
+    bare = make_config()
+    configured = make_config(PLAY_NOW_CHANNEL_ID="2600")
+
+    assert has_session_channel(make_card(play_now_channel=LINK), bare, surface_kind="card", home=True) is True
+    assert has_session_channel(make_card(), configured, surface_kind="card", home=True) is True
+    assert has_session_channel(make_card(), bare, surface_kind="card", home=True) is False
+
+
+def test_an_unverified_card_link_is_no_session_channel_on_its_own() -> None:
+    assert has_session_channel(make_card(play_now_channel=UNVERIFIED), make_config(), surface_kind="card",
+                               home=True) is False
+
+
+def test_a_home_copy_has_a_session_channel_from_either_source() -> None:
+    configured = make_config(PLAY_NOW_CHANNEL_ID="2600")
+
+    assert has_session_channel(make_card(play_now_channel=LINK), make_config(), surface_kind="copy", home=True) is True
+    assert has_session_channel(make_card(), configured, surface_kind="copy", home=True) is True
+    assert has_session_channel(make_card(), make_config(), surface_kind="copy", home=True) is False
+
+
+def test_a_far_copy_and_a_play_now_post_never_have_a_session_channel() -> None:
+    configured = make_config(PLAY_NOW_CHANNEL_ID="2600")
+
+    assert has_session_channel(make_card(play_now_channel=LINK), configured, surface_kind="copy", home=False) is False
+    assert has_session_channel(make_card(play_now_channel=LINK), configured, surface_kind="play_now",
+                               home=True) is False
 
 
 # seed: adds, skips and failures

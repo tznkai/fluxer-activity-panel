@@ -37,6 +37,7 @@ DAY = 86400
 WAKE_EMOJI = "\u25b6\ufe0f"        # the play emoji, as the bot sends it and Fluxer stores it
 FOLLOW_EMOJI = "\U0001F514"        # the bell
 PLAY_NOW_EMOJI = "\U0001F64B"      # the person raising a hand
+SESSION_EMOJI = "\U0001F4C5"       # the calendar: proposes a session
 
 SurfaceKind = Literal["card", "copy", "play_now", "session"]
 
@@ -45,9 +46,11 @@ class Action(Enum):
     WAKE = "wake"
     FOLLOW = "follow"
     PLAY_NOW = "play_now"
+    SESSION = "session"
 
 
-_BY_NAME = {"\u25b6": Action.WAKE, "\U0001F514": Action.FOLLOW, "\U0001F64B": Action.PLAY_NOW}
+_BY_NAME = {"\u25b6": Action.WAKE, "\U0001F514": Action.FOLLOW, "\U0001F64B": Action.PLAY_NOW,
+            "\U0001F4C5": Action.SESSION}
 
 
 def action_for(emoji: events.Emoji) -> Action | None:
@@ -167,7 +170,7 @@ class Presses:
                     log_event(log, "rsvp_failed", level=logging.WARNING, session_id=session_id,
                               reason=type(exc).__name__)
             return
-        # 2. Only the three emoji count.
+        # 2. Only the four press emoji count.
         action = action_for(event.emoji)
         if action is None:
             return

@@ -106,6 +106,8 @@ class Interactions:
                 await self.follow(press)
             case Action.PLAY_NOW:
                 await self.play_now(press)
+            case Action.SESSION:
+                return   # no session flow is wired yet: the press is admitted, then removed, and does nothing more
 
     async def wake(self, press: Press) -> None:
         """A wake press on any surface (card, copy or play-now post) wakes the card (AC4.8)."""

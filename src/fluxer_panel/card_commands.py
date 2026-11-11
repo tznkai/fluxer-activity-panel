@@ -24,8 +24,8 @@ from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.logs import log_event
-from fluxer_panel.presses import FOLLOW_EMOJI, PLAY_NOW_EMOJI, WAKE_EMOJI
-from fluxer_panel.seeding import Seeder, has_play_now_target, wanted_emoji
+from fluxer_panel.presses import FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, WAKE_EMOJI
+from fluxer_panel.seeding import Seeder, has_play_now_target, has_session_channel, wanted_emoji
 from fluxer_panel.sources.registry import PROBES, Sources, known_manager_kinds, manager_ref_hints
 
 if TYPE_CHECKING:
@@ -729,7 +729,7 @@ async def _unsubscribe(event: MessageCreate, ctx: CardContext, rest: str) -> _Re
 
 # interactions ----------------------------------------------------------------------------------------
 
-REACTION_EMOJI = (WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI)
+REACTION_EMOJI = (WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI)
 
 
 @dataclass(frozen=True)
@@ -776,8 +776,10 @@ async def _seed_targets(ctx: CardContext, seeder: Seeder, targets: list[_Target]
     for target in targets:
         home = target.kind == "card" or target.guild_id == games_guild_id
         play_now = has_play_now_target(target.card, ctx.config, surface_kind=target.kind, home=home)
+        session = has_session_channel(target.card, ctx.config, surface_kind=target.kind, home=home)
         await seeder.seed(target.channel_id, target.message_id,
-                          wanted_emoji(target.card, play_now_target=play_now), card_id=target.card.id)
+                          wanted_emoji(target.card, play_now_target=play_now, session_target=session),
+                          card_id=target.card.id)
 
 
 async def _reseed(ctx: CardContext, card_id: int) -> None:

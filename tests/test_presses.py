@@ -24,7 +24,7 @@ from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.pacer import ChannelPacer
-from fluxer_panel.presses import FOLLOW_EMOJI, PLAY_NOW_EMOJI, WAKE_EMOJI, Action, Press, Presses, Surface
+from fluxer_panel.presses import FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, WAKE_EMOJI, Action, Press, Presses, Surface
 from tests.fakes import FakeFluxerState, Override, make_rest_app
 
 TOKEN = "SENTINEL-TOKEN-presses"
@@ -259,6 +259,8 @@ def panel_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
     ("\u25b6", Action.WAKE),              # the play emoji without U+FE0F matches too
     (FOLLOW_EMOJI, Action.FOLLOW),
     (PLAY_NOW_EMOJI, Action.PLAY_NOW),
+    (SESSION_EMOJI, Action.SESSION),
+    ("\U0001F4C5", Action.SESSION),       # the calendar, as Fluxer names it
 ])
 async def test_the_three_emoji_on_a_card_are_presses_for_it(harness, name: str, action: Action) -> None:
     h = await harness()
@@ -389,6 +391,14 @@ async def test_the_same_press_within_the_user_window_is_absorbed_but_still_remov
     [absorbed] = [r for r in panel_records(caplog) if r.getMessage() == "press_absorbed"]
     assert absorbed.panel_fields["user_id"] == PRESSER
     assert absorbed.panel_fields["reason"] == "user_window"
+
+
+async def test_a_calendar_press_is_handled_before_its_removal_and_the_removal_is_sent(harness) -> None:
+    h = await harness()
+    await h.presses.on_reaction(reaction_add(name=SESSION_EMOJI))
+    assert [(p.card_id, p.action, p.user_id) for p in h.handler.presses] == [(CARD_ID, Action.SESSION, PRESSER)]
+    assert h.handler.deletes_at_call == [0]   # the handler ran before the one removal
+    assert deletes(h.state) == [removal_raw_path(GAMES, CARD_MSG, SESSION_EMOJI, PRESSER)]
 
 
 async def test_a_different_action_or_card_is_not_absorbed(harness) -> None:
