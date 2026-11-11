@@ -123,6 +123,13 @@ def test_press_log_action_with_emoji_is_dropped(captured):
     assert record["outcome"] == "added"
 
 
+def test_session_id_is_kept_as_an_integer_row_id(captured):
+    log = logging.getLogger("fluxer_panel.test")
+    log_event(log, "rsvp", session_id=42)
+    (record,) = parsed(captured)
+    assert record["session_id"] == 42
+
+
 def test_plain_stdlib_record_is_valid_json_with_message_as_event(captured):
     logging.getLogger("fluxer_client.rest").warning("rate limited on %s", "GET /x")
     (record,) = parsed(captured)
