@@ -26,6 +26,8 @@ from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.poller import Poller
 from fluxer_panel.resolver import CardStatus, StatusKind
+from fluxer_panel.rsvp import Counts
+from fluxer_panel.sessions import Session
 from fluxer_panel.sources.base import PlayerCounts
 from fluxer_panel.sources.registry import Sources
 from tests.fakes import FakeFluxerState, make_rest_app
@@ -36,8 +38,8 @@ PRESSER = "646464"          # the person who raised a play-now post
 NAME = "SENTINEL-NAME-9d2c"  # a display name, in the fake's member records
 SENTINELS = (REQUESTER, FOLLOWER, PRESSER, NAME)
 
-RENDERERS = ("board_message", "card_message", "outside_text", "play_now_message", "render_embed")
-RENDER_PREFIXES = ("render_", "board_", "card_", "play_now_")
+RENDERERS = ("board_message", "card_message", "outside_text", "play_now_message", "render_embed", "session_message")
+RENDER_PREFIXES = ("render_", "board_", "card_", "play_now_", "session_")
 
 TOKEN = "render-privacy-token"
 ADMIN = "1001"
@@ -125,6 +127,12 @@ async def test_every_rendering_with_the_sentinel_data_is_free_of_ids_and_names(d
                                               requested=open_counts),
         "outside_text": render.outside_text(card, asleep, NEXT),
         "play_now_message": render.play_now_message(card, role_id=ROLE, playing=3, ended=False, instance_url=URL),
+        "session_message": render.session_message(
+            card, Session(id=42, card_id=card.id, guild_id=GUILD, channel_id=GAMES, message_id="5010",
+                          starts_at=1_800_000_000, ends_at=1_800_003_600, proposer_id=REQUESTER,
+                          location_text=None, seats=None, recurrence=None, series_id=42, next_posted=False,
+                          state="upcoming", closed_at=None, moved=False, headsup_sent=False, created_at=1),
+            Counts(going=1, maybe=0, waiting=0), effective_location=None, effective_seats=None, instance_url=URL),
     }
     # the ended and the unknown-count forms of the play-now message are renderings too
     ended = render.play_now_message(card, role_id=ROLE, playing=None, ended=True, instance_url=URL)

@@ -12,12 +12,16 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fluxer_client.ids import require_snowflake
 from fluxer_panel import text
 from fluxer_panel.cards import Address, Card, ChannelLink
 from fluxer_panel.resolver import CardStatus, StatusKind, status_label
+
+if TYPE_CHECKING:  # type-only: sessions imports render at runtime in a later phase, so these must not be runtime imports
+    from fluxer_panel.rsvp import Counts
+    from fluxer_panel.sessions import Session
 
 ZWJ = "\u200d"  # zero-width joiner, written as an escape so no invisible character sits in the source
 
@@ -203,10 +207,11 @@ def slot_label(kind: str, suffix: str | None) -> str:
 
 
 def embed_units(embed: Mapping[str, Any]) -> int:
-    """The embed's length as Fluxer counts it: the title, the description and every field name and value, in UTF-16
-    code units."""
+    """The embed's length as Fluxer counts it: the title, the description, every field name and value and the footer
+    text, in UTF-16 code units."""
     total = units(embed.get("title", "")) + units(embed.get("description", ""))
-    return total + sum(units(field["name"]) + units(field["value"]) for field in embed.get("fields", []))
+    total += sum(units(field["name"]) + units(field["value"]) for field in embed.get("fields", []))
+    return total + units(embed.get("footer", {}).get("text", ""))
 
 
 def _fit_budget(embed: dict[str, Any], fields: list[dict[str, Any]]) -> None:
@@ -366,6 +371,24 @@ def outside_text(card: Card, status: CardStatus | None, next_text: str | None) -
 # The play-now message. The content is our own wording with the card title escaped, and its one mention is the card's
 # follow role. The sender adds allowed_mentions, so nothing here can ping a user.
 
+def _join_fields(card: Card, instance_url: str | None) -> list[dict[str, Any]]:
+    """The join part shared by the play-now and session messages: each public address slot, then each voice slot,
+    labelled as on the card, then the join text. A private address is never shown."""
+    fields: list[dict[str, Any]] = []
+    for address in card.addresses:
+        if address is not None and address.public:
+            fields.append({"name": slot_label(text.FIELD_ADDRESS, address.suffix),
+                           "value": code(host_port(address.host, address.port)), "inline": False})
+    for link in card.voices:
+        if link is not None:
+            fields.append({"name": slot_label(text.FIELD_VOICE, link.suffix),
+                           "value": _channel_value(link, text.VOICE_UNNAMED, instance_url), "inline": False})
+    if card.how_to_join is not None:
+        fields.append({"name": text.FIELD_JOIN, "value": fit(escape(card.how_to_join), LIMITS["join"]),
+                       "inline": False})
+    return fields
+
+
 def play_now_message(card: Card, *, role_id: str | None, playing: int | None, ended: bool,
                      instance_url: str | None) -> dict[str, Any]:
     """{"content": ..., "embeds": [embed]}; no allowed_mentions here (the sender adds it). `playing` None leaves the
@@ -380,17 +403,61 @@ def play_now_message(card: Card, *, role_id: str | None, playing: int | None, en
     fields: list[dict[str, Any]] = []
     if playing is not None:
         fields.append({"name": text.FIELD_STATUS, "value": text.PLAY_NOW_PLAYING.format(n=playing), "inline": False})
-    # Each public address slot, then each voice slot, labelled as on the card. A private address is never shown.
-    for address in card.addresses:
-        if address is not None and address.public:
-            fields.append({"name": slot_label(text.FIELD_ADDRESS, address.suffix),
-                           "value": code(host_port(address.host, address.port)), "inline": False})
-    for link in card.voices:
-        if link is not None:
-            fields.append({"name": slot_label(text.FIELD_VOICE, link.suffix),
-                           "value": _channel_value(link, text.VOICE_UNNAMED, instance_url), "inline": False})
-    if card.how_to_join is not None:
-        fields.append({"name": text.FIELD_JOIN, "value": fit(escape(card.how_to_join), LIMITS["join"]),
-                       "inline": False})
+    fields.extend(_join_fields(card, instance_url))
     embed: dict[str, Any] = {"title": fit(title, LIMITS["title"]), "color": NEUTRAL, "fields": fields}
     return {"content": content, "embeds": [embed]}
+
+
+# The session message: an embed with no mention in it. The sender adds allowed_mentions, and the text is escaped here.
+
+def session_message(card: Card, session: Session, counts: Counts, *, effective_location: str | None,
+                    effective_seats: int | None, instance_url: str | None, scrubbed: bool = False) -> dict[str, Any]:
+    """The session message. `effective_location` and `effective_seats` are the values the session resolves to; the
+    caller passes them, so this renderer reads nothing else. A cancelled or scrubbed session shows no location."""
+    fields: list[dict[str, Any]] = []
+    if session.state != "upcoming" or session.moved:
+        fields.append({"name": text.SESSION_FIELD_STATUS, "value": _session_status(session), "inline": False})
+    fields.append({"name": text.SESSION_FIELD_WHEN, "value": text.SESSION_WHEN.format(ts=session.starts_at),
+                   "inline": False})
+    fields.extend(_join_fields(card, instance_url))
+    location: dict[str, Any] | None = None
+    if effective_location is not None and session.state != "cancelled" and not scrubbed:
+        location = {"name": text.SESSION_FIELD_LOCATION, "value": fit(escape(effective_location), LIMITS["location"]),
+                    "inline": False}
+        fields.append(location)
+    if effective_seats is not None:
+        fields.append({"name": text.SESSION_FIELD_SEATS, "value": str(effective_seats), "inline": False})
+    rsvp_value = text.SESSION_COUNTS.format(going=counts.going, maybe=counts.maybe)
+    if counts.waiting > 0:
+        rsvp_value += text.SESSION_COUNTS_WAITING.format(waiting=counts.waiting)
+    fields.append({"name": text.SESSION_FIELD_RSVPS, "value": rsvp_value, "inline": False})
+    embed: dict[str, Any] = {
+        "title": fit(escape(card.title), LIMITS["title"]),
+        "color": NEUTRAL,
+        "fields": fields,
+        "footer": {"text": text.SESSION_FOOTER.format(n=session.id)},
+    }
+    join = [field for field in fields if field["name"] == text.FIELD_JOIN]
+    _fit_session_budget(embed, [*join, *([location] if location is not None else [])])
+    return {"embeds": [embed], "allowed_mentions": {"parse": []}}
+
+
+def _session_status(session: Session) -> str:
+    if session.state == "ended":
+        return text.SESSION_ENDED
+    if session.state == "cancelled":
+        return text.SESSION_CANCELLED
+    return text.SESSION_MOVED
+
+
+def _fit_session_budget(embed: dict[str, Any], holders: list[dict[str, Any]]) -> None:
+    """Shortens the given field values, in order, only as far as the embed limit needs. With the current limits the
+    worst case already fits (the AC3.4 test), so this is the backstop the plan asks for, and it never shortens more."""
+    over = embed_units(embed) - EMBED_CHAR_LIMIT
+    for holder in holders:
+        if over <= 0:
+            return
+        current = holder["value"]
+        shortened = fit(current, max(units(current) - over, 1))
+        holder["value"] = shortened
+        over -= units(current) - units(shortened)

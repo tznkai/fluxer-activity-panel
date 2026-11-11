@@ -278,3 +278,16 @@ SESSION_TIME_REFUSED = {
     "past": "That time has already passed.",
     "too_far": "That's more than 60 days away.",
 }
+# The session message: the field names, the When and counts lines, the footer and the closed-form statuses.
+SESSION_FIELD_WHEN = "When"
+SESSION_FIELD_LOCATION = "Location"
+SESSION_FIELD_SEATS = "Seats"
+SESSION_FIELD_RSVPS = "RSVPs"
+SESSION_FIELD_STATUS = "Status"
+SESSION_WHEN = "<t:{ts}:F> · <t:{ts}:R>"
+SESSION_COUNTS = "{going} going · {maybe} maybe"
+SESSION_COUNTS_WAITING = " · {waiting} waiting"
+SESSION_FOOTER = "Session {n} · ✅ going · ❔ maybe · ❌ can't"
+SESSION_ENDED = "Ended"
+SESSION_CANCELLED = "Cancelled"
+SESSION_MOVED = "Time changed"

@@ -230,29 +230,29 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 
 ## Card rendering
 
-- `src/fluxer_panel/render.py:75` `def neutralise(` — breaks the mention forms (`@everyone`, `<@id>`, `<#id>`) with a zero-width joiner, so card text cannot ping anyone or form a mention.
-- `src/fluxer_panel/render.py:27` `_MD = re.compile(` — the markdown control characters that `escape` backslashes.
-- `src/fluxer_panel/render.py:80` `def escape(` — the escape for all card text: neutralise first, then escape markdown. Every user text passes through it before it enters an embed.
-- `src/fluxer_panel/render.py:110` `def code(` — a code span. Backticks are removed, because they cannot be escaped inside one.
-- `src/fluxer_panel/render.py:91` `def fit(` — cuts escaped text to a limit in UTF-16 units, the unit Fluxer counts in, without leaving a dangling backslash that would escape the ellipsis.
-- `src/fluxer_panel/render.py:303` `"allowed_mentions": {"parse": []}` — every card send and edit carries empty `allowed_mentions`.
-- `src/fluxer_panel/render.py:337` `def outside_location(has_location: bool)` — takes a bool, so the location text cannot reach the outside line.
-- `src/fluxer_panel/render.py:233` `fit(escape(channel.channel_name)` — a voice or text channel's name is escaped before it enters the field, so a name cannot form a link or a mention.
-- `src/fluxer_panel/render.py:313` `def _outside_channel(` — a channel name on the outside line is mention-neutralised, and the line shows it only when the link is verified.
+- `src/fluxer_panel/render.py:79` `def neutralise(` — breaks the mention forms (`@everyone`, `<@id>`, `<#id>`) with a zero-width joiner, so card text cannot ping anyone or form a mention.
+- `src/fluxer_panel/render.py:31` `_MD = re.compile(` — the markdown control characters that `escape` backslashes.
+- `src/fluxer_panel/render.py:84` `def escape(` — the escape for all card text: neutralise first, then escape markdown. Every user text passes through it before it enters an embed.
+- `src/fluxer_panel/render.py:114` `def code(` — a code span. Backticks are removed, because they cannot be escaped inside one.
+- `src/fluxer_panel/render.py:95` `def fit(` — cuts escaped text to a limit in UTF-16 units, the unit Fluxer counts in, without leaving a dangling backslash that would escape the ellipsis.
+- `src/fluxer_panel/render.py:308` `"allowed_mentions": {"parse": []}` — every card send and edit carries empty `allowed_mentions`.
+- `src/fluxer_panel/render.py:342` `def outside_location(has_location: bool)` — takes a bool, so the location text cannot reach the outside line.
+- `src/fluxer_panel/render.py:238` `fit(escape(channel.channel_name)` — a voice or text channel's name is escaped before it enters the field, so a name cannot form a link or a mention.
+- `src/fluxer_panel/render.py:318` `def _outside_channel(` — a channel name on the outside line is mention-neutralised, and the line shows it only when the link is verified.
 - `tests/test_render.py:698` `SENTINEL_LOCATION not in outside` — the test that the location text never appears in the outside rendering.
-- `src/fluxer_panel/render.py:120` `def channel_link(` — the only place a channel link is built. Both ids pass the snowflake check first.
-- `src/fluxer_panel/render.py:202` `suffix=escape(suffix)` — a slot's suffix is validated card text (`card_fields.suffix`), and it is escaped again before it enters the field name, as a second layer.
-- `src/fluxer_panel/render.py:326` `def outside_address(address: Address, public: bool) -> str:` — the single helper that decides, for every address slot, whether the outside line shows the host or only says the address is in Fluxer. The host is shown only when `public` is true, with or without a suffix.
-- `src/fluxer_panel/render.py:359` `lines.append(outside_address(address, address.public))` — the outside text sends each of the three address slots through that helper and has no other path to a host.
-- `src/fluxer_panel/render.py:385` `if address is not None and address.public:` — the play-now message shows an address slot only when that slot is public.
+- `src/fluxer_panel/render.py:124` `def channel_link(` — the only place a channel link is built. Both ids pass the snowflake check first.
+- `src/fluxer_panel/render.py:206` `suffix=escape(suffix)` — a slot's suffix is validated card text (`card_fields.suffix`), and it is escaped again before it enters the field name, as a second layer.
+- `src/fluxer_panel/render.py:331` `def outside_address(address: Address, public: bool) -> str:` — the single helper that decides, for every address slot, whether the outside line shows the host or only says the address is in Fluxer. The host is shown only when `public` is true, with or without a suffix.
+- `src/fluxer_panel/render.py:364` `lines.append(outside_address(address, address.public))` — the outside text sends each of the three address slots through that helper and has no other path to a host.
+- `src/fluxer_panel/render.py:379` `if address is not None and address.public:` — the play-now and session messages (both through `_join_fields`) show an address slot only when that slot is public.
 - `tests/test_render_slots.py:141` `assert LAN_HOST not in outside` — the leak test: a private address in any one of the three slots never appears outside Fluxer.
-- `src/fluxer_panel/render.py:212` `def _fit_budget(` — keeps a card embed within 6000 UTF-16 units by shortening first_time, then the description, then join. No slot, label or link is cut.
+- `src/fluxer_panel/render.py:217` `def _fit_budget(` — keeps a card embed within 6000 UTF-16 units by shortening first_time, then the description, then join. No slot, label or link is cut.
 - `tests/test_text.py:27` `"guild" in node.value.lower()` — the scan that fails on any user-facing string that mentions a guild.
 
-- `src/fluxer_panel/render.py:128` `def jump_link(` — the only place a masked jump link is built. Its ids pass the snowflake check first.
-- `src/fluxer_panel/render.py:249` `fit(escape(card.title), LIMITS["board_title"])` — a board cell's title is escaped before it is fitted, so a title cannot ping anyone or form a link.
-- `src/fluxer_panel/render.py:273` `card.channel_id == games_channel_id` — a board status is a jump link only for a card whose message is in the board's channel, so the link's community is the one looked up for that channel, and no link leaves it.
-- `src/fluxer_panel/render.py:266` `return {"embeds": embeds, "allowed_mentions": {"parse": []}}` — the summary board message carries empty `allowed_mentions`.
+- `src/fluxer_panel/render.py:132` `def jump_link(` — the only place a masked jump link is built. Its ids pass the snowflake check first.
+- `src/fluxer_panel/render.py:254` `fit(escape(card.title), LIMITS["board_title"])` — a board cell's title is escaped before it is fitted, so a title cannot ping anyone or form a link.
+- `src/fluxer_panel/render.py:278` `card.channel_id == games_channel_id` — a board status is a jump link only for a card whose message is in the board's channel, so the link's community is the one looked up for that channel, and no link leaves it.
+- `src/fluxer_panel/render.py:271` `return {"embeds": embeds, "allowed_mentions": {"parse": []}}` — the summary board message carries empty `allowed_mentions`.
 - `src/fluxer_panel/poller.py:562` `payload = render.card_message(embed)` — a subscription copy is sent with the card's own payload, whose `allowed_mentions` is `{"parse": []}`. A copy mentions nobody, the same as the card.
 
 ## Card commands
