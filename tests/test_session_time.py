@@ -118,6 +118,21 @@ def test_exactly_sixty_days_ahead_is_accepted_and_a_minute_more_is_too_far():
     assert refused_reason("2026-07-31 12:01", now=now) == "too_far"
 
 
+def test_the_horizon_counts_real_time_across_the_fall_back():
+    # 2026-10-01 to 2026-11-30 is 60 wall-clock days, but the fall-back hour makes it 60 days and 1 hour.
+    now = at(2026, 10, 1, 12)
+    assert refused_reason("2026-11-30 12:00", now=now) == "too_far"
+
+
+def test_the_horizon_counts_real_time_across_the_spring_forward():
+    # 2026-02-01 to 2026-04-02 is 60 wall-clock days and 30 minutes, but the spring-forward hour makes it
+    # 59 days and 23.5 hours of real time, so it is inside the horizon.
+    now = at(2026, 2, 1, 12)
+    when = parse("2026-04-02 12:30", now=now, tz=NY)
+    assert local(when) == (2026, 4, 2, 12, 30)
+    assert when.astimezone(timezone.utc) - now.astimezone(timezone.utc) < timedelta(days=60)
+
+
 # AC1.6: offered slots.
 
 def test_offered_slots_skip_under_an_hour_and_use_the_weekend_templates():
