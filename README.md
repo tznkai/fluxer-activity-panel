@@ -149,8 +149,8 @@ file means the bot has never run a purge.
 ## Cards
 
 Admins manage cards by direct message with `!card` commands. A card is one message in the games
-channel. It shows how to join, what a first-timer should know, and optional extras: a voice channel,
-up to three text channels, a server address, an in-person location and seats. A card for a game
+channel. It shows how to join, what a first-timer should know, and optional extras: up to three voice channels,
+up to three text channels, up to three server addresses, an in-person location and seats. A card for a game
 server can also show a status line, such as Asleep, Waking up or Ready with a player count.
 
 ### Lifecycle
@@ -295,15 +295,25 @@ and the presser gets a direct message pointing at the card in the games channel.
   characters each): text. Control characters and bidirectional overrides are refused.
 - `sort`: an integer from 0 to 9999. `seats`: an integer from 1 to 999.
 - `location`: text up to 200 characters. Outside Fluxer it shows only a fixed placeholder.
-- `voice <guild_id> <channel_id>`, or a pasted channel link. When the bot is in that community,
-  the channel must be a voice channel there, and its name is stored. When the bot is not in it,
-  the channel is stored unverified and the reply says so.
-- `text_channel1`, `text_channel2` and `text_channel3`: three slots for text channels. Each takes the same input
-  as `voice`, and each is checked the same way, except that the channel must be a text channel there. Each
-  slot is separate: `!card clear <slug> text_channel2` clears only the second. The channels are listed in one
-  `Channels` field, in slot order.
-- `address <host>:<port>`: the server address. `address_public yes` or `no` (the default `no`)
-  decides whether the outside text shows it.
+- `voice`, `voice2` and `voice3 <guild_id> <channel_id>`, or a pasted channel link: three slots for voice
+  channels. When the bot is in that community, the channel must be a voice channel there, and its name is stored
+  and kept up to date. When the bot is not in it, the channel is stored unverified and the reply says so.
+- `text_channel`, `text_channel2` and `text_channel3`: three slots for text channels. Each takes the same input
+  as `voice`, and each is checked the same way, except that the channel must be a text channel there.
+  `text_channel` was called `text_channel1`; the old name is refused with a reply that gives the new one.
+- `address`, `address2` and `address3 <host>:<port>`: three slots for server addresses, for example a Java and a
+  Bedrock address for a Paper server with Geyser. `address_public`, `address2_public` and `address3_public` (`yes`
+  or `no`, default `no`) decide, for each slot on its own, whether the outside text and the play-now post show
+  that address. The card itself, and every subscription copy of it in any community, shows all address slots.
+- `<slot>_suffix <label>`, for each of the nine slots above (`voice_suffix`, `voice2_suffix` … `address3_suffix`):
+  a short label that tells the slot apart, shown as "Voice (Raid night)" on the card and as "Fluxer voice channel
+  (Raid night)" outside Fluxer. It is 1 to 20 characters of letters, digits, spaces and `- + . '`; spaces at the
+  ends are trimmed and runs of spaces become one. A suffix, or a public flag, can be set only on a slot that has a
+  value.
+- Each slot is its own line on the card, in this order: the voice slots, the text channel slots, then the address
+  slots, each in slot order. Empty slots are skipped. Slots are independent: `!card clear <slug> voice` clears the
+  first voice slot with its suffix (and an address slot with its public flag), and never moves another slot up into
+  its place. `!card clear <slug> voice_suffix` clears only the suffix.
 - `manager <kind> <ref>`: a configured host manager and its reference. Only `pterodactyl` exists.
 - `probe <kind> <host> <port>`: a probe kind (`minecraft_bedrock`, `minecraft_java` or `a2s`) with
   its host and port.

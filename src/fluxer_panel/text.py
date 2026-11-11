@@ -25,7 +25,9 @@ FIELD_JOIN = "How to join"
 FIELD_FIRST_TIME = "First time?"
 FIELD_ADDRESS = "Address"
 FIELD_VOICE = "Voice"
-FIELD_CHANNELS = "Channels"
+FIELD_TEXT_CHANNEL = "Channel"
+# A slot's field name with its suffix: "Voice (Raid night)". The suffix is escaped before it is placed.
+SLOT_LABEL = "{kind} ({suffix})"
 FIELD_LOCATION = "Location"
 FIELD_MAP = "Map"
 FIELD_VERSION = "Version"
@@ -37,6 +39,10 @@ OUTSIDE_CHANNEL_NAMED = "Fluxer: #{name}"
 OUTSIDE_VOICE = "Fluxer voice channel"
 OUTSIDE_TEXT = "Fluxer text channel"
 OUTSIDE_ADDRESS_HIDDEN = "Address in Fluxer"
+# A slot's suffix outside Fluxer, after the kind's usual line: "Fluxer voice channel (Raid night)".
+OUTSIDE_SUFFIX = " ({suffix})"
+OUTSIDE_ADDRESS_PUBLIC_SUFFIX = "Address ({suffix}): {address}"
+OUTSIDE_ADDRESS_HIDDEN_SUFFIX = "Address ({suffix}) in Fluxer"
 OUTSIDE_LOCATION = "In person — location in Fluxer"
 
 # Admin card commands: validation replies. The field and rule are fixed names, never the value typed.
@@ -61,7 +67,11 @@ RULES = {
     "not_configured": "is not configured on this bot",
     "pterodactyl_ref": "must be an 8-character Pterodactyl server id",
     "no_address": "needs an address first",
+    "no_slot": "needs its slot set first",
+    "suffix_chars": "may contain only letters, digits, spaces and - + . '",
 }
+# A field that was renamed: the old name is refused with this reply, which names both. Never an alias.
+FIELD_RENAMED = "{old} is now {new}. Use {new} instead."
 
 # Admin card commands: replies. None of them contains user input.
 CARD_USAGE = ("Usage: !card new <slug> <title> · !card set <slug> <field> <value> · "
@@ -80,8 +90,10 @@ HELP_COMMANDS = (
     "!card unsubscribe <slug> <channel>: remove that copy and stop posting there\n"
     "!card interactions on|off [slug]: turn the reaction taps on or off, for every card or for one\n"
     "!card help fields: each field, its format and its limits\n"
-    "Fields: title, description, join, first_time, sort, seats, location, voice, text_channel1, text_channel2, "
-    "text_channel3, address, address_public, manager, probe, show, follow_role, play_now_channel"
+    "Fields: title, description, join, first_time, sort, seats, location, voice, voice2, voice3, text_channel, "
+    "text_channel2, text_channel3, address, address2, address3, address_public, address2_public, address3_public, "
+    "voice_suffix, voice2_suffix, voice3_suffix, text_channel_suffix, text_channel2_suffix, text_channel3_suffix, "
+    "address_suffix, address2_suffix, address3_suffix, manager, probe, show, follow_role, play_now_channel"
 )
 # `!card help fields`: one line per field. The placeholders are filled from the code's limits and kinds.
 HELP_FIELDS = (
@@ -92,12 +104,16 @@ HELP_FIELDS = (
     "sort: a whole number from {sort_min} to {sort_max}.\n"
     "seats: a whole number from {seats_min} to {seats_max}.\n"
     "location: text, 1 to {location} characters. Outside Fluxer it shows only a fixed line.\n"
-    "voice: <community id> <channel id>, or a pasted channel link. Verified when the bot is in that community.\n"
-    "text_channel1: a text channel, as voice: <community id> <channel id> or a pasted channel link.\n"
-    "text_channel2: a text channel, as voice: <community id> <channel id> or a pasted channel link.\n"
-    "text_channel3: a text channel, as voice: <community id> <channel id> or a pasted channel link.\n"
-    "address: <host>:<port>, the server address. An IPv6 host goes in brackets: [host]:port.\n"
-    "address_public: yes or no (default no). Shows the address outside Fluxer. Needs an address first.\n"
+    "voice, voice2, voice3: a voice channel, as <community id> <channel id> or a pasted channel link. Checked and "
+    "named when the bot is in that community.\n"
+    "text_channel, text_channel2, text_channel3: a text channel, given as for voice. text_channel was text_channel1.\n"
+    "address, address2, address3: <host>:<port>. An IPv6 host goes in brackets: [host]:port.\n"
+    "address_public, address2_public, address3_public: yes or no (default no). Shows that address outside Fluxer. "
+    "Needs the address first.\n"
+    "voice_suffix, voice2_suffix, voice3_suffix, text_channel_suffix, text_channel2_suffix, text_channel3_suffix, "
+    "address_suffix, address2_suffix, address3_suffix: a label for that slot, as in Voice (Raid night). 1 to "
+    "{suffix_max} letters, digits, spaces and - + . ' only. Needs the slot set first. Clearing a slot clears its "
+    "label too.\n"
     "manager: <kind> <ref>, kind one of {manager_kinds}. The ref each kind expects: {manager_refs}.\n"
     "probe: <{probe_kinds}> <host> <port>.\n"
     "show: any of {show_items}, comma separated, or none.\n"

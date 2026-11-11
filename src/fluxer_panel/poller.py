@@ -311,8 +311,8 @@ class Poller:
         return _Evaluated(card, res.status, embed)
 
     async def _refresh_names(self, card: cards.Card) -> cards.Card:
-        """Re-reads the name of each verified channel link (the voice channel and the text channels), at most once per
-        refresh interval. Returns the card to render."""
+        """Re-reads the name of each verified channel link (every voice slot and every text channel slot), at most once
+        per refresh interval. Returns the card to render."""
         links = _verified_links(card)
         if not links:
             return card
@@ -322,21 +322,21 @@ class Poller:
             return card
         self._names_checked[card.id] = now
         attempted = False
-        for slot, link, channel_type in links:
-            attempted = await self._refresh_name(card.id, slot, link, channel_type) or attempted
+        for kind, slot, link, channel_type in links:
+            attempted = await self._refresh_name(card.id, kind, slot, link, channel_type) or attempted
         if not attempted:
             return card
         # Reloaded after any write attempt, so this tick renders what the store holds now, not the links as read.
         return await self._db.run(lambda c: cards.get_by_id(c, card.id)) or card
 
-    async def _refresh_name(self, card_id: int, slot: int | None, link: cards.ChannelLink,
+    async def _refresh_name(self, card_id: int, kind: str, slot: int, link: cards.ChannelLink,
                             channel_type: int) -> bool:
-        """Re-reads one link's channel and writes a changed name. `slot` is None for the voice link. Returns whether a
-        write was attempted."""
+        """Re-reads one link's channel and writes a changed name. `kind` is "voice" or "text_channel", and `slot` is
+        that kind's slot. Returns whether a write was attempted."""
         try:
             channel = await self._rest.get_channel(link.channel_id)
         except Exception as exc:  # noqa: BLE001 - a failed name check keeps the stored name
-            event = "voice_refresh_failed" if slot is None else "text_channel_refresh_failed"
+            event = "voice_refresh_failed" if kind == "voice" else "text_channel_refresh_failed"
             log_event(log, event, level=logging.WARNING, card_id=card_id, reason=type(exc).__name__)
             return False
         name = channel_name(channel.get("name"))
@@ -346,8 +346,8 @@ class Poller:
             return False
         # Only the name is written, and only while the link still matches the one read: an admin's clear or set that
         # landed during the channel lookup stands.
-        if slot is None:
-            await self._db.run(lambda c: cards.set_voice_name_if(c, card_id, link, name))
+        if kind == "voice":
+            await self._db.run(lambda c: cards.set_voice_name_if(c, card_id, link, name, slot=slot))
         else:
             await self._db.run(lambda c: cards.set_text_channel_name_if(c, card_id, slot, link, name))
         return True
@@ -733,14 +733,15 @@ class Poller:
         await self._db.run(lambda c: _clear_posted(c, channel_id, message_id))
 
 
-def _verified_links(card: cards.Card) -> list[tuple[int | None, cards.ChannelLink, int]]:
-    """Each verified channel link, with its slot (None for voice) and the channel type it must still have."""
-    links: list[tuple[int | None, cards.ChannelLink, int]] = []
-    if card.voice is not None and card.voice.verified:
-        links.append((None, card.voice, VOICE_CHANNEL_TYPE))
-    for slot, link in enumerate(card.text_channels, start=1):
-        if link is not None and link.verified:
-            links.append((slot, link, TEXT_CHANNEL_TYPE))
+def _verified_links(card: cards.Card) -> list[tuple[str, int, cards.ChannelLink, int]]:
+    """Each verified channel link in every voice slot and every text channel slot, with its kind, its slot and the
+    channel type it must still have."""
+    links: list[tuple[str, int, cards.ChannelLink, int]] = []
+    for kind, slots, channel_type in (("voice", card.voices, VOICE_CHANNEL_TYPE),
+                                      ("text_channel", card.text_channels, TEXT_CHANNEL_TYPE)):
+        for slot, link in enumerate(slots, start=1):
+            if link is not None and link.verified:
+                links.append((kind, slot, link, channel_type))
     return links
 
 

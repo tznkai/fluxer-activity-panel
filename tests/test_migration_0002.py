@@ -26,7 +26,7 @@ async def test_fresh_database_reaches_the_latest_version(tmp_path: Path) -> None
 async def test_v1_database_with_rows_migrates_and_keeps_them(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "panel.db"
     real_migrations = dbmod.load_migrations()
-    assert [version for version, _ in real_migrations] == [1, 2, 3, 4, 5, 6]
+    assert [version for version, _ in real_migrations] == [1, 2, 3, 4, 5, 6, 7]
 
     # Build a genuine v1 database: only the first migration exists at this point.
     monkeypatch.setattr(dbmod, "load_migrations", lambda: real_migrations[:1])

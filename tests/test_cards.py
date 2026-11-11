@@ -28,8 +28,8 @@ HASH = "a" * 64
 SENTINEL_SLUG = "sentinel-slug-91c2"
 
 SLOT_SETTERS = {
-    "voice": lambda c, card_id: cards.set_voice(c, card_id, ChannelLink("1001", "1002", "general", True)),
-    "address": lambda c, card_id: cards.set_address(c, card_id, Address("h.invalid", 25565, False)),
+    "voice": lambda c, card_id: cards.set_voice(c, card_id, ChannelLink("1001", "1002", "general", True), slot=1),
+    "address": lambda c, card_id: cards.set_address(c, card_id, Address("h.invalid", 25565, False), slot=1),
     "location": lambda c, card_id: cards.set_location(c, card_id, Location("Room 4")),
     "seats": lambda c, card_id: cards.set_seats(c, card_id, 4),
     "manager": lambda c, card_id: cards.set_manager(c, card_id, ManagerRef("ptero", "srv-1")),
@@ -98,8 +98,8 @@ async def test_card_loads_with_exactly_the_slots_set(db: Database, slots: tuple[
 
 async def test_loaded_slots_hold_the_values_written(db: Database) -> None:
     card_id = await _create(db)
-    await db.run(lambda c: cards.set_voice(c, card_id, ChannelLink("1001", "1002", None, False)))
-    await db.run(lambda c: cards.set_address(c, card_id, Address("h.invalid", 25565, True)))
+    await db.run(lambda c: cards.set_voice(c, card_id, ChannelLink("1001", "1002", None, False), slot=1))
+    await db.run(lambda c: cards.set_address(c, card_id, Address("h.invalid", 25565, True), slot=1))
     await db.run(lambda c: cards.set_probe(c, card_id, ProbeRef("a2s", "h.invalid", 27015)))
 
     card = await _get(db, "alpha")
@@ -113,10 +113,10 @@ async def test_loaded_slots_hold_the_values_written(db: Database) -> None:
 async def test_set_address_public_reports_missing_row(db: Database) -> None:
     card_id = await _create(db)
 
-    assert await db.run(lambda c: cards.set_address_public(c, card_id, True)) is False
+    assert await db.run(lambda c: cards.set_address_public(c, card_id, True, slot=1)) is False
 
-    await db.run(lambda c: cards.set_address(c, card_id, Address("h.invalid", 25565, False)))
-    assert await db.run(lambda c: cards.set_address_public(c, card_id, True)) is True
+    await db.run(lambda c: cards.set_address(c, card_id, Address("h.invalid", 25565, False), slot=1))
+    assert await db.run(lambda c: cards.set_address_public(c, card_id, True, slot=1)) is True
     card = await _get(db, "alpha")
     assert card is not None and card.address is not None and card.address.public is True
 
@@ -165,12 +165,12 @@ async def test_update_fields_with_no_columns_raises_a_clear_error(db: Database) 
         await db.run(lambda c: cards.update_fields(c, card_id, NOW))
 
 
-async def test_clear_slot_removes_only_that_slot(db: Database) -> None:
+async def test_clear_voice_removes_only_that_slot(db: Database) -> None:
     card_id = await _create(db)
-    await db.run(lambda c: cards.set_voice(c, card_id, ChannelLink("1001", "1002", None, False)))
+    await db.run(lambda c: cards.set_voice(c, card_id, ChannelLink("1001", "1002", None, False), slot=1))
     await db.run(lambda c: cards.set_seats(c, card_id, 4))
 
-    await db.run(lambda c: cards.clear_slot(c, card_id, "voice"))
+    await db.run(lambda c: cards.clear_voice(c, card_id, 1))
 
     card = await _get(db, "alpha")
     assert card is not None
@@ -246,10 +246,10 @@ async def test_clear_message_if_stale_changes_nothing(db: Database) -> None:
 
 async def test_set_voice_name_if_renames_the_voice_that_was_read(db: Database) -> None:
     card_id = await _create(db)
-    await db.run(lambda c: cards.set_voice(c, card_id, ChannelLink("1001", "1002", "Old", True)))
+    await db.run(lambda c: cards.set_voice(c, card_id, ChannelLink("1001", "1002", "Old", True), slot=1))
 
     changed = await db.run(lambda c: cards.set_voice_name_if(
-        c, card_id, ChannelLink("1001", "1002", "Old", True), "New"))
+        c, card_id, ChannelLink("1001", "1002", "Old", True), "New", slot=1))
 
     assert changed is True
     card = await _get(db, "alpha")
@@ -266,10 +266,10 @@ async def test_set_voice_name_if_renames_the_voice_that_was_read(db: Database) -
 async def test_set_voice_name_if_leaves_a_voice_that_changed_since_it_was_read(
         db: Database, stored: ChannelLink) -> None:
     card_id = await _create(db)
-    await db.run(lambda c: cards.set_voice(c, card_id, stored))
+    await db.run(lambda c: cards.set_voice(c, card_id, stored, slot=1))
 
     changed = await db.run(lambda c: cards.set_voice_name_if(
-        c, card_id, ChannelLink("1001", "1002", "Old", True), "New"))
+        c, card_id, ChannelLink("1001", "1002", "Old", True), "New", slot=1))
 
     assert changed is False
     card = await _get(db, "alpha")
@@ -282,10 +282,10 @@ async def test_set_voice_name_if_leaves_an_unverified_voice_without_a_name_alone
     # rule that only a verified voice carries a name, so the write must be refused rather than raise.
     card_id = await _create(db)
     stored = ChannelLink("1001", "1002", None, False)
-    await db.run(lambda c: cards.set_voice(c, card_id, stored))
+    await db.run(lambda c: cards.set_voice(c, card_id, stored, slot=1))
 
     changed = await db.run(lambda c: cards.set_voice_name_if(
-        c, card_id, ChannelLink("1001", "1002", None, True), "New"))
+        c, card_id, ChannelLink("1001", "1002", None, True), "New", slot=1))
 
     assert changed is False
     card = await _get(db, "alpha")
@@ -297,7 +297,7 @@ async def test_set_voice_name_if_never_inserts_a_cleared_voice(db: Database) -> 
     card_id = await _create(db)
 
     changed = await db.run(lambda c: cards.set_voice_name_if(
-        c, card_id, ChannelLink("1001", "1002", "Old", True), "New"))
+        c, card_id, ChannelLink("1001", "1002", "Old", True), "New", slot=1))
 
     assert changed is False
     card = await _get(db, "alpha")

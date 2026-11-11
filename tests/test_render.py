@@ -344,7 +344,7 @@ def test_card_fields_appear_in_the_documented_order() -> None:
     embed = render.render_embed(full_card(), READY_FULL, "Restarts in 30 min", instance_url=INSTANCE)
     assert [f["name"] for f in embed["fields"]] == [
         text.FIELD_STATUS, text.FIELD_NEXT, text.FIELD_JOIN, text.FIELD_FIRST_TIME,
-        text.FIELD_ADDRESS, text.FIELD_VOICE, text.FIELD_LOCATION, text.FIELD_MAP,
+        text.FIELD_VOICE, text.FIELD_ADDRESS, text.FIELD_LOCATION, text.FIELD_MAP,
     ]
     assert all(f["inline"] is False for f in embed["fields"])
 
@@ -480,7 +480,7 @@ def test_maximum_length_card_stays_within_embed_limits(unit: str, instance_url: 
     )
     embed = render.render_embed(card, status, "Restarts in 30 min", instance_url=instance_url)
     assert render.LIMITS["description"] == 1024
-    assert text.FIELD_CHANNELS in fields_of(embed)
+    assert text.FIELD_TEXT_CHANNEL in fields_of(embed)
     assert render.units(embed["title"]) <= 256
     assert render.units(embed["description"]) <= render.LIMITS["description"]
     assert embed["description"].endswith("…")
@@ -737,8 +737,8 @@ def test_full_outside_text_has_each_line_in_order() -> None:
         "Ready · 3 / 10",
         "Restarts in 30 min",
         "Join with the link",
-        "mc.example.invalid:19132",
         "Fluxer: #lobby",
+        "mc.example.invalid:19132",
         text.OUTSIDE_LOCATION,
     ])
     assert render.outside_text(outside_full_card(), status, "Restarts in 30 min") == expected
@@ -799,39 +799,43 @@ def test_outside_text_without_probe_never_mentions_players() -> None:
 
 
 
-# Text channels: one Channels field, in slot order, each entry rendered like the voice field ----------
+# Text channels: one Channel field per slot, in slot order, each value rendered like the voice field ----------
 
 def _text(channel_id: str, name: str | None = "general", verified: bool = True) -> ChannelLink:
     return ChannelLink(guild_id="1001", channel_id=channel_id, channel_name=name, verified=verified)
 
 
-def test_text_channels_render_in_slot_order_as_links_in_one_field() -> None:
+def _channel_values(embed: dict) -> list[str]:
+    return [f["value"] for f in embed["fields"] if f["name"] == text.FIELD_TEXT_CHANNEL]
+
+
+def test_text_channels_render_in_slot_order_one_field_each() -> None:
     card = make_card(text_channels=(_text("2001", "general"), None, _text("2003", "ops")))
     embed = render.render_embed(card, None, None, instance_url=INSTANCE)
-    assert fields_of(embed)[text.FIELD_CHANNELS] == (
-        f"[#general]({INSTANCE}/channels/1001/2001)\n[#ops]({INSTANCE}/channels/1001/2003)")
+    assert _channel_values(embed) == [f"[#general]({INSTANCE}/channels/1001/2001)",
+                                      f"[#ops]({INSTANCE}/channels/1001/2003)"]
 
 
-def test_channels_field_is_absent_without_text_channels() -> None:
+def test_no_channel_field_without_text_channels() -> None:
     embed = render.render_embed(make_card(), None, None, instance_url=INSTANCE)
-    assert text.FIELD_CHANNELS not in fields_of(embed)
+    assert text.FIELD_TEXT_CHANNEL not in fields_of(embed)
 
 
-def test_channels_field_follows_the_voice_field() -> None:
+def test_channel_fields_follow_the_voice_field() -> None:
     card = full_card(text_channels=(_text("2003", "ops"), None, None))
     names = [f["name"] for f in render.render_embed(card, READY_FULL, None, instance_url=INSTANCE)["fields"]]
-    assert names.index(text.FIELD_CHANNELS) == names.index(text.FIELD_VOICE) + 1
+    assert names.index(text.FIELD_TEXT_CHANNEL) == names.index(text.FIELD_VOICE) + 1
 
 
 def test_unverified_text_channel_shows_the_plain_label_inside_the_link() -> None:
     card = make_card(text_channels=(None, _text("2002", None, verified=False), None))
     embed = render.render_embed(card, None, None, instance_url=INSTANCE)
-    assert fields_of(embed)[text.FIELD_CHANNELS] == f"[{text.TEXT_UNNAMED}]({INSTANCE}/channels/1001/2002)"
+    assert _channel_values(embed) == [f"[{text.TEXT_UNNAMED}]({INSTANCE}/channels/1001/2002)"]
 
 
 def test_unverified_text_channel_ignores_a_stored_name() -> None:
     card = make_card(text_channels=(_text("2002", "general", verified=False),))
-    value = fields_of(render.render_embed(card, None, None, instance_url=INSTANCE))[text.FIELD_CHANNELS]
+    [value] = _channel_values(render.render_embed(card, None, None, instance_url=INSTANCE))
     assert "general" not in value
     assert f"[{text.TEXT_UNNAMED}]" in value
 
@@ -839,18 +843,18 @@ def test_unverified_text_channel_ignores_a_stored_name() -> None:
 def test_text_channels_without_instance_url_show_only_the_label() -> None:
     card = make_card(text_channels=(_text("2001", "general"), _text("2002", None, verified=False), None))
     embed = render.render_embed(card, None, None, instance_url=None)
-    assert fields_of(embed)[text.FIELD_CHANNELS] == f"#general\n{text.TEXT_UNNAMED}"
+    assert _channel_values(embed) == ["#general", text.TEXT_UNNAMED]
 
 
 def test_text_channel_name_is_escaped_in_the_label() -> None:
     card = make_card(text_channels=(_text("2001", "*loud* [x]"),))
-    value = fields_of(render.render_embed(card, None, None, instance_url=INSTANCE))[text.FIELD_CHANNELS]
+    [value] = _channel_values(render.render_embed(card, None, None, instance_url=INSTANCE))
     assert value.startswith("[#\\*loud\\* \\[x\\]](")
 
 
 def test_text_channel_name_cannot_ping_or_mention() -> None:
     card = make_card(text_channels=(_text("2001", "@everyone <#1002>"),))
-    value = fields_of(render.render_embed(card, None, None, instance_url=INSTANCE))[text.FIELD_CHANNELS]
+    [value] = _channel_values(render.render_embed(card, None, None, instance_url=INSTANCE))
     assert "@everyone" not in value
     assert "<#1002>" not in value
 
@@ -871,10 +875,11 @@ def test_outside_text_channel_name_is_neutralised_and_only_shown_when_verified()
     assert "Fluxer: #general" not in render.outside_text(unverified, None, None)
 
 
-def test_three_maximum_text_channels_fit_one_field_at_the_instance_url_cap() -> None:
+def test_a_maximum_text_channel_fits_its_field_at_the_instance_url_cap() -> None:
     card = make_card(text_channels=tuple(_text("2" * 25, repeated("<#", 100)) for _ in range(3)))
-    value = fields_of(render.render_embed(card, None, None, instance_url=CAP_INSTANCE))[text.FIELD_CHANNELS]
-    assert len(value) <= 1024
+    values = _channel_values(render.render_embed(card, None, None, instance_url=CAP_INSTANCE))
+    assert len(values) == 3
+    assert all(render.units(value) <= 1024 for value in values)
 
 
 # Open wake requests on an Asleep card (AC2.2, AC2.6) -------------------------------------------------

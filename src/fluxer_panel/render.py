@@ -48,9 +48,9 @@ LIMITS = {
     # so the same bounds hold in units.
     "location": 500,
     "detail": 120,
-    # A channel name (voice or text), fitted after escaping. An entry is "[#" + name + "](" + link + ")", at most
-    # 166 + the instance URL's length. Three entries and two newlines fit the 1024-unit field at 174 characters.
-    # The link is not fitted: config caps FLUXER_INSTANCE_URL at 128 UTF-16 units (INSTANCE_URL_MAX), under 174.
+    # A channel name (voice or text), fitted after escaping. Each slot is its own field, whose value is
+    # "[#" + name + "](" + link + ")": at most 105 + the link, and the link is at most the instance URL (config caps
+    # FLUXER_INSTANCE_URL at 128 UTF-16 units, INSTANCE_URL_MAX) + 61, so a value stays far under the 1024-unit field.
     "channel_name": 100,
     # A board cell's name: the card's title, escaped and fitted. A cell's value is a status, at most about 250 characters.
     "board_title": 50,
@@ -63,6 +63,13 @@ BOARD_FIELDS_PER_EMBED = 24
 BOARD_MAX_EMBEDS = 10
 BOARD_MAX_CARDS = BOARD_FIELDS_PER_EMBED * BOARD_MAX_EMBEDS
 BOARD_CHAR_LIMIT = 6000
+
+# One card embed: at most 25 fields, and its title, description and field names and values together at most 6000
+# UTF-16 code units (`embed_units`). A card has at most 17 fields (status, next, join, first time, nine slots, location
+# and three details). Only every slot and every other field at its limit at once passes 6000, and then the budget pass
+# (`_fit_budget`) shortens first_time, then description, then join, each only as far as needed.
+EMBED_MAX_FIELDS = 25
+EMBED_CHAR_LIMIT = 6000
 
 
 def neutralise(s: str) -> str:
@@ -161,13 +168,17 @@ def render_embed(card: Card, status: CardStatus | None, next_text: str | None, *
         add(text.FIELD_JOIN, fit(escape(card.how_to_join), LIMITS["join"]))
     if card.first_time is not None:
         add(text.FIELD_FIRST_TIME, fit(escape(card.first_time), LIMITS["first_time"]))
-    if card.address is not None:
-        add(text.FIELD_ADDRESS, code(host_port(card.address.host, card.address.port)))
-    if card.voice is not None:
-        add(text.FIELD_VOICE, _channel_value(card.voice, text.VOICE_UNNAMED, instance_url))
-    linked = [link for link in card.text_channels if link is not None]
-    if linked:
-        add(text.FIELD_CHANNELS, "\n".join(_channel_value(link, text.TEXT_UNNAMED, instance_url) for link in linked))
+    # One field per slot: the voice slots, then the text channel slots, then the address slots, each in slot order.
+    # An empty slot is skipped, and no slot moves up into its place.
+    for link in card.voices:
+        if link is not None:
+            add(slot_label(text.FIELD_VOICE, link.suffix), _channel_value(link, text.VOICE_UNNAMED, instance_url))
+    for link in card.text_channels:
+        if link is not None:
+            add(slot_label(text.FIELD_TEXT_CHANNEL, link.suffix), _channel_value(link, text.TEXT_UNNAMED, instance_url))
+    for address in card.addresses:
+        if address is not None:
+            add(slot_label(text.FIELD_ADDRESS, address.suffix), code(host_port(address.host, address.port)))
     if card.location is not None:
         add(text.FIELD_LOCATION, fit(escape(card.location.text), LIMITS["location"]))
     if status is not None and status.details is not None:
@@ -181,7 +192,39 @@ def render_embed(card: Card, status: CardStatus | None, next_text: str | None, *
                 add(name, fit(escape(value), LIMITS["detail"]))
 
     embed["fields"] = fields
+    _fit_budget(embed, fields)
     return embed
+
+
+def slot_label(kind: str, suffix: str | None) -> str:
+    """A slot field's name: the kind, with the escaped suffix in parentheses when the slot has one. The suffix is
+    validated card text (`card_fields.suffix`), and it is escaped here too, as a second layer."""
+    return kind if suffix is None else text.SLOT_LABEL.format(kind=kind, suffix=escape(suffix))
+
+
+def embed_units(embed: Mapping[str, Any]) -> int:
+    """The embed's length as Fluxer counts it: the title, the description and every field name and value, in UTF-16
+    code units."""
+    total = units(embed.get("title", "")) + units(embed.get("description", ""))
+    return total + sum(units(field["name"]) + units(field["value"]) for field in embed.get("fields", []))
+
+
+def _fit_budget(embed: dict[str, Any], fields: list[dict[str, Any]]) -> None:
+    """Keeps the embed within EMBED_CHAR_LIMIT by shortening first_time, then the description, then join, each only as
+    far as needed and never below the ellipsis. Nothing else is shortened. Without those three, the worst case is
+    about 4300 units, so the limit always holds."""
+    over = embed_units(embed) - EMBED_CHAR_LIMIT
+    by_name = {field["name"]: field for field in fields}
+    for holder, key in ((by_name.get(text.FIELD_FIRST_TIME), "value"), (embed, "description"),
+                        (by_name.get(text.FIELD_JOIN), "value")):
+        if over <= 0:
+            return
+        if holder is None or key not in holder:
+            continue
+        current = holder[key]
+        shortened = fit(current, max(units(current) - over, 1))
+        holder[key] = shortened
+        over -= units(current) - units(shortened)
 
 
 def _channel_value(channel: ChannelLink, unnamed: str, instance_url: str | None) -> str:
@@ -267,20 +310,28 @@ def rendered_hash(embed: dict[str, Any]) -> str:
 
 # Outside Fluxer: plain text for a DM. It is mention-neutralised, not markdown-escaped.
 
-def _outside_channel(name: str | None, unnamed: str) -> str:
-    return text.OUTSIDE_CHANNEL_NAMED.format(name=neutralise(name)) if name else unnamed
+def _outside_channel(name: str | None, unnamed: str, suffix: str | None) -> str:
+    line = text.OUTSIDE_CHANNEL_NAMED.format(name=neutralise(name)) if name else unnamed
+    return line if suffix is None else line + text.OUTSIDE_SUFFIX.format(suffix=neutralise(suffix))
 
 
-def outside_voice(name: str | None) -> str:
-    return _outside_channel(name, text.OUTSIDE_VOICE)
+def outside_voice(name: str | None, suffix: str | None = None) -> str:
+    return _outside_channel(name, text.OUTSIDE_VOICE, suffix)
 
 
-def outside_text_channel(name: str | None) -> str:
-    return _outside_channel(name, text.OUTSIDE_TEXT)
+def outside_text_channel(name: str | None, suffix: str | None = None) -> str:
+    return _outside_channel(name, text.OUTSIDE_TEXT, suffix)
 
 
 def outside_address(address: Address, public: bool) -> str:
-    return host_port(address.host, address.port) if public else text.OUTSIDE_ADDRESS_HIDDEN
+    """The single place that decides, for every address slot, whether the outside line shows the host or only says
+    the address is in Fluxer. The host is shown only when `public` is true."""
+    if address.suffix is None:
+        return host_port(address.host, address.port) if public else text.OUTSIDE_ADDRESS_HIDDEN
+    suffix = neutralise(address.suffix)
+    if public:
+        return text.OUTSIDE_ADDRESS_PUBLIC_SUFFIX.format(suffix=suffix, address=host_port(address.host, address.port))
+    return text.OUTSIDE_ADDRESS_HIDDEN_SUFFIX.format(suffix=suffix)
 
 
 def outside_location(has_location: bool) -> str | None:
@@ -296,13 +347,16 @@ def outside_text(card: Card, status: CardStatus | None, next_text: str | None) -
         lines.append(next_text)
     if card.how_to_join is not None:
         lines.append(neutralise(card.how_to_join))
-    if card.address is not None:
-        lines.append(outside_address(card.address, card.address.public))
-    if card.voice is not None:
-        lines.append(outside_voice(card.voice.channel_name if card.voice.verified else None))
+    # The slots in the embed's order: voice, text channel, address.
+    for link in card.voices:
+        if link is not None:
+            lines.append(outside_voice(link.channel_name if link.verified else None, link.suffix))
     for link in card.text_channels:
         if link is not None:
-            lines.append(outside_text_channel(link.channel_name if link.verified else None))
+            lines.append(outside_text_channel(link.channel_name if link.verified else None, link.suffix))
+    for address in card.addresses:
+        if address is not None:
+            lines.append(outside_address(address, address.public))
     location_line = outside_location(card.location is not None)
     if location_line is not None:
         lines.append(location_line)
@@ -326,12 +380,15 @@ def play_now_message(card: Card, *, role_id: str | None, playing: int | None, en
     fields: list[dict[str, Any]] = []
     if playing is not None:
         fields.append({"name": text.FIELD_STATUS, "value": text.PLAY_NOW_PLAYING.format(n=playing), "inline": False})
-    if card.address is not None and card.address.public:
-        fields.append({"name": text.FIELD_ADDRESS, "value": code(host_port(card.address.host, card.address.port)),
-                       "inline": False})
-    if card.voice is not None:
-        fields.append({"name": text.FIELD_VOICE, "value": _channel_value(card.voice, text.VOICE_UNNAMED, instance_url),
-                       "inline": False})
+    # Each public address slot, then each voice slot, labelled as on the card. A private address is never shown.
+    for address in card.addresses:
+        if address is not None and address.public:
+            fields.append({"name": slot_label(text.FIELD_ADDRESS, address.suffix),
+                           "value": code(host_port(address.host, address.port)), "inline": False})
+    for link in card.voices:
+        if link is not None:
+            fields.append({"name": slot_label(text.FIELD_VOICE, link.suffix),
+                           "value": _channel_value(link, text.VOICE_UNNAMED, instance_url), "inline": False})
     if card.how_to_join is not None:
         fields.append({"name": text.FIELD_JOIN, "value": fit(escape(card.how_to_join), LIMITS["join"]),
                        "inline": False})

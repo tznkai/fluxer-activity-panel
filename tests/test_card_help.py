@@ -18,11 +18,13 @@ TEXT_FIELDS = ("title", "description", "join", "first_time", "location")
 
 
 def _field_lines() -> dict[str, str]:
-    """The help line of each field on the fields page, keyed by the field name that starts it."""
+    """The help line of each field on the fields page, keyed by each field name that starts it. A line can start with
+    several names, comma separated, as the slot lines do."""
     lines = {}
     for line in help_fields_reply().splitlines():
-        name, _, _ = line.partition(":")
-        lines[name] = line
+        names, _, _ = line.partition(":")
+        for name in names.split(", "):
+            lines[name] = line
     return lines
 
 
@@ -54,6 +56,16 @@ def test_text_limits_in_the_help_are_the_limits_the_code_enforces() -> None:
     lines = _field_lines()
     for name in TEXT_FIELDS:
         assert f"1 to {card_fields.TEXT_LIMITS[name]} characters" in lines[name], name
+
+
+def test_the_suffix_limit_and_characters_in_the_help_are_the_ones_the_code_enforces() -> None:
+    line = _field_lines()["address3_suffix"]
+    assert f"1 to {card_fields.SUFFIX_MAX} letters, digits, spaces and" in line
+    assert " ".join(card_fields.SUFFIX_MARKS.strip()) in line
+
+
+def test_the_help_mentions_the_text_channel_rename() -> None:
+    assert "text_channel was text_channel1" in _field_lines()["text_channel"]
 
 
 def test_numeric_ranges_in_the_help_are_the_ranges_the_code_enforces() -> None:

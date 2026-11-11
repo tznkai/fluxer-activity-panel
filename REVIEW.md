@@ -39,7 +39,7 @@ Paths are relative to this directory.
 - `src/fluxer_client/events.py:263` `log.warning("malformed %s payload: field %s", t, exc.field_name)` — a malformed payload is logged with the field name only.
 - `src/fluxer_client/events.py:267` `field "?"` — the catch-all logs a placeholder, not the exception text, which may carry the value.
 - `src/fluxer_client/gateway.py:76` `log.warning("gateway connection failed: %r", exc)` — a plain-text `fluxer_client` record. Its repr can include the instance host in stdout logs. That is acceptable because logs are not tracked, but reviewers should know it is there. Token redaction still applies.
-- `src/fluxer_panel/poller.py:767` `log_event(log, "subscription_failed", level=logging.WARNING, card_id=card_id, channel_id=channel_id,` — a failed copy is logged with its card id, channel id and exception type only. No title, slug, channel name or message text is logged.
+- `src/fluxer_panel/poller.py:768` `log_event(log, "subscription_failed", level=logging.WARNING, card_id=card_id, channel_id=channel_id,` — a failed copy is logged with its card id, channel id and exception type only. No title, slug, channel name or message text is logged.
 
 ## Admin authorization
 
@@ -228,35 +228,47 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 
 ## Card rendering
 
-- `src/fluxer_panel/render.py:68` `def neutralise(` — breaks the mention forms (`@everyone`, `<@id>`, `<#id>`) with a zero-width joiner, so card text cannot ping anyone or form a mention.
+- `src/fluxer_panel/render.py:75` `def neutralise(` — breaks the mention forms (`@everyone`, `<@id>`, `<#id>`) with a zero-width joiner, so card text cannot ping anyone or form a mention.
 - `src/fluxer_panel/render.py:27` `_MD = re.compile(` — the markdown control characters that `escape` backslashes.
-- `src/fluxer_panel/render.py:73` `def escape(` — the escape for all card text: neutralise first, then escape markdown. Every user text passes through it before it enters an embed.
-- `src/fluxer_panel/render.py:103` `def code(` — a code span. Backticks are removed, because they cannot be escaped inside one.
-- `src/fluxer_panel/render.py:84` `def fit(` — cuts escaped text to a limit in UTF-16 units, the unit Fluxer counts in, without leaving a dangling backslash that would escape the ellipsis.
-- `src/fluxer_panel/render.py:260` `"allowed_mentions": {"parse": []}` — every card send and edit carries empty `allowed_mentions`.
-- `src/fluxer_panel/render.py:286` `def outside_location(has_location: bool)` — takes a bool, so the location text cannot reach the outside line.
-- `src/fluxer_panel/render.py:190` `fit(escape(channel.channel_name)` — a voice or text channel's name is escaped before it enters the field, so a name cannot form a link or a mention.
-- `src/fluxer_panel/render.py:270` `def _outside_channel(` — a channel name on the outside line is mention-neutralised, and the line shows it only when the link is verified.
+- `src/fluxer_panel/render.py:80` `def escape(` — the escape for all card text: neutralise first, then escape markdown. Every user text passes through it before it enters an embed.
+- `src/fluxer_panel/render.py:110` `def code(` — a code span. Backticks are removed, because they cannot be escaped inside one.
+- `src/fluxer_panel/render.py:91` `def fit(` — cuts escaped text to a limit in UTF-16 units, the unit Fluxer counts in, without leaving a dangling backslash that would escape the ellipsis.
+- `src/fluxer_panel/render.py:303` `"allowed_mentions": {"parse": []}` — every card send and edit carries empty `allowed_mentions`.
+- `src/fluxer_panel/render.py:337` `def outside_location(has_location: bool)` — takes a bool, so the location text cannot reach the outside line.
+- `src/fluxer_panel/render.py:233` `fit(escape(channel.channel_name)` — a voice or text channel's name is escaped before it enters the field, so a name cannot form a link or a mention.
+- `src/fluxer_panel/render.py:313` `def _outside_channel(` — a channel name on the outside line is mention-neutralised, and the line shows it only when the link is verified.
 - `tests/test_render.py:698` `SENTINEL_LOCATION not in outside` — the test that the location text never appears in the outside rendering.
-- `src/fluxer_panel/render.py:113` `def channel_link(` — the only place a channel link is built. Both ids pass the snowflake check first.
+- `src/fluxer_panel/render.py:120` `def channel_link(` — the only place a channel link is built. Both ids pass the snowflake check first.
+- `src/fluxer_panel/render.py:202` `suffix=escape(suffix)` — a slot's suffix is validated card text (`card_fields.suffix`), and it is escaped again before it enters the field name, as a second layer.
+- `src/fluxer_panel/render.py:326` `def outside_address(address: Address, public: bool) -> str:` — the single helper that decides, for every address slot, whether the outside line shows the host or only says the address is in Fluxer. The host is shown only when `public` is true, with or without a suffix.
+- `src/fluxer_panel/render.py:359` `lines.append(outside_address(address, address.public))` — the outside text sends each of the three address slots through that helper and has no other path to a host.
+- `src/fluxer_panel/render.py:385` `if address is not None and address.public:` — the play-now message shows an address slot only when that slot is public.
+- `tests/test_render_slots.py:141` `assert LAN_HOST not in outside` — the leak test: a private address in any one of the three slots never appears outside Fluxer.
+- `src/fluxer_panel/render.py:212` `def _fit_budget(` — keeps a card embed within 6000 UTF-16 units by shortening first_time, then the description, then join. No slot, label or link is cut.
 - `tests/test_text.py:27` `"guild" in node.value.lower()` — the scan that fails on any user-facing string that mentions a guild.
 
-- `src/fluxer_panel/render.py:121` `def jump_link(` — the only place a masked jump link is built. Its ids pass the snowflake check first.
-- `src/fluxer_panel/render.py:206` `fit(escape(card.title), LIMITS["board_title"])` — a board cell's title is escaped before it is fitted, so a title cannot ping anyone or form a link.
-- `src/fluxer_panel/render.py:230` `card.channel_id == games_channel_id` — a board status is a jump link only for a card whose message is in the board's channel, so the link's community is the one looked up for that channel, and no link leaves it.
-- `src/fluxer_panel/render.py:223` `return {"embeds": embeds, "allowed_mentions": {"parse": []}}` — the summary board message carries empty `allowed_mentions`.
+- `src/fluxer_panel/render.py:128` `def jump_link(` — the only place a masked jump link is built. Its ids pass the snowflake check first.
+- `src/fluxer_panel/render.py:249` `fit(escape(card.title), LIMITS["board_title"])` — a board cell's title is escaped before it is fitted, so a title cannot ping anyone or form a link.
+- `src/fluxer_panel/render.py:273` `card.channel_id == games_channel_id` — a board status is a jump link only for a card whose message is in the board's channel, so the link's community is the one looked up for that channel, and no link leaves it.
+- `src/fluxer_panel/render.py:266` `return {"embeds": embeds, "allowed_mentions": {"parse": []}}` — the summary board message carries empty `allowed_mentions`.
 - `src/fluxer_panel/poller.py:562` `payload = render.card_message(embed)` — a subscription copy is sent with the card's own payload, whose `allowed_mentions` is `{"parse": []}`. A copy mentions nobody, the same as the card.
 
 ## Card commands
 
 - `src/fluxer_panel/admin.py:60` `if head == "card":` — the `!card` branch runs only after `authorize` has passed, so card commands share the DM-only, admin-only check.
-- `src/fluxer_panel/cards.py:37` `super().__init__(f"{field}: {rule}")` — `CardFieldError` carries a field name and a rule key. The submitted value is never in the message.
-- `src/fluxer_panel/card_commands.py:300` `exc.status in (403, 404)` — a 403 or a 404 from `get_guild` means the bot is not in that community. Both get the same "unverified" reply.
-- `src/fluxer_panel/card_commands.py:313` `if channel.get("type") != channel_type:` — the channel must be the type its slot takes: a voice channel for the voice slot, a text channel for a text slot.
-- `src/fluxer_panel/card_commands.py:39` `TEXT_CHANNEL_TYPE = 0` — the text channel type, the same value as Discord's. It was confirmed on a live instance: `tools/live/markup_live.py` printed type 0 for the posting channel.
-- `src/fluxer_panel/card_commands.py:315` `str(channel.get("guild_id")) != guild_id` — the channel must belong to the community the admin named.
-- `src/fluxer_panel/card_commands.py:543` `cards.set_state(conn, card_id, "archived", now)` — archive keeps the card row and its slots. It clears the message and sets the state, so the card can be read again.
-- `src/fluxer_panel/card_commands.py:634` `return text.SUBSCRIPTION_NOT_IN_COMMUNITY` — a subscription is refused unless the bot is in the community. `_check_channel` answers a 403 or 404 on the community lookup with an unverified link, and a subscription never stores one.
+- `src/fluxer_panel/cards.py:42` `super().__init__(f"{field}: {rule}")` — `CardFieldError` carries a field name and a rule key. The submitted value is never in the message.
+- `src/fluxer_panel/card_fields.py:63` `def suffix(field: str, value: str) -> str:` — the suffix validator. Suffixes are card text and will come from members later, so they are untrusted: composed to NFC, trimmed of spaces only (a newline is refused, not trimmed), runs of spaces collapsed, then 1 to 20 characters. A refusal names the field and the rule, never the value.
+- `src/fluxer_panel/card_fields.py:79` `def _suffix_char(` — the allowlist: Unicode letters, decimal digits and `SUFFIX_MARKS` (space and - + . '). Everything else is refused, parentheses, backticks, markdown, `@`, `<`, `#`, controls, format characters, bidi controls and emoji included, and so are the Hangul filler letters (`_BLANK_LETTERS`), which render blank.
+- `src/fluxer_panel/migrations/0007_card_slots.sql:19` `suffix NOT GLOB` — the schema's second layer for suffixes, on all three slot tables: length 1-20, trimmed, no double space, and no ASCII control or punctuation other than - + . '.
+- `src/fluxer_panel/card_commands.py:235` `raise CardFieldError(field_name, "no_slot")` — a suffix is refused on an empty slot. The store's `set_suffix` writes only to a slot that still has a value, so a clear that lands first leaves no suffix behind.
+- `src/fluxer_panel/cards.py:399` `table = SLOT_KIND_TABLES[kind]` — the suffix write's table name comes from a fixed map, never from input. An unknown kind raises before any SQL.
+- `src/fluxer_panel/card_fields.py:36` `RENAMED_FIELDS = {"text_channel1": "text_channel"}` — the old field name is refused with a reply naming the new one. It is never read as an alias.
+- `src/fluxer_panel/card_commands.py:345` `exc.status in (403, 404)` — a 403 or a 404 from `get_guild` means the bot is not in that community. Both get the same "unverified" reply.
+- `src/fluxer_panel/card_commands.py:358` `if channel.get("type") != channel_type:` — the channel must be the type its slot takes: a voice channel for the voice slot, a text channel for a text slot.
+- `src/fluxer_panel/card_commands.py:40` `TEXT_CHANNEL_TYPE = 0` — the text channel type, the same value as Discord's. It was confirmed on a live instance: `tools/live/markup_live.py` printed type 0 for the posting channel.
+- `src/fluxer_panel/card_commands.py:360` `str(channel.get("guild_id")) != guild_id` — the channel must belong to the community the admin named.
+- `src/fluxer_panel/card_commands.py:595` `cards.set_state(conn, card_id, "archived", now)` — archive keeps the card row and its slots. It clears the message and sets the state, so the card can be read again.
+- `src/fluxer_panel/card_commands.py:686` `return text.SUBSCRIPTION_NOT_IN_COMMUNITY` — a subscription is refused unless the bot is in the community. `_check_channel` answers a 403 or 404 on the community lookup with an unverified link, and a subscription never stores one.
 
 ## Card poller
 
@@ -264,9 +276,10 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/poller.py:697` `await self._rest.edit_message(channel_id, message_id, embeds=` — the edit sends embeds and `allowed_mentions` and never `content`, so an edit cannot erase the message text.
 - `src/fluxer_panel/poller.py:305` `cards.set_probe_tracking(c, card.id` — the alert state is saved before the DM goes out. A crash or a failed DM cannot send the alert a second time.
 - `src/fluxer_panel/poller.py:307` `await self._alert(card)` — the admin DM that follows that save.
-- `src/fluxer_panel/poller.py:350` `cards.set_voice_name_if(c, card_id` — a refreshed voice name is written only if the voice still matches the one that was read, so an admin's change during the lookup wins.
+- `src/fluxer_panel/poller.py:740` `for kind, slots, channel_type in (("voice", card.voices, VOICE_CHANNEL_TYPE),` — the name refresh covers every verified link in all three voice slots and all three text channel slots, each checked against the channel type its slot takes.
+- `src/fluxer_panel/poller.py:350` `cards.set_voice_name_if(c, card_id` — a refreshed voice name is written only if that voice slot still holds the link that was read, so an admin's change during the lookup wins.
 - `src/fluxer_panel/poller.py:352` `cards.set_text_channel_name_if(c, card_id, slot` — the same compare-and-set for a text channel, keyed by slot: a name is written only while that slot still holds the link that was read.
-- `src/fluxer_panel/poller.py:339` `event = "voice_refresh_failed" if slot is None` — a failed name check is logged with the card id and the exception type only. No channel name reaches the log.
+- `src/fluxer_panel/poller.py:339` `event = "voice_refresh_failed" if kind == "voice"` — a failed name check is logged with the card id and the exception type only. No channel name reaches the log.
 - `src/fluxer_panel/poller.py:714` `cards.set_hash_if(c, card_id` — the rendered hash is stored only if the message is still the same one, so a delete during an edit is not written back.
 - `src/fluxer_panel/poller.py:53` `_DELETED_CAP = 256` — the remembered deletes are bounded. The oldest entries are evicted, which covers the window between a send and its commit.
 - `src/fluxer_panel/poller.py:728` `self._deleted[(channel_id, message_id)] = None` — a repeated delete keeps its place, so eviction is by insertion order.
@@ -274,13 +287,13 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 
 - `src/fluxer_panel/poller.py:524` `log_event(log, "board_sync_failed"` — a failed board post or edit is logged with the exception type only, and the next tick retries it. No title or status is logged.
 - `src/fluxer_panel/poller.py:556` `board.set_hash_if(c, channel_id` — the board hash is stored only while the board still holds that message, so a delete during an edit is not written back.
-- `src/fluxer_panel/poller.py:750` `if cards.clear_message_if(conn, channel_id, message_id) is not None:` — a MESSAGE_DELETE forgets a card message, a card's copy or the board message, in one transaction. Message ids are unique, so only one of the three can match.
+- `src/fluxer_panel/poller.py:751` `if cards.clear_message_if(conn, channel_id, message_id) is not None:` — a MESSAGE_DELETE forgets a card message, a card's copy or the board message, in one transaction. Message ids are unique, so only one of the three can match.
 - `src/fluxer_panel/poller.py:513` `channel_id = state.channel_id if state.channel_id is not None else games_channel_id` — a stored board is edited in the channel it was posted in, so a change of `GAMES_CHANNEL_ID` never moves it. Its community is looked up for that channel.
 - `src/fluxer_panel/poller.py:508` `if state.message_id is None and not may_post:` — when this tick's first read of the stored board failed, no new board is posted in that tick, so a board is never posted while the stored state is unknown.
 - `src/fluxer_panel/poller.py:639` `await self._sync(card_id, post_channel=sub.channel_id, edit_channel=sub.channel_id,` — a copy's post and edit run the card's own sync path, so each send carries the card's `allowed_mentions`. One copy's failure is caught here and does not stop the others.
 - `src/fluxer_panel/poller.py:662` `await self._dm_admins(alert.format(slug=slug, channel_id=channel_id),` — the pause DM takes a fixed text, the card's slug (a-z, 0-9 and -) and a channel id. No title or other card text reaches it, and the channel is shown as a mention.
-- `src/fluxer_panel/text.py:178` `SUBSCRIPTION_PAUSED_ALERT = (` — the 403 pause DM's text. Its placeholders are the card's slug and the channel id, and nothing else.
-- `src/fluxer_panel/text.py:181` `SUBSCRIPTION_CHANNEL_GONE_ALERT = (` — the 404 pause DM's text. Its placeholders are the card's slug and the channel id, and nothing else.
+- `src/fluxer_panel/text.py:194` `SUBSCRIPTION_PAUSED_ALERT = (` — the 403 pause DM's text. Its placeholders are the card's slug and the channel id, and nothing else.
+- `src/fluxer_panel/text.py:197` `SUBSCRIPTION_CHANNEL_GONE_ALERT = (` — the 404 pause DM's text. Its placeholders are the card's slug and the channel id, and nothing else.
 
 ## Private denylist
 

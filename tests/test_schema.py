@@ -19,9 +19,9 @@ ALLOWED_COLUMNS: dict[str, set[str]] = {
               "show_details", "state"},
     "card_location": {"card_id", "location_text"},
     "card_seats": {"card_id", "seats"},
-    "card_voice": {"card_id", "guild_id", "channel_id", "channel_name", "verified"},
-    "card_text_channel": {"card_id", "slot", "guild_id", "channel_id", "channel_name", "verified"},
-    "card_address": {"card_id", "host", "port", "public"},
+    "card_voice": {"card_id", "slot", "guild_id", "channel_id", "channel_name", "verified", "suffix"},
+    "card_text_channel": {"card_id", "slot", "guild_id", "channel_id", "channel_name", "verified", "suffix"},
+    "card_address": {"card_id", "slot", "host", "port", "public", "suffix"},
     "card_manager": {"card_id", "kind", "ref"},
     "card_probe": {"card_id", "kind", "host", "port"},
     "card_runtime": {"card_id", "rendered_hash", "probe_failing_since", "probe_alert_sent"},
@@ -83,6 +83,17 @@ async def seeded(db: Database) -> Database:
 
 # AC1.3 ----------------------------------------------------------------------------------------------
 
+# The suffix CHECK, the second layer behind card_fields.suffix: one insert per table, each with a bound suffix.
+SUFFIX_TABLES = [
+    ("card_voice", "(card_id,slot,guild_id,channel_id,verified,suffix)", "(1,1,'1001','1002',1,?)"),
+    ("card_text_channel", "(card_id,slot,guild_id,channel_id,verified,suffix)", "(1,1,'1001','1002',1,?)"),
+    ("card_address", "(card_id,slot,host,port,suffix)", "(1,1,'h.invalid',1,?)"),
+]
+BAD_SUFFIXES = [("is empty", ""), ("is 21 characters", "s" * 21), ("has a leading space", " Java"),
+                ("has a double space", "Raid  night"), ("has a newline", "Raid\nnight"),
+                *[(f"has {ch!r}", f"a{ch}b") for ch in "()`*_~|>#[]@<:\\"]]
+
+
 REJECTED: list[tuple[str, str, tuple[object, ...]]] = [
     ("created_by is letters", "INSERT INTO cards (title,created_by,created_at,updated_at) "
                               "VALUES ('t',?,1,1)", ("abc",)),
@@ -128,20 +139,20 @@ REJECTED: list[tuple[str, str, tuple[object, ...]]] = [
     ("group role id has a dot", "INSERT INTO sessions (card_id,group_role_id,starts_at,ends_at,proposer_id,created_at) "
                                 "VALUES (1,'1.5',10,20,'1001',1)", ()),
     ("location text is empty", "INSERT INTO card_location (card_id,location_text) VALUES (1,'')", ()),
-    ("voice guild id has a letter", "INSERT INTO card_voice (card_id,guild_id,channel_id,verified) "
-                                    "VALUES (1,'12a','1002',1)", ()),
-    ("voice channel id has a letter", "INSERT INTO card_voice (card_id,guild_id,channel_id,verified) "
-                                      "VALUES (1,'1001','12a',1)", ()),
-    ("voice is unverified but named", "INSERT INTO card_voice (card_id,guild_id,channel_id,channel_name,verified) "
-                                      "VALUES (1,'1001','1002','SENTINEL-VOICE',0)", ()),
-    ("voice name is 101 characters", "INSERT INTO card_voice (card_id,guild_id,channel_id,channel_name,verified) "
-                                     "VALUES (1,'1001','1002',?,1)", ("n" * 101,)),
-    ("voice name is empty", "INSERT INTO card_voice (card_id,guild_id,channel_id,channel_name,verified) "
-                            "VALUES (1,'1001','1002','',1)", ()),
-    ("voice channel id is 26 digits", "INSERT INTO card_voice (card_id,guild_id,channel_id,verified) "
-                                      "VALUES (1,'1001',?,1)", ("2" * 26,)),
-    ("voice verified is two", "INSERT INTO card_voice (card_id,guild_id,channel_id,verified) "
-                              "VALUES (1,'1001','1002',2)", ()),
+    ("voice guild id has a letter", "INSERT INTO card_voice (card_id,slot,guild_id,channel_id,verified) "
+                                    "VALUES (1,1,'12a','1002',1)", ()),
+    ("voice channel id has a letter", "INSERT INTO card_voice (card_id,slot,guild_id,channel_id,verified) "
+                                      "VALUES (1,1,'1001','12a',1)", ()),
+    ("voice is unverified but named", "INSERT INTO card_voice (card_id,slot,guild_id,channel_id,channel_name,verified) "
+                                      "VALUES (1,1,'1001','1002','SENTINEL-VOICE',0)", ()),
+    ("voice name is 101 characters", "INSERT INTO card_voice (card_id,slot,guild_id,channel_id,channel_name,verified) "
+                                     "VALUES (1,1,'1001','1002',?,1)", ("n" * 101,)),
+    ("voice name is empty", "INSERT INTO card_voice (card_id,slot,guild_id,channel_id,channel_name,verified) "
+                            "VALUES (1,1,'1001','1002','',1)", ()),
+    ("voice channel id is 26 digits", "INSERT INTO card_voice (card_id,slot,guild_id,channel_id,verified) "
+                                      "VALUES (1,1,'1001',?,1)", ("2" * 26,)),
+    ("voice verified is two", "INSERT INTO card_voice (card_id,slot,guild_id,channel_id,verified) "
+                              "VALUES (1,1,'1001','1002',2)", ()),
     ("text channel slot is zero", "INSERT INTO card_text_channel (card_id,slot,guild_id,channel_id,verified) "
                                   "VALUES (1,0,'1001','1002',1)", ()),
     ("text channel slot is four", "INSERT INTO card_text_channel (card_id,slot,guild_id,channel_id,verified) "
@@ -158,9 +169,15 @@ REJECTED: list[tuple[str, str, tuple[object, ...]]] = [
                                      "VALUES (1,1,'1001',?,1)", ("2" * 26,)),
     ("text channel verified is two", "INSERT INTO card_text_channel (card_id,slot,guild_id,channel_id,verified) "
                                      "VALUES (1,1,'1001','1002',2)", ()),
-    ("address port is zero", "INSERT INTO card_address (card_id,host,port) VALUES (1,'h.invalid',0)", ()),
-    ("address port is 65536", "INSERT INTO card_address (card_id,host,port) VALUES (1,'h.invalid',65536)", ()),
-    ("address public is two", "INSERT INTO card_address (card_id,host,port,public) VALUES (1,'h.invalid',1,2)", ()),
+    ("address port is zero", "INSERT INTO card_address (card_id,slot,host,port) VALUES (1,1,'h.invalid',0)", ()),
+    ("address port is 65536", "INSERT INTO card_address (card_id,slot,host,port) VALUES (1,1,'h.invalid',65536)", ()),
+    ("address public is two", "INSERT INTO card_address (card_id,slot,host,port,public) VALUES (1,1,'h.invalid',1,2)",
+     ()),
+    ("voice slot is four", "INSERT INTO card_voice (card_id,slot,guild_id,channel_id,verified) "
+                           "VALUES (1,4,'1001','1002',1)", ()),
+    ("address slot is zero", "INSERT INTO card_address (card_id,slot,host,port) VALUES (1,0,'h.invalid',1)", ()),
+    *[(f"{table} suffix {label}", f"INSERT INTO {table} {columns} VALUES {values}", (suffix,))
+      for table, columns, values in SUFFIX_TABLES for label, suffix in BAD_SUFFIXES],
     ("manager kind is uppercase", "INSERT INTO card_manager (card_id,kind,ref) VALUES (1,'Ptero','r')", ()),
     ("probe port is zero", "INSERT INTO card_probe (card_id,kind,host,port) VALUES (1,'a2s','h.invalid',0)", ()),
     ("probe port is 65536", "INSERT INTO card_probe (card_id,kind,host,port) VALUES (1,'a2s','h.invalid',65536)", ()),

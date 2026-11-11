@@ -40,6 +40,8 @@ VOICE_GUILD = "/api/v1/guilds/1001"
 TEXT_CHANNEL = "/api/v1/channels/2002"
 NOT_VOICE = text.CHANNEL_WRONG_TYPE.format(kind=text.CHANNEL_KIND_VOICE)
 NOT_TEXT = text.CHANNEL_WRONG_TYPE.format(kind=text.CHANNEL_KIND_TEXT)
+# The text channel field of each slot. Slot 1 is text_channel (it was text_channel1).
+TEXT_FIELD = {1: "text_channel", 2: "text_channel2", 3: "text_channel3"}
 PTERO_ENV = {"PTERODACTYL_URL": "https://fluxer.invalid", "PTERODACTYL_API_KEY": "test-key"}
 
 
@@ -215,7 +217,7 @@ async def test_non_admin_list_makes_no_request(world: World) -> None:
     ("mc", f"!card set mc show {SENTINEL}", "Can't set show: it must be none or a list of map, version, game_mode."),
     ("mc", f"!card set mc voice {SENTINEL} 2001", "Can't set voice: it must be a numeric id."),
     ("mc", "!card set mc voice 1001", "Can't set voice: it must be <community id> <channel id> or a channel link."),
-    ("mc", "!card set mc text_channel1 1001", "Can't set text_channel1: it must be <community id> <channel id> or a channel link."),
+    ("mc", "!card set mc text_channel 1001", "Can't set text_channel: it must be <community id> <channel id> or a channel link."),
     ("mc", f"!card set mc text_channel3 {SENTINEL} 2001", "Can't set text_channel3: it must be a numeric id."),
     ("mc", f"!card set mc manager steam 12345678{SENTINEL}", "Can't set manager: it is not a known kind."),
     ("mc", "!card set mc manager pterodactyl abcd1234", "Can't set manager: it is not configured on this bot."),
@@ -421,7 +423,7 @@ async def test_channel_name_is_cleaned_and_capped(world: World, raw: Any, stored
 async def test_set_text_channel_stores_the_verified_channel_in_its_slot(world: World, slot: int) -> None:
     seed_text(world.state)
     await make_mc(world)
-    await world.run(f"!card set mc text_channel{slot} 1001 2002")
+    await world.run(f"!card set mc {TEXT_FIELD[slot]} 1001 2002")
 
     card = await world.card("mc")
     assert card is not None
@@ -435,7 +437,7 @@ async def test_text_channel_accepts_a_pasted_channel_link_and_slots_stay_indepen
     seed_text(world.state)
     seed_text(world.state, name="ops", channel="2003")
     await make_mc(world)
-    await world.run("!card set mc text_channel1 https://fluxer.invalid/channels/1001/2002")
+    await world.run("!card set mc text_channel https://fluxer.invalid/channels/1001/2002")
     await world.run("!card set mc text_channel3 1001 2003")
 
     card = await world.card("mc")
@@ -463,7 +465,7 @@ async def test_text_channel_in_a_community_the_bot_is_not_in_is_stored_unverifie
 async def test_missing_text_channel_is_refused_and_stores_nothing(world: World) -> None:
     seed_text(world.state, channel="2999")
     await make_mc(world)
-    await world.run("!card set mc text_channel1 1001 2002")
+    await world.run("!card set mc text_channel 1001 2002")
 
     assert world.last_reply() == text.CHANNEL_MISSING
     assert (await world.card("mc")).text_channels == (None, None, None)
@@ -471,7 +473,7 @@ async def test_missing_text_channel_is_refused_and_stores_nothing(world: World) 
 
 
 @pytest.mark.parametrize(("field_name", "kind", "reply"), [
-    ("text_channel1", 2, NOT_TEXT),     # a voice channel in a text slot
+    ("text_channel", 2, NOT_TEXT),      # a voice channel in a text slot
     ("text_channel3", 4, NOT_TEXT),     # a category, also not a text channel
     ("voice", 0, NOT_VOICE),            # a text channel in the voice slot
 ])
@@ -525,9 +527,9 @@ async def test_clear_text_channel_removes_only_the_slot_named(world: World, clea
     await make_mc(world)
     for slot, channel in channels.items():
         seed_text(world.state, name=f"room{slot}", channel=channel)
-        await world.run(f"!card set mc text_channel{slot} 1001 {channel}")
+        await world.run(f"!card set mc {TEXT_FIELD[slot]} 1001 {channel}")
     world.kicks.clear()
-    await world.run(f"!card clear mc text_channel{cleared}")
+    await world.run(f"!card clear mc {TEXT_FIELD[cleared]}")
 
     card = await world.card("mc")
     assert card is not None

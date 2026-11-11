@@ -126,7 +126,7 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   `POLL_CONCURRENCY`, `PROBE_TIMEOUT_SECONDS` and `PROBE_GRACE_SECONDS` are positive integers with defaults 60, 600,
   8, 3 and 600. `README.md` lists every variable.
   `FLUXER_INSTANCE_URL` is at most 128 UTF-16 code units (`config.INSTANCE_URL_MAX`; an astral character counts two),
-  which keeps the card's Channels field inside Fluxer's 1024-unit field limit. `FLUXER_API_URL` has no cap.
+  which keeps each channel slot's field inside Fluxer's 1024-unit field limit. `FLUXER_API_URL` has no cap.
 - Reaction config: `PLAY_NOW_CHANNEL_ID` (a snowflake, optional, never `GAMES_CHANNEL_ID`) and `FOLLOW_ROLE_PREFIX`
   (1-40 of `a-z0-9_-`, default `card_subscription_`; it becomes part of a visible role name). `WAKE_REQUEST_EXPIRY_SECONDS`,
   `PLAY_NOW_EXPIRY_SECONDS`, `PLAY_NOW_COOLDOWN_SECONDS`, `BOARD_REPOST_MIN_INTERVAL_SECONDS`,
@@ -246,11 +246,23 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   and the write probe in `_connect` stays authoritative.
 - Primary codes READONLY, CANTOPEN, BUSY and PERM map to `DatabaseRefused("unavailable")` and leave the file alone.
   Only corruption codes quarantine. Quarantine moves files aside under new names and never overwrites.
+- Card slots (migration 0007): `card_voice`, `card_text_channel` and `card_address` are each keyed by
+  `(card_id, slot)`, slot 1-3, and each row has an optional `suffix` with a CHECK that mirrors `card_fields.suffix`.
+  The 0007 rebuild moved each v6 voice and address row to slot 1 with no suffix. The field names are
+  `card_fields.SLOT_FIELDS` (voice, voice2, voice3, text_channel, text_channel2, text_channel3, address, address2,
+  address3), plus `SUFFIX_FIELDS` and `PUBLIC_FIELDS`. `text_channel` was `text_channel1`, which is refused with
+  `text.FIELD_RENAMED` and never read as an alias. A suffix or public flag is written only on a slot with a value
+  (`cards.set_suffix`, `set_address_public` report a miss); clearing a slot deletes its row, suffix and flag included,
+  and never moves another slot. Each slot renders as its own embed field, labelled `render.slot_label`, in the order
+  voice, text channel, address. A card embed stays within `render.EMBED_CHAR_LIMIT` (6000 units) and
+  `EMBED_MAX_FIELDS`; at the worst case `render._fit_budget` shortens first_time, then description, then join.
 - Card tables (migrations 0002, 0003; `card_seats` is from 0001): `cards` gains `slug`, `state` and the base fields;
   one slot table per optional field (`card_voice`, `card_text_channel` keyed by slot 1-3, `card_address` with
   `public`, `card_location`, `card_seats`, `card_manager`, `card_probe`) and `card_runtime` (rendered hash, probe
-  alert state). Slot table names are fixed in `cards.SLOT_TABLES`, never built from input. Hosts are never logged,
-  and the outside text shows an address only when it is public (`render.outside_address`).
+  alert state). Slot table names are fixed in `cards.SLOT_TABLES` and `cards.SLOT_KIND_TABLES`, never built from input.
+  Hosts are never logged,
+  and the outside text shows an address only when it is public (`render.outside_address`, the one helper for all
+  three address slots).
 - `card_subscription` (migration 0005) holds one row per card and channel, keyed by `(card_id, channel_id)`, and cascades
   with its card. `message_id` and `content_hash` are set together or not at all, and a hash only with a message.
   `paused` is 0 or 1. Its writes are keyed by card and channel: `set_hash_if` and `clear_message_if` are compare-and-set,

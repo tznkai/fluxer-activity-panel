@@ -16,15 +16,20 @@ from typing import Any
 SHOW_ITEMS = ("map", "version", "game_mode")      # canonical order
 CARD_STATES = ("draft", "live", "archived")
 
-# Slot name -> table. Fixed here so no user input ever reaches a table name.
+# Slot name -> table, for the single-row slots. Fixed here so no user input ever reaches a table name. The voice, text
+# channel and address slots come three to a card and are cleared by slot (clear_voice, clear_text_channel,
+# clear_address), so they are not here.
 SLOT_TABLES = {
-    "voice": "card_voice",
-    "address": "card_address",
     "location": "card_location",
     "seats": "card_seats",
     "manager": "card_manager",
     "probe": "card_probe",
 }
+
+# The three slot kinds that come three to a card, and the table each one is stored in. Fixed here so no user input
+# ever reaches a table name.
+SLOT_KIND_TABLES = {"voice": "card_voice", "text_channel": "card_text_channel", "address": "card_address"}
+SLOT_NUMBERS = (1, 2, 3)
 
 # Base columns that update_fields may write. Anything else is a programming error.
 UPDATABLE = frozenset({"title", "description", "how_to_join", "first_time", "sort_order", "show_details"})
@@ -41,11 +46,13 @@ class CardFieldError(ValueError):
 
 @dataclass(frozen=True)
 class ChannelLink:
-    """A community channel the card links to. `channel_name` is kept only while `verified` is true."""
+    """A community channel the card links to. `channel_name` is kept only while `verified` is true. `suffix` is the
+    slot's optional label, a validated card text (`card_fields.suffix`); a play-now channel never has one."""
     guild_id: str
     channel_id: str
     channel_name: str | None
     verified: bool
+    suffix: str | None = None
 
 
 @dataclass(frozen=True)
@@ -64,6 +71,7 @@ class Address:
     host: str
     port: int
     public: bool
+    suffix: str | None = None
 
 
 @dataclass(frozen=True)
@@ -106,8 +114,12 @@ class Card:
     message_id: str | None
     created_by: str
     voice: ChannelLink | None = None
-    text_channels: tuple[ChannelLink | None, ...] = (None, None, None)   # by slot: index 0 is slot 1
+    voice2: ChannelLink | None = None
+    voice3: ChannelLink | None = None
+    text_channels: tuple[ChannelLink | None, ...] = (None, None, None)   # by slot: index 0 is slot 1 (text_channel)
     address: Address | None = None
+    address2: Address | None = None
+    address3: Address | None = None
     location: Location | None = None
     seats: int | None = None
     manager: ManagerRef | None = None
@@ -115,6 +127,16 @@ class Card:
     runtime: Runtime = Runtime()
     follow_role: FollowRole | None = None
     play_now_channel: ChannelLink | None = None
+
+    @property
+    def voices(self) -> tuple[ChannelLink | None, ChannelLink | None, ChannelLink | None]:
+        """The voice slots in order: index 0 is slot 1 (voice)."""
+        return (self.voice, self.voice2, self.voice3)
+
+    @property
+    def addresses(self) -> tuple[Address | None, Address | None, Address | None]:
+        """The address slots in order: index 0 is slot 1 (address)."""
+        return (self.address, self.address2, self.address3)
 
     @property
     def has_status_source(self) -> bool:
@@ -177,6 +199,8 @@ def list_cards(conn: sqlite3.Connection, state: str | None = None) -> list[Card]
 def _load(conn: sqlite3.Connection, row: tuple) -> Card:
     (card_id, slug, title, description, how_to_join, first_time, sort_order, show_details,
      state, channel_id, message_id, created_by) = row
+    voice, voice2, voice3 = _load_voices(conn, card_id)
+    address, address2, address3 = _load_addresses(conn, card_id)
     return Card(
         id=card_id,
         slug=slug,
@@ -190,9 +214,13 @@ def _load(conn: sqlite3.Connection, row: tuple) -> Card:
         channel_id=channel_id,
         message_id=message_id,
         created_by=created_by,
-        voice=_load_voice(conn, card_id),
+        voice=voice,
+        voice2=voice2,
+        voice3=voice3,
         text_channels=_load_text_channels(conn, card_id),
-        address=_load_address(conn, card_id),
+        address=address,
+        address2=address2,
+        address3=address3,
         location=_load_location(conn, card_id),
         seats=_load_seats(conn, card_id),
         manager=_load_manager(conn, card_id),
@@ -203,18 +231,21 @@ def _load(conn: sqlite3.Connection, row: tuple) -> Card:
     )
 
 
-def _load_voice(conn: sqlite3.Connection, card_id: int) -> ChannelLink | None:
-    row = conn.execute("SELECT guild_id, channel_id, channel_name, verified FROM card_voice WHERE card_id = ?",
-                       (card_id,)).fetchone()
-    return None if row is None else ChannelLink(row[0], row[1], row[2], bool(row[3]))
+def _load_voices(conn: sqlite3.Connection, card_id: int) -> tuple[ChannelLink | None, ...]:
+    slots: list[ChannelLink | None] = [None, None, None]
+    rows = conn.execute("SELECT slot, guild_id, channel_id, channel_name, verified, suffix FROM card_voice "
+                        "WHERE card_id = ?", (card_id,)).fetchall()
+    for slot, guild_id, channel_id, channel_name, verified, suffix in rows:
+        slots[slot - 1] = ChannelLink(guild_id, channel_id, channel_name, bool(verified), suffix)
+    return tuple(slots)
 
 
 def _load_text_channels(conn: sqlite3.Connection, card_id: int) -> tuple[ChannelLink | None, ...]:
     slots: list[ChannelLink | None] = [None, None, None]
-    rows = conn.execute("SELECT slot, guild_id, channel_id, channel_name, verified FROM card_text_channel "
+    rows = conn.execute("SELECT slot, guild_id, channel_id, channel_name, verified, suffix FROM card_text_channel "
                         "WHERE card_id = ?", (card_id,)).fetchall()
-    for slot, guild_id, channel_id, channel_name, verified in rows:
-        slots[slot - 1] = ChannelLink(guild_id, channel_id, channel_name, bool(verified))
+    for slot, guild_id, channel_id, channel_name, verified, suffix in rows:
+        slots[slot - 1] = ChannelLink(guild_id, channel_id, channel_name, bool(verified), suffix)
     return tuple(slots)
 
 
@@ -224,9 +255,13 @@ def _load_play_now_channel(conn: sqlite3.Connection, card_id: int) -> ChannelLin
     return None if row is None else ChannelLink(row[0], row[1], row[2], bool(row[3]))
 
 
-def _load_address(conn: sqlite3.Connection, card_id: int) -> Address | None:
-    row = conn.execute("SELECT host, port, public FROM card_address WHERE card_id = ?", (card_id,)).fetchone()
-    return None if row is None else Address(row[0], row[1], bool(row[2]))
+def _load_addresses(conn: sqlite3.Connection, card_id: int) -> tuple[Address | None, ...]:
+    slots: list[Address | None] = [None, None, None]
+    rows = conn.execute("SELECT slot, host, port, public, suffix FROM card_address WHERE card_id = ?",
+                        (card_id,)).fetchall()
+    for slot, host, port, public, suffix in rows:
+        slots[slot - 1] = Address(host, port, bool(public), suffix)
+    return tuple(slots)
 
 
 def _load_location(conn: sqlite3.Connection, card_id: int) -> Location | None:
@@ -286,31 +321,41 @@ def set_state(conn: sqlite3.Connection, card_id: int, state: str, now: int) -> N
 
 # Slots -------------------------------------------------------------------------------------------------
 
-def set_voice(conn: sqlite3.Connection, card_id: int, voice: ChannelLink) -> None:
+def set_voice(conn: sqlite3.Connection, card_id: int, voice: ChannelLink, *, slot: int) -> None:
+    """Writes one voice slot, its suffix included: a caller that keeps the slot's suffix passes it in `voice`."""
     conn.execute(
-        "INSERT INTO card_voice (card_id, guild_id, channel_id, channel_name, verified) VALUES (?, ?, ?, ?, ?) "
-        "ON CONFLICT(card_id) DO UPDATE SET guild_id = excluded.guild_id, channel_id = excluded.channel_id, "
-        "channel_name = excluded.channel_name, verified = excluded.verified",
-        (card_id, voice.guild_id, voice.channel_id, voice.channel_name, int(voice.verified)))
+        "INSERT INTO card_voice (card_id, slot, guild_id, channel_id, channel_name, verified, suffix) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(card_id, slot) DO UPDATE SET guild_id = excluded.guild_id, channel_id = excluded.channel_id, "
+        "channel_name = excluded.channel_name, verified = excluded.verified, suffix = excluded.suffix",
+        (card_id, _slot(slot), voice.guild_id, voice.channel_id, voice.channel_name, int(voice.verified),
+         voice.suffix))
 
 
-def set_voice_name_if(conn: sqlite3.Connection, card_id: int, expected: ChannelLink, channel_name: str) -> bool:
-    """Writes a refreshed channel name, and only while the stored voice is still the `expected` one, verified and
+def clear_voice(conn: sqlite3.Connection, card_id: int, slot: int) -> None:
+    """Removes one voice slot with its suffix. The other slots stay where they are."""
+    conn.execute("DELETE FROM card_voice WHERE card_id = ? AND slot = ?", (card_id, _slot(slot)))
+
+
+def set_voice_name_if(conn: sqlite3.Connection, card_id: int, expected: ChannelLink, channel_name: str,
+                      *, slot: int) -> bool:
+    """Writes a refreshed channel name, and only while the voice slot still holds the `expected` link, verified and
     under the same name. Never inserts a row and never changes the channel. Returns whether a row changed."""
     cur = conn.execute(
-        "UPDATE card_voice SET channel_name = ? WHERE card_id = ? AND guild_id = ? AND channel_id = ? "
+        "UPDATE card_voice SET channel_name = ? WHERE card_id = ? AND slot = ? AND guild_id = ? AND channel_id = ? "
         "AND verified = 1 AND channel_name IS ?",
-        (channel_name, card_id, expected.guild_id, expected.channel_id, expected.channel_name))
+        (channel_name, card_id, _slot(slot), expected.guild_id, expected.channel_id, expected.channel_name))
     return cur.rowcount == 1
 
 
 def set_text_channel(conn: sqlite3.Connection, card_id: int, slot: int, link: ChannelLink) -> None:
+    """Writes one text channel slot, its suffix included, as set_voice does."""
     conn.execute(
-        "INSERT INTO card_text_channel (card_id, slot, guild_id, channel_id, channel_name, verified) "
-        "VALUES (?, ?, ?, ?, ?, ?) "
+        "INSERT INTO card_text_channel (card_id, slot, guild_id, channel_id, channel_name, verified, suffix) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(card_id, slot) DO UPDATE SET guild_id = excluded.guild_id, channel_id = excluded.channel_id, "
-        "channel_name = excluded.channel_name, verified = excluded.verified",
-        (card_id, slot, link.guild_id, link.channel_id, link.channel_name, int(link.verified)))
+        "channel_name = excluded.channel_name, verified = excluded.verified, suffix = excluded.suffix",
+        (card_id, _slot(slot), link.guild_id, link.channel_id, link.channel_name, int(link.verified), link.suffix))
 
 
 def clear_text_channel(conn: sqlite3.Connection, card_id: int, slot: int) -> None:
@@ -327,16 +372,39 @@ def set_text_channel_name_if(conn: sqlite3.Connection, card_id: int, slot: int, 
     return cur.rowcount == 1
 
 
-def set_address(conn: sqlite3.Connection, card_id: int, address: Address) -> None:
+def set_address(conn: sqlite3.Connection, card_id: int, address: Address, *, slot: int) -> None:
+    """Writes one address slot, its public flag and suffix included, as set_voice does."""
     conn.execute(
-        "INSERT INTO card_address (card_id, host, port, public) VALUES (?, ?, ?, ?) "
-        "ON CONFLICT(card_id) DO UPDATE SET host = excluded.host, port = excluded.port, public = excluded.public",
-        (card_id, address.host, address.port, int(address.public)))
+        "INSERT INTO card_address (card_id, slot, host, port, public, suffix) VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(card_id, slot) DO UPDATE SET host = excluded.host, port = excluded.port, "
+        "public = excluded.public, suffix = excluded.suffix",
+        (card_id, _slot(slot), address.host, address.port, int(address.public), address.suffix))
 
 
-def set_address_public(conn: sqlite3.Connection, card_id: int, public: bool) -> bool:
-    cur = conn.execute("UPDATE card_address SET public = ? WHERE card_id = ?", (int(public), card_id))
+def set_address_public(conn: sqlite3.Connection, card_id: int, public: bool, *, slot: int) -> bool:
+    """Changes one address slot's public flag. Returns False, and writes nothing, when the slot is empty."""
+    cur = conn.execute("UPDATE card_address SET public = ? WHERE card_id = ? AND slot = ?",
+                       (int(public), card_id, _slot(slot)))
     return cur.rowcount == 1
+
+
+def clear_address(conn: sqlite3.Connection, card_id: int, slot: int) -> None:
+    """Removes one address slot with its public flag and suffix. The other slots stay where they are."""
+    conn.execute("DELETE FROM card_address WHERE card_id = ? AND slot = ?", (card_id, _slot(slot)))
+
+
+def set_suffix(conn: sqlite3.Connection, card_id: int, kind: str, slot: int, suffix: str | None) -> bool:
+    """Sets or clears (None) one slot's suffix. `kind` is a key of SLOT_KIND_TABLES; any other raises KeyError before
+    any SQL. Returns False, and writes nothing, when the slot is empty, so a suffix never exists without its value."""
+    table = SLOT_KIND_TABLES[kind]   # the table name is never built from input
+    cur = conn.execute(f"UPDATE {table} SET suffix = ? WHERE card_id = ? AND slot = ?", (suffix, card_id, _slot(slot)))
+    return cur.rowcount == 1
+
+
+def _slot(slot: int) -> int:
+    if slot not in SLOT_NUMBERS:
+        raise ValueError("slot must be 1, 2 or 3")   # a programming error: callers take slots from fixed maps
+    return slot
 
 
 def set_location(conn: sqlite3.Connection, card_id: int, location: Location) -> None:

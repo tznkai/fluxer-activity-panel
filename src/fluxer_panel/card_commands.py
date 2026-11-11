@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import enum
 import logging
 import time
@@ -43,21 +44,22 @@ LIST_CHUNK = 1900  # UTF-16 units: a list message stays under Fluxer's 2000-unit
 PREVIEW_LIMIT = 2000  # Fluxer's message content limit
 SUBCOMMANDS = ("new", "set", "clear", "show", "list", "publish", "archive", "subscribe", "unsubscribe", "interactions",
                "help")
-SETTABLE = ("title", "description", "join", "first_time", "sort", "seats", "location", "voice",
-            "text_channel1", "text_channel2", "text_channel3", "address", "address_public", "manager", "probe", "show",
-            "follow_role", "play_now_channel")
-CLEARABLE = ("description", "join", "first_time", "sort", "seats", "location", "voice",
-             "text_channel1", "text_channel2", "text_channel3", "address", "manager", "probe", "show", "follow_role",
-             "play_now_channel")
-# Text channel fields and the slot each one writes. The slots are the store's, so no input picks a table or a slot.
-TEXT_CHANNEL_SLOTS = {"text_channel1": 1, "text_channel2": 2, "text_channel3": 3}
+SETTABLE = ("title", "description", "join", "first_time", "sort", "seats", "location",
+            *card_fields.SLOT_FIELDS, *card_fields.SUFFIX_FIELDS, *card_fields.PUBLIC_FIELDS,
+            "manager", "probe", "show", "follow_role", "play_now_channel")
+# A public flag is set to no, never cleared. Clearing a slot clears its suffix and its public flag with it.
+CLEARABLE = ("description", "join", "first_time", "sort", "seats", "location",
+             *card_fields.SLOT_FIELDS, *card_fields.SUFFIX_FIELDS,
+             "manager", "probe", "show", "follow_role", "play_now_channel")
+# Each slot kind's channel type. The address kind has none: it takes host:port.
+_SLOT_CHANNEL_TYPES = {"voice": VOICE_CHANNEL_TYPE, "text_channel": TEXT_CHANNEL_TYPE}
 # Settable fields that are stored as base columns, and the column each one writes.
 BASE_COLUMNS = {"title": "title", "description": "description", "join": "how_to_join", "first_time": "first_time",
                 "sort": "sort_order", "show": "show_details"}
 # Clearable fields stored as base columns: the column and the value a clear writes.
 BASE_CLEARS = {"description": ("description", None), "join": ("how_to_join", None),
                "first_time": ("first_time", None), "sort": ("sort_order", 0), "show": ("show_details", ())}
-SLOT_CLEARS = frozenset({"voice", "address", "location", "seats", "manager", "probe"})
+SLOT_CLEARS = frozenset({"location", "seats", "manager", "probe"})
 # Settable fields whose change shows on the posted messages' reactions, so a set re-seeds them.
 RESEED_FIELDS = frozenset({"follow_role", "play_now_channel"})
 # Role outcomes after which a card has a working follow role, so its bell is seeded and the reply says following is on.
@@ -176,6 +178,9 @@ async def _set(event: MessageCreate, ctx: CardContext, rest: str) -> _Result:
         await _say(ctx, event, text.NO_SUCH_CARD)
         return _Result()
     logged = _known(field_name, SETTABLE)
+    if field_name in card_fields.RENAMED_FIELDS:
+        await _say_renamed(ctx, event, field_name)
+        return _Result(card.id, logged)
     if field_name not in SETTABLE:
         await _say(ctx, event, text.UNKNOWN_FIELD)
         return _Result(card.id, logged)
@@ -185,12 +190,25 @@ async def _set(event: MessageCreate, ctx: CardContext, rest: str) -> _Result:
         await _refuse(ctx, event, err)
         return _Result(card.id, logged)
     if write is not None:
-        await ctx.db.run(write)
+        try:
+            await ctx.db.run(write)
+        except CardFieldError as err:
+            await _refuse(ctx, event, err)
+            return _Result(card.id, logged)
         ctx.kick()
     await _say(ctx, event, reply)
     if field_name in RESEED_FIELDS:
         await _reseed(ctx, card.id)
     return _Result(card.id, logged)
+
+
+def _or_refuse(write: Callable[[Any], bool], field_name: str, rule: str) -> Callable[[Any], None]:
+    """A write that reports whether it found its row. A miss, from a clear that landed after the card was read, raises
+    the refusal, so the reply never says updated for a write that stored nothing."""
+    def run(conn: Any) -> None:
+        if not write(conn):
+            raise CardFieldError(field_name, rule)
+    return run
 
 
 async def _prepare_set(ctx: CardContext, card: cards.Card, field_name: str,
@@ -208,16 +226,24 @@ async def _prepare_set(ctx: CardContext, card: cards.Card, field_name: str,
     if field_name == "location":
         location = cards.Location(card_fields.text_value("location", value))
         return (lambda c: cards.set_location(c, card_id, location)), text.CARD_UPDATED
-    if field_name == "address":
-        host, port = card_fields.address(value)
-        public = card.address.public if card.address is not None else False
-        address = cards.Address(host, port, public)
-        return (lambda c: cards.set_address(c, card_id, address)), text.CARD_UPDATED
-    if field_name == "address_public":
-        public = card_fields.yes_no("address_public", value)
-        if card.address is None:
-            raise CardFieldError("address_public", "no_address")
-        return (lambda c: cards.set_address_public(c, card_id, public)), text.CARD_UPDATED
+    if field_name in card_fields.SLOT_FIELDS:
+        return await _set_slot(ctx, card, field_name, value)
+    if field_name in card_fields.SUFFIX_FIELDS:
+        kind, slot = card_fields.SUFFIX_FIELDS[field_name]
+        suffix = card_fields.suffix(field_name, value)
+        if _slot_value(card, kind, slot) is None:
+            raise CardFieldError(field_name, "no_slot")
+        # The store writes a suffix only on a slot that still has a value, so a clear that lands first leaves no suffix
+        # and the reply says so.
+        return _or_refuse(lambda c: cards.set_suffix(c, card_id, kind, slot, suffix), field_name, "no_slot"), \
+            text.CARD_UPDATED
+    if field_name in card_fields.PUBLIC_FIELDS:
+        slot = card_fields.PUBLIC_FIELDS[field_name]
+        public = card_fields.yes_no(field_name, value)
+        if card.addresses[slot - 1] is None:
+            raise CardFieldError(field_name, "no_address")
+        return _or_refuse(lambda c: cards.set_address_public(c, card_id, public, slot=slot), field_name,
+                          "no_address"), text.CARD_UPDATED
     if field_name == "manager":
         kind, ref = card_fields.manager(value, ctx.sources)
         manager = cards.ManagerRef(kind, ref)
@@ -228,20 +254,39 @@ async def _prepare_set(ctx: CardContext, card: cards.Card, field_name: str,
         return (lambda c: cards.set_probe(c, card_id, probe)), text.CARD_UPDATED
     if field_name == "follow_role":
         return await _set_follow_role(ctx, card, value)
-    if field_name in TEXT_CHANNEL_SLOTS:
-        slot = TEXT_CHANNEL_SLOTS[field_name]
-        guild_id, channel_id = card_fields.channel_target(field_name, value)
-        link, reply = await _check_channel(ctx.rest, guild_id, channel_id, TEXT_CHANNEL_TYPE)
-        if link is None:
-            return None, reply
-        return (lambda c: cards.set_text_channel(c, card_id, slot, link)), reply
-    if field_name == "play_now_channel":
-        return await _set_play_now_channel(ctx, card_id, value)
-    guild_id, channel_id = card_fields.channel_target("voice", value)
-    voice, reply = await _check_channel(ctx.rest, guild_id, channel_id, VOICE_CHANNEL_TYPE)
-    if voice is None:
+    return await _set_play_now_channel(ctx, card_id, value)
+
+
+async def _set_slot(ctx: CardContext, card: cards.Card, field_name: str,
+                    value: str) -> tuple[Callable[[Any], None] | None, str]:
+    """A voice, text channel or address slot. A slot that already has a value keeps its suffix, and an address its
+    public flag; only `!card clear` of the slot drops them. A refusal names the slot's own field."""
+    kind, slot = card_fields.SLOT_FIELDS[field_name]
+    card_id = card.id
+    existing = _slot_value(card, kind, slot)
+    suffix = existing.suffix if existing is not None else None
+    if kind == "address":
+        host, port = card_fields.address(value, field_name)
+        public = existing.public if isinstance(existing, cards.Address) else False
+        address = cards.Address(host, port, public, suffix)
+        return (lambda c: cards.set_address(c, card_id, address, slot=slot)), text.CARD_UPDATED
+    guild_id, channel_id = card_fields.channel_target(field_name, value)
+    checked, reply = await _check_channel(ctx.rest, guild_id, channel_id, _SLOT_CHANNEL_TYPES[kind])
+    if checked is None:
         return None, reply
-    return (lambda c: cards.set_voice(c, card_id, voice)), reply
+    link = dataclasses.replace(checked, suffix=suffix)
+    if kind == "voice":
+        return (lambda c: cards.set_voice(c, card_id, link, slot=slot)), reply
+    return (lambda c: cards.set_text_channel(c, card_id, slot, link)), reply
+
+
+def _slot_value(card: cards.Card, kind: str, slot: int) -> ChannelLink | cards.Address | None:
+    slots = {"voice": card.voices, "text_channel": card.text_channels, "address": card.addresses}[kind]
+    return slots[slot - 1]
+
+
+async def _say_renamed(ctx: CardContext, event: MessageCreate, field_name: str) -> None:
+    await _say(ctx, event, text.FIELD_RENAMED.format(old=field_name, new=card_fields.RENAMED_FIELDS[field_name]))
 
 
 async def _set_follow_role(ctx: CardContext, card: cards.Card, value: str) -> tuple[None, str]:
@@ -339,6 +384,9 @@ async def _clear(event: MessageCreate, ctx: CardContext, rest: str) -> _Result:
         await _say(ctx, event, text.NO_SUCH_CARD)
         return _Result()
     logged = _known(field_name, CLEARABLE)
+    if field_name in card_fields.RENAMED_FIELDS:
+        await _say_renamed(ctx, event, field_name)
+        return _Result(card.id, logged)
     if field_name not in CLEARABLE:
         await _say(ctx, event, text.UNKNOWN_FIELD)
         return _Result(card.id, logged)
@@ -354,9 +402,13 @@ async def _clear(event: MessageCreate, ctx: CardContext, rest: str) -> _Result:
         else:
             await _say(ctx, event, text.FOLLOW_ROLE_CLEARED.format(slug=card.slug, role=f"<@&{old.role_id}>"))
         return _Result(card_id, logged)
-    if field_name in TEXT_CHANNEL_SLOTS:
-        slot = TEXT_CHANNEL_SLOTS[field_name]
-        await ctx.db.run(lambda c: cards.clear_text_channel(c, card_id, slot))
+    if field_name in card_fields.SLOT_FIELDS:
+        kind, slot = card_fields.SLOT_FIELDS[field_name]
+        clear = {"voice": cards.clear_voice, "text_channel": cards.clear_text_channel, "address": cards.clear_address}
+        await ctx.db.run(lambda c: clear[kind](c, card_id, slot))   # the slot goes with its suffix and public flag
+    elif field_name in card_fields.SUFFIX_FIELDS:
+        kind, slot = card_fields.SUFFIX_FIELDS[field_name]
+        await ctx.db.run(lambda c: cards.set_suffix(c, card_id, kind, slot, None))
     elif field_name == "play_now_channel":
         await ctx.db.run(lambda c: cards.clear_play_now_channel(c, card_id))
     elif field_name in SLOT_CLEARS:
@@ -801,7 +853,7 @@ def help_fields_reply() -> str:
     return text.HELP_FIELDS.format(
         title=card_fields.TEXT_LIMITS["title"], description=card_fields.TEXT_LIMITS["description"],
         join=card_fields.TEXT_LIMITS["join"], first_time=card_fields.TEXT_LIMITS["first_time"],
-        location=card_fields.TEXT_LIMITS["location"],
+        location=card_fields.TEXT_LIMITS["location"], suffix_max=card_fields.SUFFIX_MAX,
         sort_min=card_fields.SORT_RANGE[0], sort_max=card_fields.SORT_RANGE[1],
         seats_min=card_fields.SEATS_RANGE[0], seats_max=card_fields.SEATS_RANGE[1],
         manager_kinds="|".join(sorted(known_manager_kinds())),

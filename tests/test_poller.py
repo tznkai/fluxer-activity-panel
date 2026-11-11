@@ -210,9 +210,11 @@ def root_logging():
 # Helpers --------------------------------------------------------------------------------------------
 
 _SLOTS: dict[str, Callable[..., None]] = {
-    "voice": cards.set_voice,
+    "voice": lambda c, card_id, value: cards.set_voice(c, card_id, value, slot=1),
+    "voice2": lambda c, card_id, value: cards.set_voice(c, card_id, value, slot=2),
+    "voice3": lambda c, card_id, value: cards.set_voice(c, card_id, value, slot=3),
     "text_channel": lambda c, card_id, value: cards.set_text_channel(c, card_id, value[0], value[1]),
-    "address": cards.set_address,
+    "address": lambda c, card_id, value: cards.set_address(c, card_id, value, slot=1),
     "location": cards.set_location,
     "seats": cards.set_seats,
     "manager": cards.set_manager,
@@ -1038,13 +1040,56 @@ async def test_a_changed_voice_name_is_refreshed_and_shown(world: World, poller:
     assert "#New" in fields_of(sent.payload["embeds"][0])[text.FIELD_VOICE]
 
 
+@pytest.mark.parametrize("slot", ["voice2", "voice3"])
+async def test_a_changed_name_in_voice_slots_two_and_three_is_refreshed_and_shown(
+        world: World, poller: Poller, db: Database, slot: str):
+    await track_voice_writes(db)
+    card_id = await seed(db, "alpha", **{slot: cards.ChannelLink(GUILD, VOICE, "Old", True, suffix="Raid")})
+    world.fluxer.channels[VOICE] = voice_channel(name="New")
+
+    await poller.tick()
+
+    card = await load(db, card_id)
+    assert getattr(card, slot) == cards.ChannelLink(GUILD, VOICE, "New", True, suffix="Raid")
+    assert [v for v in card.voices if v is not None] == [getattr(card, slot)]
+    assert await voice_writes(db) == 1
+    [sent] = posts(world.fluxer)
+    assert "#New" in fields_of(sent.payload["embeds"][0])["Voice (Raid)"]
+
+
+async def test_every_voice_slot_is_refreshed_in_one_check(world: World, poller: Poller, db: Database):
+    await track_voice_writes(db)
+    card_id = await seed(db, "alpha", voice=cards.ChannelLink(GUILD, VOICE, "Old", True),
+                         voice2=cards.ChannelLink(GUILD, VOICE, "Older", True),
+                         voice3=cards.ChannelLink(GUILD, VOICE, "Oldest", True))
+    world.fluxer.channels[VOICE] = voice_channel(name="New")
+
+    await poller.tick()
+
+    assert [v.channel_name for v in (await load(db, card_id)).voices] == ["New", "New", "New"]
+    assert await voice_writes(db) == 3
+
+
+async def test_a_voice_slot_cleared_during_a_name_refresh_stays_cleared(world: World, poller: Poller, db: Database):
+    card_id = await seed(db, "alpha", voice3=cards.ChannelLink(GUILD, VOICE, "Old", True))
+    world.fluxer.channels[VOICE] = voice_channel(name="New")
+    world.fluxer.delays[f"GET /api/v1/channels/{VOICE}"] = 0.3
+    tick = asyncio.create_task(poller.tick())
+    await asyncio.sleep(0.1)     # the admin's clear of slot 3 lands during the lookup
+    await db.run(lambda c: cards.clear_voice(c, card_id, 3))
+    await tick
+
+    assert (await load(db, card_id)).voices == (None, None, None)
+    assert_card_writes_safe(world.fluxer)
+
+
 async def test_a_voice_cleared_during_a_name_refresh_stays_cleared(world: World, poller: Poller, db: Database):
     card_id = await seed(db, "alpha", voice=cards.ChannelLink(GUILD, VOICE, "Old", True))
     world.fluxer.channels[VOICE] = voice_channel(name="New")
     world.fluxer.delays[f"GET /api/v1/channels/{VOICE}"] = 0.3
     tick = asyncio.create_task(poller.tick())
     await asyncio.sleep(0.1)     # the channel lookup is delayed 0.3 s, so the admin's clear lands during it
-    await db.run(lambda c: cards.clear_slot(c, card_id, "voice"))
+    await db.run(lambda c: cards.clear_voice(c, card_id, 1))
     await tick
 
     assert (await load(db, card_id)).voice is None
@@ -1060,7 +1105,7 @@ async def test_a_voice_set_during_a_name_refresh_stays_set(world: World, poller:
     tick = asyncio.create_task(poller.tick())
     await asyncio.sleep(0.1)
     admin_choice = cards.ChannelLink(GUILD, "2002", "Admin", True)
-    await db.run(lambda c: cards.set_voice(c, card_id, admin_choice))
+    await db.run(lambda c: cards.set_voice(c, card_id, admin_choice, slot=1))
     await tick
 
     assert (await load(db, card_id)).voice == admin_choice
@@ -1132,7 +1177,7 @@ async def test_a_changed_text_channel_name_is_refreshed_and_shown(world: World, 
     assert (await load(db, card_id)).text_channels[0].channel_name == "New"
     assert await text_writes(db) == 1
     [sent] = posts(world.fluxer)
-    assert "#New" in fields_of(sent.payload["embeds"][0])[text.FIELD_CHANNELS]
+    assert "#New" in fields_of(sent.payload["embeds"][0])[text.FIELD_TEXT_CHANNEL]
 
 
 async def test_an_unchanged_text_channel_name_is_not_written(world: World, poller: Poller, db: Database):
@@ -1218,7 +1263,7 @@ async def test_a_text_channel_cleared_during_a_name_refresh_stays_cleared(world:
 
     assert (await load(db, card_id)).text_channels == (None, None, None)
     [sent] = posts(world.fluxer)
-    assert text.FIELD_CHANNELS not in fields_of(sent.payload["embeds"][0])
+    assert text.FIELD_TEXT_CHANNEL not in fields_of(sent.payload["embeds"][0])
     assert_card_writes_safe(world.fluxer)
 
 
@@ -1234,7 +1279,7 @@ async def test_a_text_channel_set_during_a_name_refresh_stays_set(world: World, 
 
     assert (await load(db, card_id)).text_channels[0] == admin_choice
     [sent] = posts(world.fluxer)
-    assert "#Admin" in fields_of(sent.payload["embeds"][0])[text.FIELD_CHANNELS]
+    assert "#Admin" in fields_of(sent.payload["embeds"][0])[text.FIELD_TEXT_CHANNEL]
     assert_card_writes_safe(world.fluxer)
 
 

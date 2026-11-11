@@ -220,8 +220,8 @@ def test_channel_target_refuses_other_shapes_and_names_its_field(field_name: str
     assert SENTINEL not in card_fields.refusal_reply(err)
 
 
-def test_text_channel_fields_are_named_in_refusals() -> None:
-    for field_name in ("text_channel1", "text_channel2", "text_channel3"):
+def test_channel_slot_fields_are_named_in_refusals() -> None:
+    for field_name in ("voice2", "voice3", "text_channel", "text_channel2", "text_channel3"):
         assert field_name in card_fields.FIELD_NAMES
         reply = card_fields.refusal_reply(CardFieldError(field_name, "channel_target"))
         assert reply == f"Can't set {field_name}: it must be <community id> <channel id> or a channel link."
