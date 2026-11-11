@@ -23,6 +23,7 @@ from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.cards import Card
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
+from fluxer_panel.dm_backoff import DmBackoff
 from fluxer_panel.follow_roles import Toggle
 from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.logs import log_event
@@ -74,9 +75,10 @@ class Interactions:
                  clock: Callable[[], float] = time.time, kick: Callable[[], None] = lambda: None,
                  wake: WakeRequests | None = None,
                  status_of: Callable[[int], CardStatus | None] = lambda _id: None,
-                 session_post: SessionPost | None = None) -> None:
+                 session_post: SessionPost | None = None, backoff: DmBackoff | None = None) -> None:
         self._db = db
         self._wake = wake
+        self._backoff = backoff   # the press replies' DM backoff (dm_user checks it)
         self._rest = rest
         self._config = config
         self._locks = locks
@@ -145,10 +147,11 @@ class Interactions:
             content = text.FOLLOW_ELSEWHERE.format(card=title, link=link)
         else:
             content = text.FOLLOW_ELSEWHERE_NO_LINK.format(card=title)
-        await notify.dm_user(self._rest, user_id, content)
+        await notify.dm_user(self._rest, user_id, content, backoff=self._backoff)
 
     async def _dm_presser(self, user_id: str, template: str, card: Card) -> None:
-        await notify.dm_user(self._rest, user_id, template.format(card=render.escape(card.title)))
+        await notify.dm_user(self._rest, user_id, template.format(card=render.escape(card.title)),
+                             backoff=self._backoff)
 
     async def _alert_admins_once(self, card: Card, reason: str) -> None:
         """One admin DM per card per reason. The mark is set before the send, so a failed DM is not retried by a press."""
@@ -164,7 +167,7 @@ class Interactions:
         if card is None or card.state != "live":
             return
         if not press.surface.home_community:
-            await notify.dm_user(self._rest, press.user_id, text.PLAY_NOW_ELSEWHERE)
+            await notify.dm_user(self._rest, press.user_id, text.PLAY_NOW_ELSEWHERE, backoff=self._backoff)
             return
         targets = await self._play_now_targets(press, card)
         if targets is None:
@@ -302,7 +305,7 @@ class Interactions:
             link = render.jump_link(text.JUMP_LABEL_MESSAGE, self._config.instance_url, last.guild_id,
                                     last.channel_id, last.message_id)
             content = text.PLAY_NOW_COOLDOWN.format(card=title, link=link)
-        await notify.dm_user(self._rest, user_id, content)
+        await notify.dm_user(self._rest, user_id, content, backoff=self._backoff)
 
     async def me_too_changed(self, card_id: int, surface: Surface, user_id: str) -> None:
         """A play-now reaction (PLAY_NOW_EMOJI) was added or removed on a live play-now message: the message's count is

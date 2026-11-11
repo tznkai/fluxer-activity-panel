@@ -25,6 +25,7 @@ from fluxer_client.rest import FluxerHTTPError, FluxerREST
 from fluxer_panel import board, cards, interaction_settings, notify, play_now, rsvp, sessions, subscriptions, text
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
+from fluxer_panel.dm_backoff import DmBackoff
 from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.logs import log_event
 from fluxer_panel.pacer import ChannelPacer
@@ -136,7 +137,7 @@ def _find_session(conn, channel_id: str, message_id: str) -> int | None:
 class Presses:
     def __init__(self, *, db: Database, rest: FluxerREST, config: Config, handler: PressHandler,
                  games_guild: GamesGuild, pacer: ChannelPacer, identity: BotIdentity,
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time, backoff: DmBackoff | None = None) -> None:
         self._db = db
         self._rest = rest
         self._config = config
@@ -145,6 +146,7 @@ class Presses:
         self._pacer = pacer
         self._identity = identity   # identity.user_id is set by Bot on Ready
         self._clock = clock
+        self._backoff = backoff     # the PRESS_FAILED reply obeys the DM backoff
         self._user_last: dict[tuple[str, int, Action], float] = {}   # when a user's press was last handled
         self._card_times: dict[int, deque[float]] = {}               # when each card's presses were last handled
         self._last_prune = float("-inf")                             # when the two maps above were last pruned
@@ -202,7 +204,7 @@ class Presses:
             except Exception as exc:  # noqa: BLE001 - a failed press is told to the presser, and the removal still runs
                 log_event(log, "press_failed", level=logging.WARNING, card_id=found.card_id, action=action.value,
                           kind=type(exc).__name__)
-                await notify.dm_user(self._rest, event.user_id, text.PRESS_FAILED)
+                await notify.dm_user(self._rest, event.user_id, text.PRESS_FAILED, backoff=self._backoff)
         # 9. Removal, so the button resets for the next tap.
         await self._remove(event, degraded=found.degraded, now=now)
 

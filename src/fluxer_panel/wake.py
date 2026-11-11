@@ -20,6 +20,7 @@ from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.cards import Card
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
+from fluxer_panel.dm_backoff import DmBackoff
 from fluxer_panel.logs import log_event
 from fluxer_panel.resolver import CardStatus, StatusKind, status_label
 from fluxer_panel.sources import pterodactyl
@@ -50,7 +51,7 @@ class _Signal:
 class WakeRequests:
     def __init__(self, *, db: Database, rest: FluxerREST, config: Config, sources: Sources, locks: CardLocks,
                  status_of: Callable[[int], CardStatus | None], clock: Callable[[], float] = time.time,
-                 kick: Callable[[], None] = lambda: None) -> None:
+                 kick: Callable[[], None] = lambda: None, backoff: DmBackoff | None = None) -> None:
         self._db = db
         self._rest = rest
         self._config = config
@@ -59,6 +60,7 @@ class WakeRequests:
         self._status_of = status_of
         self._clock = clock
         self._kick = kick
+        self._backoff = backoff   # the press reply's DM backoff; the close DM bypasses it (AC7.2)
         self._signals: dict[int, _Signal] = {}     # lost on restart, by design
 
     async def press(self, card_id: int, user_id: str) -> None:
@@ -126,7 +128,7 @@ class WakeRequests:
             else:
                 key = "none" if status is None else status.kind.value
             content = f"{content} {text.WAKE_NOTES[key]}"
-        await notify.dm_user(self._rest, user_id, content)
+        await notify.dm_user(self._rest, user_id, content, backoff=self._backoff)
 
     @staticmethod
     def _admin_content(card: Card, status: CardStatus | None, names: list[str], *, requested: bool) -> str:
@@ -172,7 +174,8 @@ class WakeRequests:
             title = render.escape(card.title)
             requester_text = text.WAKE_READY if status == "ready" else text.WAKE_GAVE_UP
             for user_id in user_ids:
-                await notify.dm_user(self._rest, user_id, requester_text.format(card=title))
+                await notify.dm_user(self._rest, user_id, requester_text.format(card=title),
+                                     backoff=self._backoff, bypass=True)
             admin_text = text.WAKE_ADMIN_CLOSED[status].format(card=title, slug=card.slug,
                                                                people=people(len(user_ids)))
             # A failed non-404 edit leaves that admin with the stale message, by design: it is logged, and nothing retries.

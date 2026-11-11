@@ -14,6 +14,7 @@ from fluxer_panel import cards, notify, render, rsvp, sessions, text
 from fluxer_panel.cards import Card
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
+from fluxer_panel.dm_backoff import DmBackoff
 from fluxer_panel.interactions import GamesChannelRefused
 from fluxer_panel.logs import log_event
 from fluxer_panel.pacer import ChannelPacer
@@ -24,11 +25,13 @@ log = logging.getLogger(__name__)
 
 
 class SessionPost:
-    def __init__(self, *, db: Database, rest: FluxerREST, config: Config, pacer: ChannelPacer) -> None:
+    def __init__(self, *, db: Database, rest: FluxerREST, config: Config, pacer: ChannelPacer,
+                 backoff: DmBackoff | None = None) -> None:
         self._db = db
         self._rest = rest
         self._config = config
         self._pacer = pacer
+        self._backoff = backoff   # shared with the press replies; promotion DMs bypass it (AC7.2)
         self._edit_locks: dict[int, asyncio.Lock] = {}
 
     async def send_session(self, channel_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -116,4 +119,4 @@ class SessionPost:
         else:
             content = text.SESSION_PROMOTED_NO_LINK.format(card=title)
         for user_id in user_ids:
-            await notify.dm_user(self._rest, user_id, content)
+            await notify.dm_user(self._rest, user_id, content, backoff=self._backoff, bypass=True)

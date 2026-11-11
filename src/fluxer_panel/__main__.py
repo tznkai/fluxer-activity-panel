@@ -24,6 +24,7 @@ from fluxer_panel.bot import Bot
 from fluxer_panel.card_commands import CardContext
 from fluxer_panel.config import Config, ConfigError
 from fluxer_panel.db import Database, DatabaseRefused
+from fluxer_panel.dm_backoff import DmBackoff
 from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.interactions import Interactions
 from fluxer_panel.logs import log_event, setup_logging
@@ -77,6 +78,8 @@ async def run(config: Config, db: Database) -> None:
             roles = RoleCache(rest)
             games_guild = GamesGuild(rest, config)
             pacer = ChannelPacer()
+            # One DM backoff for every press reply: a user whose DM failed gets no press-reply DMs for the window.
+            backoff = DmBackoff(config.dm_backoff_seconds)
             seeder = Seeder(rest=rest, pacer=pacer, db=db)
             card_ctx = CardContext(db=db, rest=rest, config=config, sources=sources, roles=roles,
                                    games_guild=games_guild, seeder=seeder, identity=identity)
@@ -86,17 +89,17 @@ async def run(config: Config, db: Database) -> None:
             card_ctx.kick = poller.kick
             # The wake requests read the poller's statuses, so they are built after the poller and handed to it here.
             wake = WakeRequests(db=db, rest=rest, config=config, sources=sources, locks=card_ctx.locks,
-                                status_of=poller.status_of, kick=poller.kick)
+                                status_of=poller.status_of, kick=poller.kick, backoff=backoff)
             poller.set_wake(wake)
             card_ctx.wake = wake
-            session_post = SessionPost(db=db, rest=rest, config=config, pacer=pacer)
+            session_post = SessionPost(db=db, rest=rest, config=config, pacer=pacer, backoff=backoff)
             interactions = Interactions(db=db, rest=rest, config=config, locks=card_ctx.locks,
                                         games_guild=games_guild, seeder=seeder, pacer=pacer, identity=identity,
                                         roles=roles, kick=poller.kick, wake=wake, status_of=poller.status_of,
-                                        session_post=session_post)
+                                        session_post=session_post, backoff=backoff)
             poller.set_interactions(interactions)   # each tick ends the play-now messages that are due
             presses = Presses(db=db, rest=rest, config=config, handler=interactions, games_guild=games_guild,
-                              pacer=pacer, identity=identity)
+                              pacer=pacer, identity=identity, backoff=backoff)
             bot = Bot(rest=rest, config=config, roles=roles, card_ctx=card_ctx,
                       on_message_delete=poller.on_message_delete, presses=presses, identity=identity,
                       on_games_message=poller.on_games_message)
