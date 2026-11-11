@@ -91,6 +91,31 @@ def test_one_users_block_does_not_touch_another() -> None:
     assert backoff.blocked("1501") is False
 
 
+def test_a_block_that_has_run_out_is_swept_by_the_next_window_though_nobody_reads_it_again() -> None:
+    clock = Clock()
+    backoff = DmBackoff(60, clock=clock)
+    backoff.failed(USER)             # the first failure runs the sweep at t=0
+    assert USER in backoff._until
+
+    clock.now = 60.0
+    backoff.failed("1501")           # a window later: the sweep forgets USER's block, which ended at 60
+    assert USER not in backoff._until
+    assert backoff.blocked(USER) is False
+    assert backoff.blocked("1501") is True
+
+
+def test_a_block_still_running_is_kept_by_the_sweep() -> None:
+    clock = Clock()
+    backoff = DmBackoff(60, clock=clock)
+    backoff.failed("1600")           # t=0: the sweep runs; this block ends at 60
+    clock.now = 30.0
+    backoff.failed(USER)             # ends at 90
+    clock.now = 60.0
+    backoff.failed("1601")           # the sweep forgets 1600 and keeps USER, whose block runs to 90
+    assert "1600" not in backoff._until
+    assert backoff.blocked(USER) is True
+
+
 # dm_user with a backoff, against the fake REST app ---------------------------------------------------
 
 @pytest.fixture

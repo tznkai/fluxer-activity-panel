@@ -14,6 +14,7 @@ class DmBackoff:
         self._seconds = seconds
         self._clock = clock
         self._until: dict[str, float] = {}
+        self._last_sweep: float | None = None
 
     def blocked(self, user_id: str) -> bool:
         until = self._until.get(user_id)
@@ -25,7 +26,18 @@ class DmBackoff:
         return True
 
     def failed(self, user_id: str) -> None:
-        self._until[user_id] = self._clock() + self._seconds
+        now = self._clock()
+        self._sweep(now)
+        self._until[user_id] = now + self._seconds
+
+    def _sweep(self, now: float) -> None:
+        """Forgets every block that has run out, at most once per window. A user who is never read again would otherwise
+        keep an entry for the life of the process. An expired block and a forgotten one behave the same."""
+        if self._last_sweep is not None and now - self._last_sweep < self._seconds:
+            return
+        self._last_sweep = now
+        for user_id in [uid for uid, until in self._until.items() if now >= until]:
+            del self._until[user_id]
 
     def succeeded(self, user_id: str) -> None:
         self._until.pop(user_id, None)

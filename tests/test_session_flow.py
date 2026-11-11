@@ -64,7 +64,7 @@ OWN_POSTS = f"/api/v1/channels/{OWN}/messages"
 
 def keycap(n: int) -> str:
     """The keycap for slot n as Fluxer names it: the digit, U+FE0F, U+20E3."""
-    return f"{n}️⃣"
+    return f"{n}\ufe0f\u20e3"
 
 
 class Clock:
@@ -265,7 +265,7 @@ async def test_the_prompt_gets_the_six_keycaps_in_order(build: Any) -> None:
     names = reactions_put_on(world, dm_channel_of(world), prompt)
 
     assert names == [keycap(n) for n in range(1, 7)]
-    assert all("️" in name for name in names)
+    assert all("\ufe0f" in name for name in names)
 
 
 async def test_a_prompt_that_cannot_be_sent_starts_no_draft_and_starts_the_backoff(build: Any) -> None:
@@ -506,6 +506,54 @@ async def test_a_reply_after_the_expiry_sweep_does_nothing(build: Any) -> None:
     await world.flow.on_reply(typed(PROPOSER, dm_channel_of(world), "tomorrow 19:30"))
 
     assert len(dm_texts(world)) == before
+
+
+# The per-user locks: an entry lives only while a step holds or awaits it -----------------------------------
+
+async def test_an_idle_user_holds_no_lock_entry_after_a_prompt_or_a_refusal(build: Any) -> None:
+    world = await build()
+    await open_prompt(world)
+    await world.flow.start(press(world.card_id, home=False))
+
+    assert world.flow._user_locks == {}
+
+
+async def test_a_second_step_for_the_same_user_waits_on_the_same_lock_object(build: Any) -> None:
+    world = await build()
+
+    async def step() -> None:
+        async with world.flow._lock(PROPOSER):
+            pass
+
+    async with world.flow._lock(PROPOSER):
+        entry = world.flow._user_locks[PROPOSER]
+        waiter = asyncio.create_task(step())
+        await asyncio.sleep(0)
+        assert world.flow._user_locks[PROPOSER] is entry
+        assert entry.users == 2
+        assert not waiter.done()
+
+    await asyncio.wait_for(waiter, timeout=1)
+    assert world.flow._user_locks == {}
+
+
+# An expiry sweep never waits for a step in flight: it skips that user and the next sweep ends the draft ----------
+
+async def test_an_expiry_sweep_skips_a_user_whose_step_is_in_flight_then_ends_the_draft_later(build: Any) -> None:
+    world = await build()
+    prompt, _ = await open_prompt(world)
+    world.clock.now = NOW + FLOW_TIMEOUT_SECONDS
+    prompt_path = f"/api/v1/channels/{dm_channel_of(world)}/messages/{prompt}"
+
+    async with world.flow._lock(PROPOSER):
+        await asyncio.wait_for(world.flow.expire_drafts(), timeout=1)
+        assert world.flow.has_draft(PROPOSER) is True
+        assert requests(world, "PATCH", prompt_path) == []
+
+    await world.flow.expire_drafts()
+    assert world.flow.has_draft(PROPOSER) is False
+    [edit] = requests(world, "PATCH", prompt_path)
+    assert edit.payload["content"] == text.SESSION_DRAFT_EXPIRED
 
 
 # AC2.7: far copies and cards without a session channel get a DM and no draft ---------------------------------

@@ -589,7 +589,7 @@ async def test_a_guildless_reaction_goes_to_the_dm_reaction_handler_and_never_to
               on_dm_reaction=on_dm_reaction)
     await bot.on_dispatch("READY", READY)
     await bot.on_dispatch("MESSAGE_REACTION_ADD", {"user_id": PRESSER, "channel_id": DM, "message_id": CARD_MSG,
-                                                   "emoji": {"name": "1️⃣", "id": None}})
+                                                   "emoji": {"name": "1\ufe0f\u20e3", "id": None}})
     await bot.on_dispatch("MESSAGE_REACTION_ADD", reaction_payload(PRESSER, CARD_MSG, WAKE_EMOJI))
 
-    assert handled == ["dm:1️⃣", "presses"]
+    assert handled == ["dm:1\ufe0f\u20e3", "presses"]

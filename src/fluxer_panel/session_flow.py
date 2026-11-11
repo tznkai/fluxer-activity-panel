@@ -13,8 +13,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -38,8 +39,15 @@ from fluxer_panel.session_post import SessionPost
 log = logging.getLogger(__name__)
 
 FLOW_TIMEOUT_SECONDS = 15 * 60
-KEYCAPS: tuple[str, ...] = tuple(f"{n}️⃣" for n in range(1, 7))
-_KEYCAP_INDEX = {k.replace("️", ""): i for i, k in enumerate(KEYCAPS)}
+KEYCAPS: tuple[str, ...] = tuple(f"{n}\ufe0f\u20e3" for n in range(1, 7))
+_KEYCAP_INDEX = {k.replace("\ufe0f", ""): i for i, k in enumerate(KEYCAPS)}
+
+
+@dataclass
+class _UserLock:
+    """One user's lock, and how many coroutines hold or wait for it. The entry goes when the count returns to 0."""
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    users: int = 0
 
 
 @dataclass
@@ -83,12 +91,30 @@ class SessionFlow:
         self._clock = clock
         self._kick = kick
         self._drafts: dict[str, Draft] = {}
-        self._user_locks: dict[str, asyncio.Lock] = {}
+        self._user_locks: dict[str, _UserLock] = {}
 
     # Draft state -----------------------------------------------------------------------------------------
 
-    def _lock(self, user_id: str) -> asyncio.Lock:
-        return self._user_locks.setdefault(user_id, asyncio.Lock())
+    @asynccontextmanager
+    async def _lock(self, user_id: str) -> AsyncIterator[None]:
+        """Holds the user's lock for the block. The entry lives only while some coroutine holds or waits for it, so an
+        idle user has no entry. A coroutine that arrives while another holds the lock always gets the same lock object,
+        because the entry is removed only when nobody is in the block or waiting."""
+        entry = self._user_locks.get(user_id)
+        if entry is None:
+            entry = self._user_locks[user_id] = _UserLock()
+        entry.users += 1
+        try:
+            async with entry.lock:
+                yield
+        finally:
+            entry.users -= 1
+            if entry.users == 0:
+                del self._user_locks[user_id]
+
+    def _busy(self, user_id: str) -> bool:
+        """Whether a step holds the user's lock or waits for it. The expiry sweep skips such a user and never waits."""
+        return user_id in self._user_locks
 
     def has_draft(self, user_id: str) -> bool:
         """Whether the user has an open draft. An expired draft counts until the expiry sweep takes it, and every
@@ -203,7 +229,7 @@ class SessionFlow:
             draft = self._drafts.get(user)
             if draft is None or self._expired(draft) or event.channel_id != draft.dm_channel_id:
                 return
-            name = event.emoji.name.replace("️", "")
+            name = event.emoji.name.replace("\ufe0f", "")
             if event.message_id == draft.prompt_message_id:
                 index = _KEYCAP_INDEX.get(name)
                 if index is None or index >= len(draft.slots):
@@ -360,8 +386,11 @@ class SessionFlow:
 
     async def expire_drafts(self) -> None:
         """Ends each draft whose 15 minutes have passed: the draft is popped under its user's lock, then the prompt is
-        edited to say so. A later check or reply finds nothing."""
+        edited to say so. A later check or reply finds nothing. A user whose lock is held or awaited is skipped, so this
+        sweep never waits on a REST call in another step; the next tick retries, and every action checks the expiry."""
         for user_id in [uid for uid, draft in self._drafts.items() if self._expired(draft)]:
+            if self._busy(user_id):
+                continue
             async with self._lock(user_id):
                 draft = self._drafts.get(user_id)
                 if draft is None or not self._expired(draft):

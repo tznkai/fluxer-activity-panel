@@ -184,6 +184,37 @@ async def test_the_limit_lifts_once_the_window_has_passed(harness) -> None:
     assert len(recorder.calls) == NON_ADMIN_LIMIT + 1
 
 
+# The limiter's memory: an idle user's entry is swept, and a busy user keeps its count ---------------------
+
+def test_an_idle_users_entry_is_swept_once_the_window_has_passed_and_the_user_is_still_admitted() -> None:
+    clock = Clock()
+    limiter = NonAdminLimiter(make_config(), clock=clock)
+    assert limiter.admit(NON_ADMIN) is True
+    assert NON_ADMIN in limiter._hits
+
+    clock.now = NON_ADMIN_WINDOW
+    assert limiter.admit(OTHER_NON_ADMIN) is True   # the first admit after the window runs the sweep
+    assert NON_ADMIN not in limiter._hits
+
+    assert limiter.admit(NON_ADMIN) is True
+    assert NON_ADMIN in limiter._hits
+
+
+def test_a_sweep_keeps_a_user_whose_hits_are_still_in_the_window() -> None:
+    clock = Clock()
+    limiter = NonAdminLimiter(make_config(), clock=clock)
+    assert limiter.admit(NON_ADMIN) is True    # the first sweep runs here, at t=0
+    clock.now = NON_ADMIN_WINDOW / 2
+    for _ in range(NON_ADMIN_LIMIT - 1):
+        assert limiter.admit(NON_ADMIN) is True
+
+    clock.now = NON_ADMIN_WINDOW
+    assert limiter.admit(OTHER_NON_ADMIN) is True   # sweep: NON_ADMIN's newest hit is at 30 s, so it stays
+    assert NON_ADMIN in limiter._hits
+    assert limiter.admit(NON_ADMIN) is True         # the t=0 hit has aged out; the four hits at 30 s remain
+    assert limiter.admit(NON_ADMIN) is False        # five in the window again: the sweep kept the live hits
+
+
 async def test_the_limit_is_per_user(harness) -> None:
     _, rest, card_ctx = harness
     recorder = Recorder()

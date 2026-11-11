@@ -121,7 +121,7 @@ async def test_a_maybe_reaction_removed_from_a_session_message_reaches_rsvp_chan
 
 
 async def test_a_no_reaction_with_a_variation_selector_is_the_no_choice(world: World) -> None:
-    await world.presses.on_reaction(session_add(rsvp.NO_EMOJI + "️"))
+    await world.presses.on_reaction(session_add(rsvp.NO_EMOJI + "\ufe0f"))
     assert world.handler.rsvps == [(world.session_id, PRESSER, "no", True)]
 
 

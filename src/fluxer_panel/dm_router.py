@@ -48,12 +48,16 @@ class NonAdminLimiter:
         self._config = config
         self._clock = clock
         self._hits: dict[str, deque[float]] = {}
+        self._last_sweep: float | None = None
 
     def admit(self, user_id: str) -> bool:
         if user_id in self._config.admin_user_ids:
             return True
         now = self._clock()
-        hits = self._hits.setdefault(user_id, deque())
+        self._sweep(now)
+        hits = self._hits.get(user_id)
+        if hits is None:
+            hits = self._hits[user_id] = deque()
         cutoff = now - NON_ADMIN_WINDOW
         while hits and hits[0] <= cutoff:
             hits.popleft()
@@ -62,6 +66,17 @@ class NonAdminLimiter:
             return False
         hits.append(now)
         return True
+
+    def _sweep(self, now: float) -> None:
+        """Forgets every user whose newest hit is outside the window, at most once per window. Without it each user who
+        ever sent a command would keep an entry for the life of the process. A forgotten user has no hits left in the
+        window, so the next admit behaves exactly as it would have."""
+        if self._last_sweep is not None and now - self._last_sweep < NON_ADMIN_WINDOW:
+            return
+        self._last_sweep = now
+        cutoff = now - NON_ADMIN_WINDOW
+        for user_id in [uid for uid, hits in self._hits.items() if not hits or hits[-1] <= cutoff]:
+            del self._hits[user_id]
 
 
 def _session_head(content: str, prefix: str) -> str | None:
