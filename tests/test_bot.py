@@ -571,3 +571,25 @@ async def test_a_reaction_from_the_bot_user_after_ready_is_ignored(fake, session
     # control: the same reaction from a person is handled
     await bot.on_dispatch("MESSAGE_REACTION_ADD", reaction_payload(PRESSER, CARD_MSG, WAKE_EMOJI))
     assert len(handler.presses) == 1
+
+
+async def test_a_guildless_reaction_goes_to_the_dm_reaction_handler_and_never_to_presses(fake, session) -> None:
+    state, base = fake
+    rest = make_rest(session, base)
+    handled: list[str] = []
+
+    class RecordingPresses:
+        async def on_reaction(self, event) -> None:
+            handled.append("presses")
+
+    async def on_dm_reaction(event) -> None:
+        handled.append(f"dm:{event.emoji.name}")
+
+    bot = Bot(rest=rest, config=make_config("1001"), roles=RoleCache(rest), presses=RecordingPresses(),
+              on_dm_reaction=on_dm_reaction)
+    await bot.on_dispatch("READY", READY)
+    await bot.on_dispatch("MESSAGE_REACTION_ADD", {"user_id": PRESSER, "channel_id": DM, "message_id": CARD_MSG,
+                                                   "emoji": {"name": "1️⃣", "id": None}})
+    await bot.on_dispatch("MESSAGE_REACTION_ADD", reaction_payload(PRESSER, CARD_MSG, WAKE_EMOJI))
+
+    assert handled == ["dm:1️⃣", "presses"]

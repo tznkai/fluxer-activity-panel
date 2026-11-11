@@ -14,6 +14,7 @@ from fluxer_client.roles import RoleCache
 from fluxer_panel import admin
 from fluxer_panel.card_commands import CardContext
 from fluxer_panel.config import Config
+from fluxer_panel.dm_router import DmRouter
 from fluxer_panel.games import BotIdentity
 from fluxer_panel.logs import log_event
 from fluxer_panel.presses import Presses
@@ -33,6 +34,8 @@ class Bot:
         presses: Presses | None = None,
         identity: BotIdentity | None = None,
         on_games_message: Callable[[str], None] | None = None,
+        dm_router: DmRouter | None = None,
+        on_dm_reaction: Callable[[events.ReactionAdd | events.ReactionRemove], Awaitable[None]] | None = None,
     ) -> None:
         self.rest = rest
         self.config = config
@@ -42,6 +45,8 @@ class Bot:
         self.presses = presses
         self.identity = identity
         self.on_games_message = on_games_message
+        self.dm_router = dm_router            # every message goes through it when set; else admin.handle as before
+        self.on_dm_reaction = on_dm_reaction  # reactions in a DM (no guild id) go here, never to presses
         self.user_id: str | None = None
 
     async def on_dispatch(self, t: str, d: dict[str, Any]) -> None:
@@ -63,11 +68,18 @@ class Bot:
                     self.on_games_message(msg.channel_id)   # arms the board check when this is the board's channel
                 # handle ignores what is not a command. A command from a bot or from a guild channel is refused by
                 # authorize: it logs admin_denied and posts nothing, so the guild channel gets no reply.
-                await admin.handle(msg, self.config, self.rest, self.card_ctx)
+                if self.dm_router is not None:
+                    await self.dm_router.route(msg)
+                else:
+                    await admin.handle(msg, self.config, self.rest, self.card_ctx)
             case events.ReactionAdd() | events.ReactionRemove() as r:
                 # The user id is never logged here (AC6.3): an absorbed press logs it in the adapter, and nothing else does.
                 log_event(log, "reaction", event_type=t, channel_id=r.channel_id,
                           message_id=r.message_id, guild_id=r.guild_id)
+                if r.guild_id is None:
+                    if self.on_dm_reaction is not None:
+                        await self.on_dm_reaction(r)
+                    return
                 if self.presses is not None:
                     await self.presses.on_reaction(r)
             case events.ReactionRemoveAll() | events.ReactionRemoveEmoji() as r:
