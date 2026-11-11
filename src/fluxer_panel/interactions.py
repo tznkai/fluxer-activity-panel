@@ -481,43 +481,46 @@ class Interactions:
 
     async def reconcile_sessions(self) -> None:
         """At startup, each upcoming session's stored RSVP rows are corrected from the reactions on its message, then
-        recomputed. The reactor lists are read before the card lock is taken. A session whose lists cannot all be read is
-        skipped whole, so a partial read never deletes a row. An edit and the promotion DMs follow only when a row changed.
-        There is no kick: the poller's first tick follows its reconcile anyway."""
+        recomputed. The reactor lists are read under the card lock, so a live RSVP change either lands before the reads
+        or waits until the reconcile has committed. A session whose lists cannot all be read is skipped whole, so a
+        partial read never deletes a row. An edit and the promotion DMs follow only when a row changed. A session that
+        raises is logged, and the sessions after it are still reconciled. There is no kick: the poller's first tick
+        follows its reconcile anyway."""
         if self._session_post is None:
             return
         upcoming = await self._db.run(sessions.all_upcoming)
         for listed in upcoming:
-            await self._reconcile_session(listed)
+            try:
+                await self._reconcile_session(listed)
+            except Exception as exc:  # noqa: BLE001 - one session's failure must not stop the sessions after it
+                log_event(log, "session_reconcile_failed", level=logging.WARNING, session_id=listed.id,
+                          **_failure_fields(exc))
 
     async def _reconcile_session(self, listed: Session) -> None:
-        readings: dict[rsvp.Choice, set[str]] = {}
-        for emoji, choice in _RSVP_READINGS:
-            ids = await self._reactor_ids(listed.channel_id, listed.message_id, emoji)
-            if ids is None:
-                log_event(log, "session_reconcile_skipped", level=logging.WARNING, session_id=listed.id,
-                          reason="reactors_unreadable")
-                return
-            readings[choice] = ids
-        now = int(self._clock())
-
-        def tx(c: Any) -> tuple[Session, Card, rsvp.Outcome | None] | None:
-            s = sessions.get(c, listed.id)
-            if s is None or s.state != "upcoming":
-                return None                                   # only upcoming sessions are repaired
-            card = cards.get_by_id(c, s.card_id)
-            if card is None:
-                return None
-            if not sessions.reconcile_presence(c, s, readings, now):
-                return s, card, None
-            return s, card, sessions.recompute(c, s, sessions.effective_seats(s, card), now)
-
-        ticket = 0   # the real tickets start at 1, so 0 never matches a newer change
         async with self._locks.get(listed.card_id):
+            try:
+                readings = await self._read_reactions(listed)
+            except _ReactorsUnreadable as exc:
+                log_event(log, "session_reconcile_skipped", level=logging.WARNING, session_id=listed.id, **exc.fields)
+                return
+            now = int(self._clock())
+
+            def tx(c: Any) -> tuple[Session, Card, rsvp.Outcome | None] | None:
+                s = sessions.get(c, listed.id)
+                if s is None or s.state != "upcoming":
+                    return None                                   # only upcoming sessions are repaired
+                card = cards.get_by_id(c, s.card_id)
+                if card is None:
+                    return None
+                if not sessions.reconcile_presence(c, s, readings, now):
+                    return s, card, None
+                return s, card, sessions.recompute(c, s, sessions.effective_seats(s, card), now)
+
             result = await self._db.run(tx)
             if result is None:
                 return
             session, card, outcome = result
+            ticket = 0   # the real tickets start at 1, so 0 never matches a newer change
             if outcome is not None:
                 ticket = next(self._session_tickets)
                 self._session_latest[session.id] = ticket
@@ -528,10 +531,19 @@ class Interactions:
         await self._edit_session_coalesced(session, ticket)
         await self._session_post.dm_promoted(session, card, outcome.promoted)
 
-    async def _reactor_ids(self, channel_id: str, message_id: str, emoji: str) -> set[str] | None:
+    async def _read_reactions(self, listed: Session) -> dict[rsvp.Choice, set[str]]:
+        """The reactors on each RSVP reaction of the session's message. Raises _ReactorsUnreadable if any list is not read in
+        full, so the caller can leave every row alone."""
+        readings: dict[rsvp.Choice, set[str]] = {}
+        for emoji, choice in _RSVP_READINGS:
+            readings[choice] = await self._reactor_ids(listed.channel_id, listed.message_id, emoji)
+        return readings
+
+    async def _reactor_ids(self, channel_id: str, message_id: str, emoji: str) -> set[str]:
         """The non-bot users on one reaction of a message, paged the way `_count_playing` pages them: each page waits for
-        the channel's budget, pages follow `has_more` and `next_after`, and the bot's own id is skipped. None when the
-        paging stalls, runs past MAX_REACTOR_PAGES, or a page fails, so the caller leaves the rows alone."""
+        the channel's budget, pages follow `has_more` and `next_after`, and the bot's own id is skipped. Raises
+        _ReactorsUnreadable, with the reason for the skip log, when a page fails, an item is not a user with a snowflake
+        id, the paging stalls, or it runs past MAX_REACTOR_PAGES, so the caller leaves the rows alone."""
         reactors: set[str] = set()
         seen: set[str] = set()
         after: str | None = None
@@ -540,8 +552,10 @@ class Interactions:
             try:
                 page = await self._rest.get_reaction_users_page(channel_id, message_id, emoji,
                                                                 limit=REACTOR_PAGE, after=after)
-            except Exception:  # noqa: BLE001 - a failed page skips this session; the caller logs it
-                return None
+            except Exception as exc:  # noqa: BLE001 - a failed page skips this session; the caller logs why
+                raise _ReactorsUnreadable(_failure_fields(exc)) from None
+            if any(not isinstance(user, dict) or not is_snowflake(user.get("id")) for user in page.users):
+                raise _ReactorsUnreadable({"reason": "reactors_malformed"})
             before = len(seen)
             for user in page.users:
                 seen.add(user["id"])
@@ -551,6 +565,15 @@ class Interactions:
                 return reactors
             cursor = page.next_after or (page.users[-1]["id"] if page.users else None)
             if cursor is None or cursor == after or len(seen) == before:
-                return None
+                raise _ReactorsUnreadable({"reason": "reactors_stalled"})
             after = cursor
-        return None
+        raise _ReactorsUnreadable({"reason": "reactors_truncated"})
+
+
+class _ReactorsUnreadable(Exception):
+    """A reactor list that cannot be trusted, so its session is skipped whole. `fields` is the allowlisted reason for the
+    skip log: the HTTP status, or the exception's type name, or a reactors_* reason key."""
+
+    def __init__(self, fields: dict[str, Any]) -> None:
+        super().__init__()
+        self.fields = fields

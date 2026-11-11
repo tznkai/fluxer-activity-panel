@@ -6,8 +6,10 @@ holds the reactions; the tests read the rows, the PATCHes, the DMs and the log. 
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import AsyncIterator
+import sqlite3
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,14 +17,14 @@ from typing import Any
 import aiohttp
 import pytest
 
-from fluxer_client.rest import FluxerREST
+from fluxer_client.rest import FluxerREST, ReactionUsersPage
 from fluxer_client.roles import RoleCache
 from fluxer_panel import cards, rsvp, sessions, text
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.games import BotIdentity, GamesGuild
-from fluxer_panel.interactions import Interactions
+from fluxer_panel.interactions import MAX_REACTOR_PAGES, Interactions
 from fluxer_panel.logs import FIELDS_ATTR
 from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.poller import Poller
@@ -42,6 +44,7 @@ GUILD = "2001"
 GAMES = "3100"
 SESSION_CH = "3200"
 SESSION_MSG = "5100"
+SECOND_MSG = "5101"
 CARD_MSG = "5001"
 INSTANCE = "https://fluxer.invalid"
 STARTS = 1_800_000_000
@@ -111,11 +114,48 @@ async def add_rows(w: World, rows: list[tuple[str, str]]) -> None:
 
 
 def set_reactors(w: World, *, going: tuple[str, ...] = (), maybe: tuple[str, ...] = (),
-                 no: tuple[str, ...] = ()) -> None:
+                 no: tuple[str, ...] = (), message_id: str = SESSION_MSG) -> None:
     """Puts these reactors on the session message for each RSVP emoji, after the bot's own."""
-    message = w.state.reactions.setdefault((SESSION_CH, SESSION_MSG), {})
+    message = w.state.reactions.setdefault((SESSION_CH, message_id), {})
     for emoji, users in ((rsvp.GOING_EMOJI, going), (rsvp.MAYBE_EMOJI, maybe), (rsvp.NO_EMOJI, no)):
         message[emoji] = [BOT_ID, *users]
+
+
+def script_reactors(w: World, make_page: Callable[[int], ReactionUsersPage], *, message_id: str = SESSION_MSG,
+                    emoji: str = rsvp.GOING_EMOJI) -> list[int]:
+    """Answers the reactor reads of one reaction on one message with `make_page(n)` for the n-th call, counting from 0.
+    Every other read goes to the fake. Returns the call numbers, so a test can count the pages read."""
+    original = w.rest.get_reaction_users_page
+    calls: list[int] = []
+
+    async def page(channel_id: str, msg: str, em: str, **kw: Any) -> ReactionUsersPage:
+        if msg == message_id and em == emoji:
+            calls.append(len(calls))
+            return make_page(calls[-1])
+        return await original(channel_id, msg, em, **kw)
+
+    w.rest.get_reaction_users_page = page
+    return calls
+
+
+async def add_second_session(w: World) -> int:
+    """A second upcoming session on the same card, one hour after the first, with its own message."""
+    def tx(c: Any) -> int:
+        first = sessions.get(c, w.session_id)
+        assert first is not None
+        return sessions.add(c, card_id=first.card_id, guild_id=GUILD, channel_id=SESSION_CH, message_id=SECOND_MSG,
+                            starts_at=STARTS + 3600, ends_at=STARTS + 7200, proposer_id=PROPOSER, now=1, seats=1)
+    return await w.db.run(tx)
+
+
+async def presence_rows(w: World, session_id: int) -> list[tuple[str, str, bool]]:
+    presence = await w.db.run(lambda c: sessions.presence_of(c, session_id))
+    return [(p.user_id, p.choice, p.implicit) for p in presence]
+
+
+def event_fields(caplog: pytest.LogCaptureFixture, name: str) -> list[dict[str, Any]]:
+    """The allowlisted fields of each logged record with this event name, in the order logged."""
+    return [getattr(r, FIELDS_ATTR, {}) for r in caplog.records if r.getMessage() == name]
 
 
 async def rows(w: World) -> list[tuple[str, str, bool]]:
@@ -186,7 +226,7 @@ async def test_a_failed_reactor_read_leaves_the_rows_untouched_and_skips_the_ses
     await world.interactions.reconcile_sessions()
     assert await rows(world) == before
     assert patches(world) == []
-    assert "session_reconcile_skipped" in [r.getMessage() for r in caplog.records]
+    assert event_fields(caplog, "session_reconcile_skipped") == [{"session_id": world.session_id, "status": 500}]
 
 
 # Ended and cancelled sessions are not read at all: no request reaches their message.
@@ -246,3 +286,124 @@ async def test_reactors_past_the_first_page_are_read(world: World) -> None:
     await world.interactions.reconcile_sessions()
     going = [user for user, choice, implicit in await rows(world) if choice == "going" and not implicit]
     assert sorted(going) == sorted(many)
+
+
+# A live RSVP that starts while a reactor read is in flight is never undone by the reconcile. The live change is
+# started as a task inside the last read: it waits for the card lock the reconcile holds, so it commits after the
+# reconcile's transaction and its row survives. Before the reads were under the lock, it committed in between and the
+# reconcile deleted it, because the reactor snapshot did not contain it.
+
+async def test_a_live_rsvp_started_during_a_reactor_read_survives_the_reconcile(world: World) -> None:
+    set_reactors(world, going=[BETA])
+    original = world.rest.get_reaction_users_page
+    live: list[asyncio.Task[None]] = []
+
+    async def spy(channel_id: str, message_id: str, emoji: str, **kw: Any) -> Any:
+        page = await original(channel_id, message_id, emoji, **kw)
+        if emoji == rsvp.NO_EMOJI and not live:
+            # ALPHA's going reaction lands on the message after the going list was read, and its live change starts now.
+            world.state.reactions[(channel_id, message_id)][rsvp.GOING_EMOJI].append(ALPHA)
+            live.append(asyncio.create_task(world.interactions.rsvp_changed(world.session_id, ALPHA, "going", True)))
+            await asyncio.sleep(0.1)   # the live change runs as far as it can while the read is still in flight
+        return page
+
+    world.rest.get_reaction_users_page = spy
+    await world.interactions.reconcile_sessions()
+    await asyncio.gather(*live)
+    going = [user for user, choice, implicit in await rows(world) if choice == "going" and not implicit]
+    assert ALPHA in going, "a live RSVP was undone by the reconcile"
+    assert BETA in going
+
+
+# A reactor page that is not a user with a snowflake id skips its own session only. The second session, one hour later
+# on the same card, is still reconciled.
+
+@pytest.mark.parametrize("item", [{"id": "abc"}, "6002", {"bot": True}],
+                         ids=["non_snowflake_id", "not_an_object", "missing_id"])
+async def test_a_malformed_reactor_page_skips_only_its_own_session(world: World, caplog: pytest.LogCaptureFixture,
+                                                                   item: Any) -> None:
+    second_id = await add_second_session(world)
+    set_reactors(world, going=[ALPHA])
+    set_reactors(world, going=[BETA], message_id=SECOND_MSG)
+    await add_rows(world, [(GAMMA, "maybe")])
+    before = await rows(world)
+    script_reactors(world, lambda n: ReactionUsersPage(users=[item], has_more=False, next_after=None))
+    caplog.set_level(logging.DEBUG, logger="fluxer_panel.interactions")
+    await world.interactions.reconcile_sessions()
+    assert await rows(world) == before
+    assert event_fields(caplog, "session_reconcile_skipped") == [
+        {"session_id": world.session_id, "reason": "reactors_malformed"}]
+    assert await presence_rows(world, second_id) == [(PROPOSER, "going", True), (BETA, "going", False)]
+    [patch] = patches(world)
+    assert patch.path == f"/api/v1/channels/{SESSION_CH}/messages/{SECOND_MSG}"
+
+
+# An exception in one session's reconcile is logged, and the next session is still reconciled.
+
+async def test_a_session_that_raises_does_not_stop_the_next_session(world: World, caplog: pytest.LogCaptureFixture,
+                                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    second_id = await add_second_session(world)
+    set_reactors(world, going=[ALPHA])
+    set_reactors(world, going=[BETA], message_id=SECOND_MSG)
+    before = await rows(world)
+    real = sessions.reconcile_presence
+
+    def failing_for_the_first(conn: sqlite3.Connection, session: sessions.Session, actual: Any, now: int) -> bool:
+        if session.id == world.session_id:
+            raise sqlite3.IntegrityError("simulated")
+        return real(conn, session, actual, now)
+
+    monkeypatch.setattr(sessions, "reconcile_presence", failing_for_the_first)
+    caplog.set_level(logging.DEBUG, logger="fluxer_panel.interactions")
+    await world.interactions.reconcile_sessions()
+    assert await rows(world) == before
+    assert event_fields(caplog, "session_reconcile_failed") == [
+        {"session_id": world.session_id, "reason": "IntegrityError"}]
+    assert await presence_rows(world, second_id) == [(PROPOSER, "going", True), (BETA, "going", False)]
+
+
+# A reactor list that stalls leaves the rows untouched: the cursor repeats, or a page adds no new user.
+
+@pytest.mark.parametrize("make_page", [
+    lambda n: ReactionUsersPage(users=[{"id": ALPHA}], has_more=True, next_after="6100"),
+    lambda n: ReactionUsersPage(users=[{"id": ALPHA}], has_more=True, next_after=f"610{n}"),
+], ids=["repeated_cursor", "page_with_nothing_new"])
+async def test_a_stalled_reactor_list_leaves_the_rows_untouched(world: World, caplog: pytest.LogCaptureFixture,
+                                                               make_page: Callable[[int], ReactionUsersPage]) -> None:
+    await add_rows(world, [(ALPHA, "maybe")])
+    set_reactors(world, going=[ALPHA])
+    script_reactors(world, make_page)
+    before = await rows(world)
+    caplog.set_level(logging.DEBUG, logger="fluxer_panel.interactions")
+    await world.interactions.reconcile_sessions()
+    assert await rows(world) == before
+    assert patches(world) == []
+    assert event_fields(caplog, "session_reconcile_skipped") == [
+        {"session_id": world.session_id, "reason": "reactors_stalled"}]
+
+
+# A reactor list that runs past MAX_REACTOR_PAGES leaves the rows untouched: every page has new users and more to come.
+
+async def test_a_reactor_list_past_the_page_cap_leaves_the_rows_untouched(world: World,
+                                                                          caplog: pytest.LogCaptureFixture) -> None:
+    await add_rows(world, [(ALPHA, "maybe")])
+    set_reactors(world, going=[ALPHA])
+    calls = script_reactors(world, lambda n: ReactionUsersPage(
+        users=[{"id": f"7{n:03d}"}], has_more=True, next_after=f"7{n:03d}"))
+    before = await rows(world)
+    caplog.set_level(logging.DEBUG, logger="fluxer_panel.interactions")
+    await world.interactions.reconcile_sessions()
+    assert len(calls) == MAX_REACTOR_PAGES
+    assert await rows(world) == before
+    assert patches(world) == []
+    assert event_fields(caplog, "session_reconcile_skipped") == [
+        {"session_id": world.session_id, "reason": "reactors_truncated"}]
+
+
+# A reactor flagged as a bot, who is not the bot itself, gets no row.
+
+async def test_a_bot_flagged_reactor_gets_no_row(world: World) -> None:
+    script_reactors(world, lambda n: ReactionUsersPage(
+        users=[{"id": BETA, "bot": True}, {"id": ALPHA}], has_more=False, next_after=None))
+    await world.interactions.reconcile_sessions()
+    assert await rows(world) == [(PROPOSER, "going", True), (ALPHA, "going", False)]

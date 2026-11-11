@@ -217,13 +217,13 @@ async def test_an_rsvp_change_does_not_kick_the_poller(world: World) -> None:
 
 # AC4.12: concurrent RSVP events for one card are processed in order, with no lost update.
 
-async def test_ten_concurrent_rsvps_on_one_card_store_every_row_with_increasing_seqs(world: World) -> None:
+async def test_ten_concurrent_rsvps_on_one_card_store_every_row_with_contiguous_seqs(world: World) -> None:
     await asyncio.gather(*(world.interactions.rsvp_changed(world.session_id, user, "going", True)
                            for user in TEN_USERS))
     rows = await presence(world)
-    seqs = [p.seq for p in rows]
-    assert len(seqs) == len(set(seqs)) == 11   # ten users and the proposer's implicit row, all distinct
-    assert seqs == sorted(seqs)
+    # Each new row takes the next seq under the card lock, so the proposer's implicit row (seq 1) and the ten rows are
+    # 1 to 11 with no gap and no duplicate.
+    assert [p.seq for p in rows] == list(range(1, 12))
     stored = await world.db.run(lambda c: sessions.rsvps_of(c, world.session_id))
     assert rsvp.apply(stored, rows, 1).rsvps == stored   # the stored states are a fixed point of the engine
     counts = await world.db.run(lambda c: sessions.counts_of(c, world.session_id))
