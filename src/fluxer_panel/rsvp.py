@@ -20,7 +20,7 @@ _BY_EMOJI: dict[str, Choice] = {GOING_EMOJI: "going", MAYBE_EMOJI: "maybe", NO_E
 
 
 def choice_for(name: str) -> Choice | None:
-    return _BY_EMOJI.get(name.replace("️", ""))
+    return _BY_EMOJI.get(name.replace("\ufe0f", ""))
 
 
 @dataclass(frozen=True)

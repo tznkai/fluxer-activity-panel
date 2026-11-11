@@ -20,7 +20,7 @@ def test_a_single_reaction_sets_the_state() -> None:
 
 
 def test_emoji_names_map_to_choices_and_others_map_to_none() -> None:
-    assert choice_for("✅️") == "going"
+    assert choice_for("\u2705\ufe0f") == "going"
     assert choice_for("✅") == "going"
     assert choice_for("❔") == "maybe"
     assert choice_for("❌") == "no"
