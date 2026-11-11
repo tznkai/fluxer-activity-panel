@@ -20,8 +20,8 @@ import pytest
 
 from fluxer_client import events
 from fluxer_client.roles import RoleCache
-from fluxer_client.rest import FluxerREST
-from fluxer_panel import cards, rsvp, sessions, text
+from fluxer_client.rest import FluxerREST, encode_emoji
+from fluxer_panel import cards, interaction_settings, play_now, rsvp, sessions, subscriptions, text
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.cards import ChannelLink
 from fluxer_panel.config import Config
@@ -32,7 +32,7 @@ from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.interactions import Interactions
 from fluxer_panel.logs import FIELDS_ATTR
 from fluxer_panel.pacer import ChannelPacer
-from fluxer_panel.presses import Action, Press, Surface
+from fluxer_panel.presses import SESSION_EMOJI, Action, Press, Presses, Surface
 from fluxer_panel.seeding import Seeder
 from fluxer_panel.session_flow import FLOW_TIMEOUT_SECONDS, SessionFlow
 from fluxer_panel.session_post import SessionPost
@@ -51,6 +51,9 @@ OWN = "3300"              # a card's own verified play-now channel, in GUILD
 FAR = "3400"              # a copy's channel, in OTHER_GUILD
 CARD_MSG = "5101"
 COPY_MSG = "5201"
+COPY_CH = "3500"         # a copy's channel, in GUILD
+FAR_MSG = "5202"         # a far copy's message, in FAR
+PLAY_MSG = "5301"        # a play-now post, in PLAY_NOW
 HASH = "a" * 64
 NOW = datetime(2026, 11, 11, 8, 0, tzinfo=timezone.utc).timestamp()   # a Wednesday, 08:00 UTC
 FORBIDDEN = b'{"code": "MISSING_PERMISSIONS", "message": "Missing Permissions"}'
@@ -664,6 +667,85 @@ async def test_a_double_check_posts_once(build: Any) -> None:
     await world.flow.on_dm_reaction(dm_reaction(PROPOSER, channel, confirm, rsvp.GOING_EMOJI))
 
     assert len(requests(world, "POST", PLAY_NOW_POSTS)) == 1
+
+
+# Pipeline: a gateway-shaped reaction through Presses, into the real Interactions and SessionFlow ----------------
+
+def presses_for(world: World) -> Presses:
+    return Presses(db=world.db, rest=world.rest, config=world.config, handler=world.interactions,
+                   games_guild=GamesGuild(world.rest, world.config), pacer=ChannelPacer(max_calls=1000),
+                   identity=BotIdentity(user_id=BOT_ID), clock=world.clock, backoff=world.backoff)
+
+
+def calendar_tap(channel: str, message: str, guild: str | None) -> events.ReactionAdd:
+    return events.ReactionAdd(user_id=PROPOSER, channel_id=channel, message_id=message, guild_id=guild,
+                              emoji=events.Emoji(name=SESSION_EMOJI, id=None), member_role_ids=None)
+
+
+async def add_copy(world: World, channel: str, guild: str, message: str) -> None:
+    def tx(c: Any) -> None:
+        subscriptions.add(c, world.card_id, guild, channel)
+        subscriptions.set_message(c, world.card_id, channel, message, HASH)
+
+    await world.db.run(tx)
+
+
+def own_removal_path(channel: str, message: str) -> str:
+    return f"/api/v1/channels/{channel}/messages/{message}/reactions/{encode_emoji(SESSION_EMOJI)}/{PROPOSER}"
+
+
+async def test_a_calendar_press_on_the_card_opens_the_prompt_and_removes_the_presser_reaction(build: Any) -> None:
+    world = await build()
+
+    await presses_for(world).on_reaction(calendar_tap(GAMES, CARD_MSG, GUILD))
+
+    assert len(dm_texts(world)) == 1 and "Pick a time" in dm_texts(world)[0]
+    assert [r.raw_path for r in world.state.requests if r.method == "DELETE"] == [own_removal_path(GAMES, CARD_MSG)]
+
+
+async def test_a_calendar_press_on_a_home_copy_opens_the_prompt(build: Any) -> None:
+    world = await build()
+    await add_copy(world, COPY_CH, GUILD, COPY_MSG)
+
+    await presses_for(world).on_reaction(calendar_tap(COPY_CH, COPY_MSG, GUILD))
+
+    assert len(dm_texts(world)) == 1 and "Pick a time" in dm_texts(world)[0]
+    assert world.flow.has_draft(PROPOSER) is True
+
+
+async def test_a_calendar_press_on_a_far_copy_gets_the_pointer_and_no_draft(build: Any) -> None:
+    world = await build()
+    await add_copy(world, FAR, OTHER_GUILD, FAR_MSG)
+
+    await presses_for(world).on_reaction(calendar_tap(FAR, FAR_MSG, OTHER_GUILD))
+
+    assert world.flow.has_draft(PROPOSER) is False
+    [content] = dm_texts(world)
+    assert content.startswith(text.SESSION_ELSEWHERE.split("{link}")[0])
+
+
+async def test_a_calendar_press_on_a_play_now_post_sends_nothing(build: Any) -> None:
+    world = await build()
+
+    def post(c: Any) -> None:
+        play_now.add(c, card_id=world.card_id, guild_id=GUILD, channel_id=PLAY_NOW, message_id=PLAY_MSG,
+                     presser_id=PROPOSER, offers_wake=False, now=int(NOW), expires_at=int(NOW) + 3600)
+
+    await world.db.run(post)
+    await presses_for(world).on_reaction(calendar_tap(PLAY_NOW, PLAY_MSG, GUILD))
+
+    assert world.state.dm_channels == {}
+    assert world.flow.has_draft(PROPOSER) is False
+
+
+async def test_a_calendar_press_with_the_switch_off_gives_no_dm_and_no_draft(build: Any) -> None:
+    world = await build()
+    await world.db.run(lambda c: interaction_settings.set_enabled(c, False))
+
+    await presses_for(world).on_reaction(calendar_tap(GAMES, CARD_MSG, GUILD))
+
+    assert world.state.dm_channels == {}
+    assert world.flow.has_draft(PROPOSER) is False
 
 
 def panel_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
