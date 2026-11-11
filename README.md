@@ -30,7 +30,7 @@ The operator does these steps in the Fluxer community the panel serves:
    if you want it gone.
    Cards published before following existed have no role. To give one a role and its bell, run `!card publish <slug>`
    on it again: the reply still says the card is already live, then adds the following line. The bot makes the role
-   the same way as for a fresh publish, and seeds the bell on the card and its copies in the games community.
+   the same way as for a fresh publish, and seeds the bell on the card and its copies.
 
 ## Configuration
 
@@ -284,8 +284,10 @@ A press on the raised hand on a copy of the card in the games community posts in
 channel, and the card's play-now channel when that is a different channel. Each post gets its own reactions and
 expires on its own. The cooldown (`PLAY_NOW_COOLDOWN_SECONDS`) counts the press once, so a press inside it posts
 nothing in either channel and the presser gets a link to the latest post. If one of the two posts fails and the
-other succeeds, the one that succeeded stays and the failure is logged. A press on a copy outside the games
-community is refused by a direct message.
+other succeeds, the one that succeeded stays and the failure is logged. A copy outside the games community shows
+the raised hand when the card has a play-now target (its own verified play-now channel, or `PLAY_NOW_CHANNEL_ID`),
+and the bell when the card has a follow role, but neither works there: a press posts nothing and changes no role,
+and the presser gets a direct message pointing at the card in the games channel.
 
 ### Fields
 

@@ -210,13 +210,15 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
 - Seeding (`seeding.py`; the poller's `_seed_posted` and `_seed_surface`): the poller seeds a card's message or a copy
   after posting it, never after an edit, and on reconcile it checks each stored card message and copy. It adds only the
   emoji that are missing and never removes one. Wanted: the wake emoji (U+25B6 U+FE0F) always; the follow emoji (bell,
-  U+1F514) only at home with a follow role; the play-now emoji (U+1F64B) when the surface has a play-now target. A card
+  U+1F514) when the card has a follow role; the play-now emoji (U+1F64B) when the surface has a play-now target. A card
   message is always at home, and a copy is at home when its community is the games channel's. A card message's play-now
-  target is its own verified play-now channel or `PLAY_NOW_CHANNEL_ID`; a home copy always has one. Seeding runs only
-  while `Seeder.enabled_for` allows it (the global switch on and the card not switched off), and `Seeder.seed` asks again
-  before each add. It runs after the card's
-  lock is released, so a reaction send is the one card call not under the lock. A failure is logged as `seed_failed`
-  with the card id and the exception type, and the next surface is still seeded.
+  target is its own verified play-now channel or `PLAY_NOW_CHANNEL_ID`; a home copy always has one, and a copy elsewhere
+  has one when the card does. A copy elsewhere carries the bell and the raised hand too, but a press there makes no
+  role call and no post: it gets a DM pointing at the card (`text.FOLLOW_ELSEWHERE`, `text.PLAY_NOW_ELSEWHERE`).
+  Seeding runs only while `Seeder.enabled_for` allows it (the global switch on and the card not switched off), and
+  `Seeder.seed` asks again before each add. It runs after the card's lock is released, so a reaction send is the one
+  card call not under the lock. A failure is logged as `seed_failed` with the card id and the exception type, and the
+  next surface is still seeded.
 - `!card interactions on|off [slug]` (the kill switch, `interaction_settings`): off removes all reactions of the wake,
   follow and play-now emoji (`Seeder.unseed`: the bot's seeds and any users' left over) from every card message and
   active copy in scope; on re-seeds them. It runs with

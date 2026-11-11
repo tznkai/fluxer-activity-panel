@@ -231,7 +231,7 @@ async def test_publish_without_a_games_channel_makes_no_role_call(db, fake, sess
 
 # C2: the bell is seeded once the role is stored ---------------------------------------------------------
 
-async def test_publish_seeds_the_bell_on_the_card_and_its_home_copy_but_not_another_community(world: World) -> None:
+async def test_publish_seeds_the_bell_on_the_card_and_on_every_copy(world: World) -> None:
     await posted_draft(world)
     card = await world.card("mc")
     assert card is not None
@@ -240,7 +240,7 @@ async def test_publish_seeds_the_bell_on_the_card_and_its_home_copy_but_not_anot
 
     assert len(bell_puts(world, GAMES_CHANNEL, POSTED)) == 1
     assert len(bell_puts(world, *HOME_COPY)) == 1
-    assert bell_puts(world, *OTHER_COPY) == []
+    assert len(bell_puts(world, *OTHER_COPY)) == 1
 
 
 # Publishing a card that is already live gives it the follow role step too ------------------------------
@@ -265,7 +265,7 @@ async def test_publish_on_a_live_card_with_no_role_creates_one_and_says_followin
     assert world.last_reply() == text.ALREADY_LIVE + text.FOLLOW_ON
     assert len(bell_puts(world, GAMES_CHANNEL, POSTED)) == 1
     assert len(bell_puts(world, *HOME_COPY)) == 1
-    assert bell_puts(world, *OTHER_COPY) == []
+    assert len(bell_puts(world, *OTHER_COPY)) == 1
     assert world.kicks == []
 
 
@@ -360,7 +360,7 @@ async def test_set_follow_role_refuses_another_cards_follow_role(world: World) -
     assert world.last_reply() == text.FOLLOW_REFUSED["taken"]
 
 
-async def test_set_follow_role_on_a_posted_card_seeds_the_bell_on_home_surfaces_only(world: World) -> None:
+async def test_set_follow_role_on_a_posted_card_seeds_the_bell_on_every_surface(world: World) -> None:
     add_role(world, role("6000", "card_subscription_mc"))
     await posted_draft(world)
     card = await make_live(world)
@@ -369,7 +369,7 @@ async def test_set_follow_role_on_a_posted_card_seeds_the_bell_on_home_surfaces_
 
     assert len(bell_puts(world, GAMES_CHANNEL, POSTED)) == 1
     assert len(bell_puts(world, *HOME_COPY)) == 1
-    assert bell_puts(world, *OTHER_COPY) == []
+    assert len(bell_puts(world, *OTHER_COPY)) == 1
 
 
 async def test_set_follow_role_without_a_games_channel_says_so_and_stores_nothing(db, fake, session) -> None:

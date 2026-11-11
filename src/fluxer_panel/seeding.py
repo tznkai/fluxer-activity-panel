@@ -25,11 +25,12 @@ from fluxer_panel.presses import FOLLOW_EMOJI, PLAY_NOW_EMOJI, WAKE_EMOJI
 log = logging.getLogger(__name__)
 
 
-def wanted_emoji(card: Card, *, home: bool, play_now_target: bool) -> list[str]:
-    """WAKE_EMOJI always; FOLLOW_EMOJI only when home and the card has a follow role; PLAY_NOW_EMOJI only when there is
-    a play-now target."""
+def wanted_emoji(card: Card, *, play_now_target: bool) -> list[str]:
+    """WAKE_EMOJI always; FOLLOW_EMOJI only when the card has a follow role; PLAY_NOW_EMOJI only when there is a
+    play-now target. A copy outside the games community carries the same emoji, and a press there gets a DM that points
+    at the card."""
     wanted = [WAKE_EMOJI]
-    if home and card.follow_role is not None:
+    if card.follow_role is not None:
         wanted.append(FOLLOW_EMOJI)
     if play_now_target:
         wanted.append(PLAY_NOW_EMOJI)
@@ -39,11 +40,12 @@ def wanted_emoji(card: Card, *, home: bool, play_now_target: bool) -> list[str]:
 def has_play_now_target(card: Card, config: Config, *, surface_kind: str, home: bool) -> bool:
     """A card surface has a target when the card has its own verified play-now channel or the configured one is set. A
     home copy always has one, since a press on it posts in the copy's own channel. A copy outside the games community
-    has none, and a play-now surface never does: its emoji are seeded separately."""
+    has one when the card does: a press there posts nothing and gets a DM pointing at the card's own button. A play-now
+    surface never has one: its emoji are seeded separately."""
     if surface_kind == "play_now":
         return False
-    if surface_kind == "copy":
-        return home
+    if surface_kind == "copy" and home:
+        return True
     own = card.play_now_channel is not None and card.play_now_channel.verified
     return own or config.play_now_channel_id is not None
 

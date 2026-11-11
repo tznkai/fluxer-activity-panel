@@ -207,14 +207,14 @@ async def test_a_home_copy_gets_wake_bell_and_play_now(world: World, db: Databas
     assert puts(world.state, HOME_COPY, copy[0].message_id) == [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI]
 
 
-async def test_a_copy_in_another_community_gets_the_wake_emoji_only(world: World, db: Database) -> None:
+async def test_a_copy_in_another_community_gets_wake_bell_and_play_now(world: World, db: Database) -> None:
     card_id = await live_card(db, "mc")
     await db.run(lambda c: subscriptions.add(c, card_id, OTHER_GUILD, OTHER_COPY))
     await make_poller(world, Clock()).tick()
 
     copy = await db.run(lambda c: subscriptions.list_for_card(c, card_id))
     assert copy[0].message_id is not None
-    assert puts(world.state, OTHER_COPY, copy[0].message_id) == [WAKE_EMOJI]
+    assert puts(world.state, OTHER_COPY, copy[0].message_id) == [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI]
 
 
 # AC5.6: reconcile adds only what is missing ----------------------------------------------------------------
@@ -400,25 +400,25 @@ async def test_reconcile_of_a_home_copy_that_has_the_wake_emoji_adds_only_bell_a
     assert reacted(world.state, HOME_COPY, message_id) == {WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI}
 
 
-async def test_reconcile_of_a_copy_in_another_community_adds_nothing_when_it_has_the_wake_emoji(
+async def test_reconcile_of_a_copy_in_another_community_that_has_the_wake_emoji_adds_only_bell_and_play_now(
         world: World, db: Database) -> None:
     message_id = "5003"
     await stored_copy(world, db, OTHER_COPY, OTHER_GUILD, message_id, [WAKE_EMOJI])
 
     await make_poller(world, Clock()).reconcile()
 
-    assert [r for r in world.state.requests if r.method == "PUT" and OTHER_COPY in r.path] == []
+    assert puts(world.state, OTHER_COPY, message_id) == [FOLLOW_EMOJI, PLAY_NOW_EMOJI]
 
 
-async def test_reconcile_of_a_copy_in_another_community_adds_only_the_wake_emoji_when_missing(
+async def test_reconcile_of_a_copy_in_another_community_adds_all_three_when_missing(
         world: World, db: Database) -> None:
     message_id = "5004"
     await stored_copy(world, db, OTHER_COPY, OTHER_GUILD, message_id, [])
 
     await make_poller(world, Clock()).reconcile()
 
-    assert puts(world.state, OTHER_COPY, message_id) == [WAKE_EMOJI]
-    assert reacted(world.state, OTHER_COPY, message_id) == {WAKE_EMOJI}
+    assert puts(world.state, OTHER_COPY, message_id) == [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI]
+    assert reacted(world.state, OTHER_COPY, message_id) == {WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI}
 
 
 # A cancelled publish drops the seed jobs it queued, so a later publish on the same Poller seeds nothing stale ---------

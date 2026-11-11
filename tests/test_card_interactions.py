@@ -172,7 +172,7 @@ async def test_on_adds_the_wake_and_play_now_reactions_to_the_card_and_its_home_
     assert await world.db.run(interaction_settings.enabled) is True
 
 
-async def test_on_gives_the_play_now_emoji_to_home_copies_only(world: World) -> None:
+async def test_on_gives_the_play_now_emoji_only_to_home_copies_when_the_card_has_no_target(world: World) -> None:
     card = await live_card(world, "mc", CARD_MSG)
     await add_copy(world, card, COPY_CHANNEL, GUILD, COPY_MSG)
     await add_copy(world, card, OTHER_CHANNEL, OTHER_GUILD, OTHER_COPY_MSG)
@@ -183,6 +183,21 @@ async def test_on_gives_the_play_now_emoji_to_home_copies_only(world: World) -> 
                                   reaction_path(COPY_CHANNEL, COPY_MSG, WAKE_EMOJI) + "/@me",
                                   reaction_path(COPY_CHANNEL, COPY_MSG, PLAY_NOW_EMOJI) + "/@me",
                                   reaction_path(OTHER_CHANNEL, OTHER_COPY_MSG, WAKE_EMOJI) + "/@me"]
+
+
+async def test_on_gives_the_play_now_emoji_to_a_copy_outside_the_games_community_when_the_card_has_a_target(
+        world: World) -> None:
+    card = await live_card(world, "mc", CARD_MSG)
+    await add_copy(world, card, OTHER_CHANNEL, OTHER_GUILD, OTHER_COPY_MSG)
+    await world.db.run(lambda c: cards.set_play_now_channel(c, card.id,
+                                                            cards.ChannelLink(GUILD, COPY_CHANNEL, "lounge", True)))
+    await world.run("!card interactions off")
+    world.clear_requests()
+    await world.run("!card interactions on")
+    assert sent(world, "PUT") == [reaction_path(GAMES, CARD_MSG, WAKE_EMOJI) + "/@me",
+                                  reaction_path(GAMES, CARD_MSG, PLAY_NOW_EMOJI) + "/@me",
+                                  reaction_path(OTHER_CHANNEL, OTHER_COPY_MSG, WAKE_EMOJI) + "/@me",
+                                  reaction_path(OTHER_CHANNEL, OTHER_COPY_MSG, PLAY_NOW_EMOJI) + "/@me"]
 
 
 async def test_on_adds_the_follow_reaction_to_home_surfaces_with_a_follow_role(world: World) -> None:
@@ -198,7 +213,7 @@ async def test_on_adds_the_follow_reaction_to_home_surfaces_with_a_follow_role(w
     assert sent(world, "PUT") == [path + "/@me" for path in expected]
 
 
-async def test_on_leaves_the_follow_reaction_off_a_copy_outside_the_games_community(world: World) -> None:
+async def test_on_adds_the_follow_reaction_to_a_copy_outside_the_games_community(world: World) -> None:
     card = await live_card(world, "mc", CARD_MSG)
     await add_copy(world, card, OTHER_CHANNEL, OTHER_GUILD, OTHER_COPY_MSG)
     await world.db.run(lambda c: cards.set_follow_role(c, card.id, GUILD, ROLE))
@@ -207,7 +222,8 @@ async def test_on_leaves_the_follow_reaction_off_a_copy_outside_the_games_commun
     await world.run("!card interactions on")
     assert sent(world, "PUT") == [reaction_path(GAMES, CARD_MSG, WAKE_EMOJI) + "/@me",
                                   reaction_path(GAMES, CARD_MSG, FOLLOW_EMOJI) + "/@me",
-                                  reaction_path(OTHER_CHANNEL, OTHER_COPY_MSG, WAKE_EMOJI) + "/@me"]
+                                  reaction_path(OTHER_CHANNEL, OTHER_COPY_MSG, WAKE_EMOJI) + "/@me",
+                                  reaction_path(OTHER_CHANNEL, OTHER_COPY_MSG, FOLLOW_EMOJI) + "/@me"]
 
 
 async def test_on_after_off_restores_the_presses(world: World) -> None:

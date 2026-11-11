@@ -720,12 +720,12 @@ async def _apply_interactions(ctx: CardContext, targets: list[_Target], *, on: b
 
 
 async def _seed_targets(ctx: CardContext, seeder: Seeder, targets: list[_Target], games_guild_id: str | None) -> None:
-    """Adds the emoji each target should carry. A copy outside the games community is not home, so it gets no bell."""
+    """Adds the emoji each target should carry. Being home decides only a copy's play-now target."""
     for target in targets:
         home = target.kind == "card" or target.guild_id == games_guild_id
         play_now = has_play_now_target(target.card, ctx.config, surface_kind=target.kind, home=home)
         await seeder.seed(target.channel_id, target.message_id,
-                          wanted_emoji(target.card, home=home, play_now_target=play_now), card_id=target.card.id)
+                          wanted_emoji(target.card, play_now_target=play_now), card_id=target.card.id)
 
 
 async def _reseed(ctx: CardContext, card_id: int) -> None:

@@ -100,22 +100,19 @@ SEGMENTS = {WAKE_EMOJI: WAKE_SEGMENT, FOLLOW_EMOJI: FOLLOW_SEGMENT, PLAY_NOW_EMO
 # wanted_emoji: the three rules
 
 def test_wake_is_always_wanted() -> None:
-    assert wanted_emoji(make_card(), home=False, play_now_target=False) == [WAKE_EMOJI]
+    assert wanted_emoji(make_card(), play_now_target=False) == [WAKE_EMOJI]
 
 
-def test_follow_is_wanted_only_at_home_with_a_follow_role() -> None:
-    with_role = make_card(follow_role=ROLE)
-
-    assert wanted_emoji(with_role, home=True, play_now_target=False) == [WAKE_EMOJI, FOLLOW_EMOJI]
-    assert wanted_emoji(with_role, home=False, play_now_target=False) == [WAKE_EMOJI]
-    assert wanted_emoji(make_card(), home=True, play_now_target=False) == [WAKE_EMOJI]
+def test_follow_is_wanted_only_with_a_follow_role() -> None:
+    assert wanted_emoji(make_card(follow_role=ROLE), play_now_target=False) == [WAKE_EMOJI, FOLLOW_EMOJI]
+    assert wanted_emoji(make_card(), play_now_target=False) == [WAKE_EMOJI]
 
 
 def test_play_now_is_wanted_only_with_a_play_now_target() -> None:
     card = make_card(follow_role=ROLE)
 
-    assert wanted_emoji(card, home=True, play_now_target=True) == [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI]
-    assert wanted_emoji(card, home=True, play_now_target=False) == [WAKE_EMOJI, FOLLOW_EMOJI]
+    assert wanted_emoji(card, play_now_target=True) == [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI]
+    assert wanted_emoji(card, play_now_target=False) == [WAKE_EMOJI, FOLLOW_EMOJI]
 
 
 # has_play_now_target: the three surfaces
@@ -141,12 +138,14 @@ def test_an_unverified_card_link_is_no_target_on_its_own() -> None:
                                home=True) is True
 
 
-def test_a_copy_has_a_target_only_at_home() -> None:
-    config = make_config(PLAY_NOW_CHANNEL_ID="2600")
-    card = make_card(play_now_channel=LINK)
+def test_a_copy_elsewhere_has_a_target_when_the_card_has_one() -> None:
+    bare = make_config()
+    configured = make_config(PLAY_NOW_CHANNEL_ID="2600")
 
-    assert has_play_now_target(card, config, surface_kind="copy", home=True) is True
-    assert has_play_now_target(card, config, surface_kind="copy", home=False) is False
+    assert has_play_now_target(make_card(play_now_channel=LINK), bare, surface_kind="copy", home=False) is True
+    assert has_play_now_target(make_card(), configured, surface_kind="copy", home=False) is True
+    assert has_play_now_target(make_card(play_now_channel=UNVERIFIED), bare, surface_kind="copy",
+                               home=False) is False
 
 
 def test_a_home_copy_always_has_a_target_because_it_posts_in_its_own_channel() -> None:
@@ -155,9 +154,8 @@ def test_a_home_copy_always_has_a_target_because_it_posts_in_its_own_channel() -
                                home=True) is True
 
 
-def test_a_copy_outside_the_games_community_has_no_target_even_with_one_configured() -> None:
-    assert has_play_now_target(make_card(), make_config(PLAY_NOW_CHANNEL_ID="2600"), surface_kind="copy",
-                               home=False) is False
+def test_a_copy_elsewhere_has_no_target_when_the_card_has_none() -> None:
+    assert has_play_now_target(make_card(), make_config(), surface_kind="copy", home=False) is False
 
 
 def test_a_play_now_surface_never_has_a_target() -> None:
