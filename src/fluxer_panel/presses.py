@@ -5,9 +5,9 @@
 The emoji are written as escapes, never as literal characters: WAKE_EMOJI carries U+FE0F, which Fluxer stores on the
 play reaction (docs/fluxer-notes.md, "Play emoji (U+25B6) stored name").
 
-`Presses.on_reaction` takes a gateway reaction and decides whether it is a press. The order is fixed: the filters, the
-surface, the kill switch, the play-now me-too, the rate limits, the handler, and last the removal of the user's
-reaction, through the channel's pacer. A removal is never a press.
+`Presses.on_reaction` takes a gateway reaction and decides whether it is a press or an RSVP. The order is fixed: the
+filters, the RSVP route (state, never a press), the surface, the kill switch, the play-now me-too, the rate limits, the
+handler, and last the removal of the user's reaction, through the channel's pacer. A removal is never a press.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from typing import Literal, Protocol
 
 from fluxer_client import events
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
-from fluxer_panel import board, cards, interaction_settings, notify, play_now, subscriptions, text
+from fluxer_panel import board, cards, interaction_settings, notify, play_now, rsvp, sessions, subscriptions, text
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.games import BotIdentity, GamesGuild
@@ -37,7 +37,7 @@ WAKE_EMOJI = "\u25b6\ufe0f"        # the play emoji, as the bot sends it and Flu
 FOLLOW_EMOJI = "\U0001F514"        # the bell
 PLAY_NOW_EMOJI = "\U0001F64B"      # the person raising a hand
 
-SurfaceKind = Literal["card", "copy", "play_now"]
+SurfaceKind = Literal["card", "copy", "play_now", "session"]
 
 
 class Action(Enum):
@@ -77,6 +77,7 @@ class Press:
 class PressHandler(Protocol):
     async def handle(self, press: Press) -> None: ...
     async def me_too_changed(self, card_id: int, surface: Surface, user_id: str) -> None: ...
+    async def rsvp_changed(self, session_id: int, user_id: str, choice: rsvp.Choice, added: bool) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -123,6 +124,15 @@ def _lookup(conn, channel_id: str, message_id: str) -> _Lookup | None:
                    degraded=interaction_settings.is_degraded(conn, channel_id))
 
 
+def _find_session(conn, channel_id: str, message_id: str) -> int | None:
+    """The id of the session whose message this is, when it is in this channel. The state is not checked here:
+    `Interactions.rsvp_changed` reads it under the card's lock."""
+    session = sessions.get_by_message(conn, message_id)
+    if session is None or session.channel_id != channel_id:
+        return None
+    return session.id
+
+
 class Presses:
     def __init__(self, *, db: Database, rest: FluxerREST, config: Config, handler: PressHandler,
                  games_guild: GamesGuild, pacer: ChannelPacer, identity: BotIdentity,
@@ -142,6 +152,18 @@ class Presses:
     async def on_reaction(self, event: events.ReactionAdd | events.ReactionRemove) -> None:
         # 1. The bot's own reactions, another bot's, and anything in a DM never reach the adapter.
         if event.guild_id is None or event.user_id == self._identity.user_id or event.user_is_bot:
+            return
+        # 1b. RSVP reactions on a session message are state, not presses: no kill switch, no rate limit, no removal.
+        choice = rsvp.choice_for(event.emoji.name) if event.emoji.id is None else None
+        if choice is not None:
+            session_id = await self._db.run(lambda c: _find_session(c, event.channel_id, event.message_id))
+            if session_id is not None:
+                try:
+                    await self._handler.rsvp_changed(session_id, event.user_id, choice,
+                                                     isinstance(event, events.ReactionAdd))
+                except Exception as exc:  # noqa: BLE001 - a failed RSVP is logged, never raised into the gateway
+                    log_event(log, "rsvp_failed", level=logging.WARNING, session_id=session_id,
+                              reason=type(exc).__name__)
             return
         # 2. Only the three emoji count.
         action = action_for(event.emoji)

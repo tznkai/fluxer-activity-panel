@@ -80,8 +80,10 @@ class RecordingHandler:
         self._state = state
         self.presses: list[Press] = []
         self.me_too: list[tuple[int, Surface, str]] = []
+        self.rsvps: list[tuple[int, str, str, bool]] = []   # (session id, user id, choice, added)
         self.deletes_at_call: list[int] = []
         self.fail = False
+        self.rsvp_fail = False
 
     async def handle(self, press: Press) -> None:
         self.deletes_at_call.append(sum(1 for r in self._state.requests if r.method == "DELETE"))
@@ -91,6 +93,11 @@ class RecordingHandler:
 
     async def me_too_changed(self, card_id: int, surface: Surface, user_id: str) -> None:
         self.me_too.append((card_id, surface, user_id))
+
+    async def rsvp_changed(self, session_id: int, user_id: str, choice: str, added: bool) -> None:
+        self.rsvps.append((session_id, user_id, choice, added))
+        if self.rsvp_fail:
+            raise RuntimeError("the rsvp handler broke")
 
 
 class BarrierPacer:
