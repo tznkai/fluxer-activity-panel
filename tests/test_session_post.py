@@ -183,6 +183,16 @@ async def test_delete_unstored_swallows_a_failed_delete(world: SimpleNamespace, 
     assert [r.getMessage() for r in panel_records(caplog)] == ["session_discard_failed"]
 
 
+async def test_delete_unstored_refuses_the_games_channel_before_any_request_and_logs_it(
+        world: SimpleNamespace, caplog) -> None:
+    caplog.set_level(logging.DEBUG, logger="fluxer_panel.session_post")
+    before = len(world.state.requests)
+    await world.post.delete_unstored(GAMES, GAMES_MSG)
+    assert len(world.state.requests) == before
+    [refused] = [r for r in panel_records(caplog) if r.getMessage() == "session_discard_failed"]
+    assert getattr(refused, FIELDS_ATTR) == {"channel_id": GAMES, "reason": "GamesChannelRefused"}
+
+
 # An edit renders the session as the database holds it at send time, never the caller's view.
 
 async def test_an_edit_renders_the_database_state_not_the_callers_view(world: SimpleNamespace) -> None:
@@ -217,10 +227,15 @@ async def test_an_edit_in_flight_cannot_restore_an_upcoming_form_after_a_cancel(
         await asyncio.sleep(0)
     await world.db.run(lambda conn: sessions.cancel_if(conn, session_id, 2))
     second = asyncio.create_task(world.post.edit_session(session_id))  # the cancel's edit
-    # The second edit reads the database in a thread, so a few loop turns are not enough to reach its PATCH. A real
-    # wait lets an unlocked second edit send, so this check fails without the lock.
-    await asyncio.sleep(0.2)
+    # Deterministic, no wall clock. One turn lets the second task start: if the lock were free it would submit its
+    # _load to the single-thread DB executor now. The no-op run below is submitted after that _load, so awaiting it
+    # means the _load has finished, and a few more turns let an unlocked second edit reach gated_edit.
+    await asyncio.sleep(0)
+    await world.db.run(lambda conn: None)
+    for _ in range(5):
+        await asyncio.sleep(0)
     assert len(calls) == 1, "the second edit must wait for the first"
+    assert world.post.edit_lock(session_id).locked()
     release.set()
     await asyncio.gather(first, second)
     assert len(calls) == 2

@@ -89,7 +89,12 @@ class SessionPost:
                 return
 
     async def delete_unstored(self, channel_id: str, message_id: str) -> None:
-        """Deletes a posted message whose store failed. Never raises (as interactions._discard_unstored)."""
+        """Deletes a posted message whose store failed. Never raises (as interactions._discard_unstored). The games
+        channel is refused before any REST call, and that refusal is logged, not raised."""
+        if channel_id == self._config.games_channel_id:
+            log_event(log, "session_discard_failed", level=logging.WARNING, channel_id=channel_id,
+                      reason="GamesChannelRefused")
+            return
         try:
             await self._rest.delete_message(channel_id, message_id)
         except Exception as exc:  # noqa: BLE001 - a failed delete is logged; the caller is not told
