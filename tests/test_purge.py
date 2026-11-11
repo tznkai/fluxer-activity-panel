@@ -52,18 +52,29 @@ def _card(conn: sqlite3.Connection) -> int:
     return cur.lastrowid
 
 
-def _session(conn: sqlite3.Connection, card_id: int, *, ends_at: int,
-             recurrence: str | None = None, recurrence_until: int | None = None) -> int:
+_MESSAGE_IDS = itertools.count(4001)
+
+
+def _session(conn: sqlite3.Connection, card_id: int, *, closed_at: int, state: str = "ended") -> int:
+    """A closed (ended or cancelled) session. It ran for an hour that ended one second before it closed."""
     cur = conn.execute(
-        "INSERT INTO sessions (card_id, group_role_id, starts_at, ends_at, recurrence, recurrence_until, "
-        "proposer_id, created_at) VALUES (?, '2001', ?, ?, ?, ?, '1001', ?)",
-        (card_id, ends_at - 3600, ends_at, recurrence, recurrence_until, NOW))
+        "INSERT INTO sessions (card_id, guild_id, channel_id, message_id, starts_at, ends_at, proposer_id, "
+        "created_at, state, closed_at) VALUES (?, '1001', '1002', ?, ?, ?, '1001', ?, ?, ?)",
+        (card_id, str(next(_MESSAGE_IDS)), closed_at - 100, closed_at - 1, NOW, state, closed_at))
+    return cur.lastrowid
+
+
+def _upcoming(conn: sqlite3.Connection, card_id: int, *, ends_at: int) -> int:
+    cur = conn.execute(
+        "INSERT INTO sessions (card_id, guild_id, channel_id, message_id, starts_at, ends_at, proposer_id, "
+        "created_at) VALUES (?, '1001', '1002', ?, ?, ?, '1001', ?)",
+        (card_id, str(next(_MESSAGE_IDS)), ends_at - 3600, ends_at, NOW))
     return cur.lastrowid
 
 
 def _rsvps(conn: sqlite3.Connection, session_id: int, *user_ids: str) -> None:
     for user_id in user_ids:
-        conn.execute("INSERT INTO rsvps (session_id, user_id, status, responded_at) VALUES (?, ?, 'yes', ?)",
+        conn.execute("INSERT INTO rsvps (session_id, user_id, choice, responded_at) VALUES (?, ?, 'going', ?)",
                      (session_id, user_id, NOW))
 
 
@@ -99,7 +110,7 @@ def _read_status(path: Path) -> dict | None:
 
 async def test_expired_session_and_its_rsvps_are_deleted(db: Database) -> None:
     def seed(conn: sqlite3.Connection) -> None:
-        _rsvps(conn, _session(conn, _card(conn), ends_at=CUT - 1), "1001", "1002")
+        _rsvps(conn, _session(conn, _card(conn), closed_at=CUT - 1), "1001", "1002")
 
     await db.run(seed)
 
@@ -113,8 +124,8 @@ async def test_expired_session_and_its_rsvps_are_deleted(db: Database) -> None:
 async def test_session_at_or_after_the_cutoff_is_kept(db: Database) -> None:
     def seed(conn: sqlite3.Connection) -> None:
         card = _card(conn)
-        _rsvps(conn, _session(conn, card, ends_at=CUT), "1001", "1002")
-        _rsvps(conn, _session(conn, card, ends_at=CUT + 1), "1003")
+        _rsvps(conn, _session(conn, card, closed_at=CUT), "1001", "1002")
+        _rsvps(conn, _session(conn, card, closed_at=CUT + 1), "1003")
 
     await db.run(seed)
 
@@ -127,17 +138,21 @@ async def test_session_at_or_after_the_cutoff_is_kept(db: Database) -> None:
 
 # AC6.2 ------------------------------------------------------------------------------------------------
 
-async def test_recurring_session_is_deleted_only_once_its_series_ended_before_the_cutoff(db: Database) -> None:
+async def test_upcoming_session_is_never_deleted_however_old_its_end(db: Database) -> None:
+    session_id = await db.run(lambda conn: _upcoming(conn, _card(conn), ends_at=ANCIENT))
+
+    result = await purge(db, NOW)
+
+    assert result == PurgeResult(sessions=0, rsvps=0, requests=0, play_now=0)
+    assert await db.run(_session_ids) == {session_id}
+
+
+async def test_cancelled_session_expires_by_its_close_time_like_an_ended_one(db: Database) -> None:
     def seed(conn: sqlite3.Connection) -> dict[str, int]:
         card = _card(conn)
         return {
-            "ended_long_ago_but_series_continues": _session(
-                conn, card, ends_at=ANCIENT, recurrence="weekly", recurrence_until=CUT + 10),
-            "series_ended_before_cutoff": _session(
-                conn, card, ends_at=ANCIENT, recurrence="weekly", recurrence_until=CUT - 1),
-            "series_ends_exactly_at_cutoff": _session(
-                conn, card, ends_at=ANCIENT, recurrence="weekly", recurrence_until=CUT),
-            "open_ended_series": _session(conn, card, ends_at=ANCIENT, recurrence="weekly", recurrence_until=None),
+            "old": _session(conn, card, closed_at=CUT - 1, state="cancelled"),
+            "young": _session(conn, card, closed_at=CUT + 1, state="cancelled"),
         }
 
     ids = await db.run(seed)
@@ -145,9 +160,7 @@ async def test_recurring_session_is_deleted_only_once_its_series_ended_before_th
     result = await purge(db, NOW)
 
     assert result == PurgeResult(sessions=1, rsvps=0, requests=0, play_now=0)
-    remaining = await db.run(_session_ids)
-    assert remaining == {ids["ended_long_ago_but_series_continues"], ids["series_ends_exactly_at_cutoff"],
-                         ids["open_ended_series"]}
+    assert await db.run(_session_ids) == {ids["young"]}
 
 
 # AC6.3 ------------------------------------------------------------------------------------------------
@@ -188,7 +201,7 @@ async def test_old_play_now_posts_are_deleted_in_either_state_and_young_ones_kep
 
 async def test_run_purge_writes_a_valid_status_file(db: Database, status: Path) -> None:
     def seed(conn: sqlite3.Connection) -> None:
-        _rsvps(conn, _session(conn, _card(conn), ends_at=CUT - 1), "1001")
+        _rsvps(conn, _session(conn, _card(conn), closed_at=CUT - 1), "1001")
         _request(conn, _card(conn), status="cleared", created_at=REQ_CUT - 1)
 
     await db.run(seed)
@@ -216,7 +229,7 @@ async def test_successful_run_logs_purge_done_with_count_and_duration(
         db: Database, status: Path, caplog: pytest.LogCaptureFixture) -> None:
     def seed(conn: sqlite3.Connection) -> None:
         card = _card(conn)
-        _rsvps(conn, _session(conn, card, ends_at=CUT - 1), "1001", "1002")
+        _rsvps(conn, _session(conn, card, closed_at=CUT - 1), "1001", "1002")
         _request(conn, card, status="cleared", created_at=REQ_CUT - 1)
         _play_now(conn, card, state="expired", created_at=REQ_CUT - 1, message_id="5001")
 
@@ -258,7 +271,7 @@ async def test_failed_status_write_keeps_the_previous_file_and_never_raises(
 async def test_failing_purge_rolls_back_and_keeps_the_previous_success(
         db: Database, status: Path, caplog: pytest.LogCaptureFixture) -> None:
     await run_purge(db, status, NOW - 100)
-    await db.run(lambda conn: _rsvps(conn, _session(conn, _card(conn), ends_at=CUT - 1), "1001", "1002"))
+    await db.run(lambda conn: _rsvps(conn, _session(conn, _card(conn), closed_at=CUT - 1), "1001", "1002"))
     await db.run(lambda conn: _request(conn, _card(conn), status="open", created_at=REQ_CUT - 1))
     await db.run(lambda conn: conn.execute(FAIL_TRIGGER))
     caplog.set_level(logging.ERROR, logger="fluxer_panel.purge")
@@ -398,7 +411,7 @@ async def test_any_status_write_failure_is_logged_and_survived(db: Database, sta
 async def test_checkpoint_failure_after_commit_reports_not_ok_and_keeps_the_rows_deleted(
         db: Database, status: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     await run_purge(db, status, NOW - 100)
-    await db.run(lambda conn: _rsvps(conn, _session(conn, _card(conn), ends_at=CUT - 1), "1001", "1002"))
+    await db.run(lambda conn: _rsvps(conn, _session(conn, _card(conn), closed_at=CUT - 1), "1001", "1002"))
 
     async def broken_checkpoint() -> None:
         raise sqlite3.OperationalError("database is locked")

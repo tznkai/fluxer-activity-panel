@@ -24,9 +24,8 @@ REQUEST_RETENTION = 30 * DAY
 STATUS_SCHEMA_VERSION = 1
 
 _EXPIRED_SESSIONS = """(
-    (recurrence IS NULL AND ends_at < :cutoff)
-    OR (recurrence IS NOT NULL AND recurrence_until IS NOT NULL AND recurrence_until < :cutoff)
-)"""
+    state <> 'upcoming' AND closed_at < :cutoff
+)"""  # a session is kept for SESSION_RETENTION after it closed (ended or cancelled); upcoming ones never expire
 
 
 @dataclass(frozen=True)

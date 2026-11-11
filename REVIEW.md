@@ -108,20 +108,22 @@ Paths are relative to this directory.
 
 ## Purge deletion
 
-- `src/fluxer_panel/purge.py:26` `_EXPIRED_SESSIONS = """(` — the expiry rule. A non-recurring session expires by `ends_at`, and a recurring one by `recurrence_until`.
-- `src/fluxer_panel/purge.py:28` `recurrence_until IS NOT NULL` — an open-ended series (`recurrence_until` NULL) never matches, so it is never purged.
-- `src/fluxer_panel/purge.py:40` `def _purge_tx(` — one transaction: count the RSVPs of expired sessions, delete the sessions, delete the old requests and play-now posts.
-- `src/fluxer_panel/purge.py:45` `DELETE FROM sessions` — deletes expired sessions. Their RSVPs go with them by cascade.
-- `src/fluxer_panel/purge.py:46` `DELETE FROM requests` — deletes requests older than 30 days, whatever their status.
-- `src/fluxer_panel/purge.py:67` `def write_status(` — the status file is written atomically and holds only timestamps and counts.
-- `src/fluxer_panel/purge.py:83` `await db.checkpoint()` — a WAL checkpoint after each run. A checkpoint failure after the commit is reported as `ok: false`, though the rows may already be gone.
-- `src/fluxer_panel/purge.py:110` `log.exception("purge_loop_error")` — the per-iteration catch-all. A failing iteration is logged, and the loop goes on.
+- `src/fluxer_panel/purge.py:26` `_EXPIRED_SESSIONS = """(` — the expiry rule. A session expires when it has been ended or cancelled (`closed_at`) for more than 7 days.
+- `src/fluxer_panel/purge.py:27` `state <> 'upcoming' AND closed_at < :cutoff` — an upcoming session (`closed_at` NULL) never matches, so it is never purged, however old its end.
+- `src/fluxer_panel/purge.py:39` `def _purge_tx(` — one transaction: count the RSVPs of expired sessions, delete the sessions, delete the old requests and play-now posts.
+- `src/fluxer_panel/purge.py:44` `DELETE FROM sessions` — deletes expired sessions. Their RSVPs go with them by cascade.
+- `src/fluxer_panel/purge.py:45` `DELETE FROM requests` — deletes requests older than 30 days, whatever their status.
+- `src/fluxer_panel/purge.py:66` `def write_status(` — the status file is written atomically and holds only timestamps and counts.
+- `src/fluxer_panel/purge.py:82` `await db.checkpoint()` — a WAL checkpoint after each run. A checkpoint failure after the commit is reported as `ok: false`, though the rows may already be gone.
+- `src/fluxer_panel/purge.py:109` `log.exception("purge_loop_error")` — the per-iteration catch-all. A failing iteration is logged, and the loop goes on.
 - `src/fluxer_panel/__main__.py:104` `purge_task = asyncio.create_task(purge_loop(` — the purge task and the poller start only once the gateway task exists, so a stop that wins discovery never starts either.
 - `src/fluxer_panel/__main__.py:120` `gw_task.cancel()` — `run()`'s finally cancels the gateway task first, so the session never closes under a live reconnect.
 - `src/fluxer_panel/__main__.py:125` `poller_task.cancel()` — the card poller is cancelled and awaited after the gateway task and before the purge task, so no card write is in flight when the session closes.
 - `src/fluxer_panel/__main__.py:129` `purge_task.cancel()` — the purge task is cancelled and awaited on every exit, after the poller.
-- `src/fluxer_panel/migrations/0001_init.sql:53` `REFERENCES cards(id) ON DELETE RESTRICT` — a card that still has sessions cannot be deleted.
-- `src/fluxer_panel/migrations/0001_init.sql:69` `REFERENCES sessions(id) ON DELETE CASCADE` — RSVPs are removed with their session.
+- `src/fluxer_panel/migrations/0008_sessions.sql:11` `REFERENCES cards(id) ON DELETE RESTRICT` — a card that still has sessions cannot be deleted.
+- `src/fluxer_panel/migrations/0008_sessions.sql:23` `state IN ('upcoming', 'ended', 'cancelled')` — the session states the purge reads.
+- `src/fluxer_panel/migrations/0008_sessions.sql:29` `CHECK ((state = 'upcoming') = (closed_at IS NULL))` — a session has a close time exactly when it is no longer upcoming, so `closed_at` is the purge's clock.
+- `src/fluxer_panel/migrations/0008_sessions.sql:47` `REFERENCES sessions(id) ON DELETE CASCADE` — RSVPs are removed with their session.
 
 ## Emoji and path encoding
 

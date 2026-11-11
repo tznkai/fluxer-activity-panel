@@ -29,9 +29,11 @@ ALLOWED_COLUMNS: dict[str, set[str]] = {
     "card_subscription": {"card_id", "guild_id", "channel_id", "message_id", "content_hash", "paused"},
     "families": {"id", "created_at"},
     "family_members": {"family_id", "user_id", "relation"},
-    "sessions": {"id", "card_id", "group_role_id", "starts_at", "ends_at", "location_text", "seats",
-                 "recurrence", "recurrence_until", "proposer_id", "created_at", "channel_id", "message_id"},
-    "rsvps": {"session_id", "user_id", "status", "responded_at"},
+    "sessions": {"id", "card_id", "guild_id", "channel_id", "message_id", "starts_at", "ends_at", "proposer_id",
+                 "location_text", "seats", "recurrence", "series_id", "next_posted", "state", "closed_at", "moved",
+                 "headsup_sent", "created_at"},
+    "rsvp_reaction": {"session_id", "user_id", "choice", "added_at", "seq", "implicit"},
+    "rsvps": {"session_id", "user_id", "choice", "responded_at", "waitlist_pos"},
     "requests": {"id", "kind", "card_id", "requester_id", "status", "created_at", "closed_at"},
     "wake_request_dm": {"card_id", "admin_id", "kind", "channel_id", "message_id", "opened_at"},
     "card_follow_role": {"card_id", "guild_id", "role_id"},
@@ -46,11 +48,12 @@ ALLOWED_COLUMNS: dict[str, set[str]] = {
 STRICT_TABLES = {"card_location", "card_voice", "card_text_channel", "card_address", "card_manager", "card_probe",
                  "card_subscription",
                  "card_runtime", "board", "wake_request_dm", "card_follow_role", "card_play_now_channel",
-                 "play_now", "interactions", "card_interactions_off", "reaction_degraded"}
+                 "play_now", "interactions", "card_interactions_off", "reaction_degraded", "rsvp_reaction"}
 
 FORBIDDEN_TOKENS = {"nick", "nickname", "age", "birth", "birthday", "dob", "gender",
                     "member", "membership", "group"}
-ALLOWED_GROUP_COLUMNS = {"group_role_id"}   # the Fluxer role that gates a session; an id, not membership
+# No column needs the exemption now that sessions no longer carry a group role (schema 8). The mechanism stays.
+ALLOWED_GROUP_COLUMNS: set[str] = set()
 
 
 @pytest.fixture
@@ -71,8 +74,8 @@ async def _seed(db: Database) -> None:
     await _exec(db, "INSERT INTO families (id, created_at) VALUES (1, 1)")
     await _exec(db, "INSERT INTO cards (title, created_by, created_at, updated_at) "
                     "VALUES ('t', '1001', 1, 1)")
-    await _exec(db, "INSERT INTO sessions (card_id, group_role_id, starts_at, ends_at, proposer_id, created_at) "
-                    "VALUES (1, '2001', 10, 20, '1001', 1)")
+    await _exec(db, "INSERT INTO sessions (card_id, guild_id, channel_id, message_id, starts_at, ends_at, "
+                    "proposer_id, created_at) VALUES (1, '3001', '3002', '3003', 10, 20, '1001', 1)")
 
 
 @pytest.fixture
@@ -119,25 +122,25 @@ REJECTED: list[tuple[str, str, tuple[object, ...]]] = [
                                                "VALUES ('t','1001',1,1,'version,map')", ()),
     ("sort_order is negative", "INSERT INTO cards (title,created_by,created_at,updated_at,sort_order) "
                                "VALUES ('t','1001',1,1,-1)", ()),
-    ("rsvp status is unknown", "INSERT INTO rsvps (session_id,user_id,status,responded_at) "
+    ("rsvp choice is unknown", "INSERT INTO rsvps (session_id,user_id,choice,responded_at) "
                                "VALUES (1,'1001','perhaps',1)", ()),
     ("family relation is unknown", "INSERT INTO family_members (family_id,user_id,relation) "
                                    "VALUES (1,'1001','cousin')", ()),
-    ("session ends equal starts", "INSERT INTO sessions (card_id,group_role_id,starts_at,ends_at,proposer_id,created_at) "
-                                  "VALUES (1,'2001',10,10,'1001',1)", ()),
-    ("session ends before starts", "INSERT INTO sessions (card_id,group_role_id,starts_at,ends_at,proposer_id,created_at) "
-                                   "VALUES (1,'2001',10,5,'1001',1)", ()),
+    ("session ends equal starts", "INSERT INTO sessions (card_id,guild_id,channel_id,message_id,starts_at,ends_at,proposer_id,created_at) "
+                                  "VALUES (1,'3001','3002','3004',10,10,'1001',1)", ()),
+    ("session ends before starts", "INSERT INTO sessions (card_id,guild_id,channel_id,message_id,starts_at,ends_at,proposer_id,created_at) "
+                                   "VALUES (1,'3001','3002','3004',10,5,'1001',1)", ()),
     ("card seats is zero", "INSERT INTO card_seats (card_id,seats) VALUES (1,0)", ()),
-    ("session seats is negative", "INSERT INTO sessions (card_id,group_role_id,starts_at,ends_at,seats,proposer_id,created_at) "
-                                  "VALUES (1,'2001',10,20,-1,'1001',1)", ()),
+    ("session seats is negative", "INSERT INTO sessions (card_id,guild_id,channel_id,message_id,starts_at,ends_at,seats,proposer_id,created_at) "
+                                  "VALUES (1,'3001','3002','3004',10,20,-1,'1001',1)", ()),
     ("request kind is ping", "INSERT INTO requests (kind,card_id,requester_id,status,created_at) "
                              "VALUES ('ping',1,'1001','open',1)", ()),
     ("request status is new", "INSERT INTO requests (kind,card_id,requester_id,status,created_at) "
                               "VALUES ('wake',1,'1001','new',1)", ()),
-    ("rsvp user id is a letter", "INSERT INTO rsvps (session_id,user_id,status,responded_at) "
-                                 "VALUES (1,'x','yes',1)", ()),
-    ("group role id has a dot", "INSERT INTO sessions (card_id,group_role_id,starts_at,ends_at,proposer_id,created_at) "
-                                "VALUES (1,'1.5',10,20,'1001',1)", ()),
+    ("rsvp user id is a letter", "INSERT INTO rsvps (session_id,user_id,choice,responded_at) "
+                                 "VALUES (1,'x','going',1)", ()),
+    ("session guild id has a dot", "INSERT INTO sessions (card_id,guild_id,channel_id,message_id,starts_at,ends_at,proposer_id,created_at) "
+                                   "VALUES (1,'1.5','3002','3004',10,20,'1001',1)", ()),
     ("location text is empty", "INSERT INTO card_location (card_id,location_text) VALUES (1,'')", ()),
     ("voice guild id has a letter", "INSERT INTO card_voice (card_id,slot,guild_id,channel_id,verified) "
                                     "VALUES (1,1,'12a','1002',1)", ()),
@@ -182,10 +185,10 @@ REJECTED: list[tuple[str, str, tuple[object, ...]]] = [
     ("probe port is zero", "INSERT INTO card_probe (card_id,kind,host,port) VALUES (1,'a2s','h.invalid',0)", ()),
     ("probe port is 65536", "INSERT INTO card_probe (card_id,kind,host,port) VALUES (1,'a2s','h.invalid',65536)", ()),
     ("runtime hash is not hex", "INSERT INTO card_runtime (card_id,rendered_hash) VALUES (1,?)", ("G" * 64,)),
-    ("session channel id has a letter", "INSERT INTO sessions (card_id,group_role_id,starts_at,ends_at,channel_id,proposer_id,created_at) "
-                                        "VALUES (1,'2001',10,20,'x1','1001',1)", ()),
-    ("session message id has a letter", "INSERT INTO sessions (card_id,group_role_id,starts_at,ends_at,message_id,proposer_id,created_at) "
-                                        "VALUES (1,'2001',10,20,'x1','1001',1)", ()),
+    ("session channel id has a letter", "INSERT INTO sessions (card_id,guild_id,channel_id,message_id,starts_at,ends_at,proposer_id,created_at) "
+                                        "VALUES (1,'3001','x1','3004',10,20,'1001',1)", ()),
+    ("session message id has a letter", "INSERT INTO sessions (card_id,guild_id,channel_id,message_id,starts_at,ends_at,proposer_id,created_at) "
+                                        "VALUES (1,'3001','3002','x1',10,20,'1001',1)", ()),
     ("subscription guild id has a letter", "INSERT INTO card_subscription (card_id,guild_id,channel_id,paused) "
                                            "VALUES (1,'12a','2001',0)", ()),
     ("subscription guild id is 26 digits", "INSERT INTO card_subscription (card_id,guild_id,channel_id,paused) "
@@ -256,8 +259,8 @@ async def test_duplicate_slug_is_rejected(seeded: Database) -> None:
 
 async def test_strict_table_rejects_text_for_integer_column(seeded: Database) -> None:
     with pytest.raises(sqlite3.Error):
-        await _exec(seeded, "INSERT INTO sessions (card_id,group_role_id,starts_at,ends_at,proposer_id,created_at) "
-                            "VALUES (1,'2001','soon',20,'1001',1)")
+        await _exec(seeded, "INSERT INTO sessions (card_id,guild_id,channel_id,message_id,starts_at,ends_at,proposer_id,created_at) "
+                            "VALUES (1,'3001','3002','3004','soon',20,'1001',1)")
 
 
 async def test_valid_base_rows_insert_and_null_approved_by_is_accepted(seeded: Database) -> None:
@@ -328,8 +331,8 @@ async def test_no_column_has_a_personal_data_token(seeded: Database) -> None:
 # AC4.7 ----------------------------------------------------------------------------------------------
 
 async def test_deleting_session_cascades_its_rsvps(seeded: Database) -> None:
-    await _exec(seeded, "INSERT INTO rsvps (session_id,user_id,status,responded_at) VALUES (1,'1001','yes',1)")
-    await _exec(seeded, "INSERT INTO rsvps (session_id,user_id,status,responded_at) VALUES (1,'1002','maybe',1)")
+    await _exec(seeded, "INSERT INTO rsvps (session_id,user_id,choice,responded_at) VALUES (1,'1001','going',1)")
+    await _exec(seeded, "INSERT INTO rsvps (session_id,user_id,choice,responded_at) VALUES (1,'1002','maybe',1)")
 
     await _exec(seeded, "DELETE FROM sessions WHERE id = 1")
 

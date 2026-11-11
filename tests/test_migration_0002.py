@@ -26,7 +26,7 @@ async def test_fresh_database_reaches_the_latest_version(tmp_path: Path) -> None
 async def test_v1_database_with_rows_migrates_and_keeps_them(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "panel.db"
     real_migrations = dbmod.load_migrations()
-    assert [version for version, _ in real_migrations] == [1, 2, 3, 4, 5, 6, 7]
+    assert [version for version, _ in real_migrations] == [1, 2, 3, 4, 5, 6, 7, 8]
 
     # Build a genuine v1 database: only the first migration exists at this point.
     monkeypatch.setattr(dbmod, "load_migrations", lambda: real_migrations[:1])
@@ -44,8 +44,11 @@ async def test_v1_database_with_rows_migrates_and_keeps_them(tmp_path: Path, mon
                   "VALUES ('wake', 1, '1002', 'open', 1)")
         c.commit()
 
-    # Undo the v1 patch and reopen: the real migrations run.
+    # Undo the v1 patch and reopen at v7: this test is about 0002 keeping rows, so 0008 (which drops the
+    # never-written sessions and rsvps) is not applied here.
     monkeypatch.undo()
+    monkeypatch.setattr(dbmod, "load_migrations", lambda: real_migrations[:7])
+    monkeypatch.setattr(dbmod, "LATEST_VERSION", 7)
     database = Database.open(path)
     try:
         assert path.with_name(path.name + ".pre-v2").exists()
@@ -59,7 +62,7 @@ async def test_v1_database_with_rows_migrates_and_keeps_them(tmp_path: Path, mon
     finally:
         database.close()
 
-    assert version == dbmod.LATEST_VERSION
+    assert version == 7
     assert session == [(1, 1, "2001", 10, 20, None, None)]
     assert rsvps == [(1, "1002", "yes")]
     assert requests == [(1, "wake", 1, "1002", "open")]

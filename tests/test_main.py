@@ -452,13 +452,14 @@ def _seed_purge_rows(conn: sqlite3.Connection, now: int) -> None:
     card = conn.execute("INSERT INTO cards (title, created_by, created_at, updated_at) "
                         "VALUES ('Game', '1001', ?, ?)", (now, now)).lastrowid
     expired = conn.execute(
-        "INSERT INTO sessions (card_id, group_role_id, starts_at, ends_at, proposer_id, created_at) "
-        "VALUES (?, '2001', ?, ?, '1001', ?)", (card, now - 9 * DAY, now - 8 * DAY, now - 9 * DAY)).lastrowid
+        "INSERT INTO sessions (card_id, guild_id, channel_id, message_id, starts_at, ends_at, proposer_id, created_at, "
+        "state, closed_at) VALUES (?, '3001', '3002', '3003', ?, ?, '1001', ?, 'ended', ?)",
+        (card, now - 9 * DAY, now - 8 * DAY, now - 9 * DAY, now - 8 * DAY)).lastrowid
     kept = conn.execute(
-        "INSERT INTO sessions (card_id, group_role_id, starts_at, ends_at, proposer_id, created_at) "
-        "VALUES (?, '2001', ?, ?, '1001', ?)", (card, now, now + DAY, now)).lastrowid
+        "INSERT INTO sessions (card_id, guild_id, channel_id, message_id, starts_at, ends_at, proposer_id, created_at) "
+        "VALUES (?, '3001', '3002', '3004', ?, ?, '1001', ?)", (card, now, now + DAY, now)).lastrowid
     for session_id in (expired, kept):
-        conn.execute("INSERT INTO rsvps (session_id, user_id, status, responded_at) VALUES (?, '5000', 'yes', ?)",
+        conn.execute("INSERT INTO rsvps (session_id, user_id, choice, responded_at) VALUES (?, '5000', 'going', ?)",
                      (session_id, now))
     conn.execute("INSERT INTO requests (kind, card_id, requester_id, status, created_at, closed_at) "
                  "VALUES ('wake', ?, '5000', 'cleared', ?, ?)", (card, now - 31 * DAY, now - 31 * DAY))

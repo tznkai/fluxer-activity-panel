@@ -285,9 +285,8 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
 
 ## Retention purge (`purge.py`)
 
-- A non-recurring session expires when `ends_at` is more than 7 days ago. A recurring session expires when
-  `recurrence_until` is more than 7 days ago. An open-ended series (`recurrence_until` NULL) is never purged.
-  RSVPs go with their session by `ON DELETE CASCADE`.
+- A session expires when it has been ended or cancelled (`closed_at`) for more than 7 days. Upcoming sessions are
+  never purged. RSVP rows go with their session by `ON DELETE CASCADE`.
 - A request expires when `created_at` is more than 30 days ago, whatever its status.
 - A play-now post expires when `created_at` is more than 30 days ago, in either state.
 - Cutoffs are strict: a row exactly at a cutoff is kept. One transaction per run, then a WAL checkpoint.
