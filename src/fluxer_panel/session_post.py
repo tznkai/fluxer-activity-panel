@@ -10,7 +10,7 @@ import sqlite3
 from typing import Any
 
 from fluxer_client.rest import FluxerREST
-from fluxer_panel import cards, render, rsvp, sessions
+from fluxer_panel import cards, notify, render, rsvp, sessions, text
 from fluxer_panel.cards import Card
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
@@ -104,3 +104,16 @@ class SessionPost:
     async def scrub(self, session: Session) -> None:
         """The purge's scrub: edits the message to its closed form with no location. Raises on failure."""
         await self.edit_session(session.id, scrubbed=True)
+
+    async def dm_promoted(self, session: Session, card: Card, user_ids: list[str]) -> None:
+        """One promotion DM per user, in order, each with a jump link to the session's stored message. Shared by the RSVP
+        path, the reconcile and the seats command. A promotion DM never consults the DM backoff (AC7.2)."""
+        title = render.escape(card.title)
+        if self._config.instance_url:
+            link = render.jump_link(text.SESSION_LINK_LABEL, self._config.instance_url, session.guild_id,
+                                    session.channel_id, session.message_id)
+            content = text.SESSION_PROMOTED.format(card=title, link=link)
+        else:
+            content = text.SESSION_PROMOTED_NO_LINK.format(card=title)
+        for user_id in user_ids:
+            await notify.dm_user(self._rest, user_id, content)

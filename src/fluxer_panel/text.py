@@ -291,3 +291,7 @@ SESSION_FOOTER = "Session {n} · ✅ going · ❔ maybe · ❌ can't"
 SESSION_ENDED = "Ended"
 SESSION_CANCELLED = "Cancelled"
 SESSION_MOVED = "Time changed"
+# The promotion DM for a waiting user who gets a seat. `{card}` is the escaped title, `{link}` a jump link.
+SESSION_PROMOTED = "A seat opened up: you're now going to {card}. {link}"
+SESSION_PROMOTED_NO_LINK = "A seat opened up: you're now going to {card}."
+SESSION_LINK_LABEL = "Open the session"

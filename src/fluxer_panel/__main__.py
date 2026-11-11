@@ -32,6 +32,7 @@ from fluxer_panel.poller import Poller
 from fluxer_panel.presses import Presses
 from fluxer_panel.purge import purge_loop, run_purge
 from fluxer_panel.seeding import Seeder
+from fluxer_panel.session_post import SessionPost
 from fluxer_panel.sources.registry import build_sources
 from fluxer_panel.wake import WakeRequests
 
@@ -88,9 +89,11 @@ async def run(config: Config, db: Database) -> None:
                                 status_of=poller.status_of, kick=poller.kick)
             poller.set_wake(wake)
             card_ctx.wake = wake
+            session_post = SessionPost(db=db, rest=rest, config=config, pacer=pacer)
             interactions = Interactions(db=db, rest=rest, config=config, locks=card_ctx.locks,
                                         games_guild=games_guild, seeder=seeder, pacer=pacer, identity=identity,
-                                        roles=roles, kick=poller.kick, wake=wake, status_of=poller.status_of)
+                                        roles=roles, kick=poller.kick, wake=wake, status_of=poller.status_of,
+                                        session_post=session_post)
             poller.set_interactions(interactions)   # each tick ends the play-now messages that are due
             presses = Presses(db=db, rest=rest, config=config, handler=interactions, games_guild=games_guild,
                               pacer=pacer, identity=identity)

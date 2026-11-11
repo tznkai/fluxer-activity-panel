@@ -13,12 +13,12 @@ import itertools
 import logging
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fluxer_client.ids import is_snowflake
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
 from fluxer_client.roles import RoleCache
-from fluxer_panel import cards, follow_roles, notify, play_now, render, text
+from fluxer_panel import cards, follow_roles, notify, play_now, render, rsvp, sessions, text
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.cards import Card
 from fluxer_panel.config import Config
@@ -31,6 +31,10 @@ from fluxer_panel.presses import PLAY_NOW_EMOJI, WAKE_EMOJI, Action, Press, Surf
 from fluxer_panel.resolver import CardStatus, StatusKind
 from fluxer_panel.seeding import Seeder
 from fluxer_panel.wake import WakeRequests
+
+if TYPE_CHECKING:   # type-only: session_post imports GamesChannelRefused from this module
+    from fluxer_panel.session_post import SessionPost
+    from fluxer_panel.sessions import Session
 
 log = logging.getLogger(__name__)
 
@@ -66,7 +70,8 @@ class Interactions:
                  seeder: Seeder, pacer: ChannelPacer, identity: BotIdentity, roles: RoleCache,
                  clock: Callable[[], float] = time.time, kick: Callable[[], None] = lambda: None,
                  wake: WakeRequests | None = None,
-                 status_of: Callable[[int], CardStatus | None] = lambda _id: None) -> None:
+                 status_of: Callable[[int], CardStatus | None] = lambda _id: None,
+                 session_post: SessionPost | None = None) -> None:
         self._db = db
         self._wake = wake
         self._rest = rest
@@ -84,6 +89,9 @@ class Interactions:
         self._follow_alerted: set[tuple[int, str]] = set()   # (card id, reason) whose admin alert was sent
         self._recount_tickets = itertools.count(1)           # one ticket per Me Too recount, taken before its reactor reads
         self._recount_applied: dict[str, int] = {}           # play-now message id -> ticket of the newest recount shown
+        self._session_post = session_post
+        self._session_tickets = itertools.count(1)           # one ticket per committed RSVP change
+        self._session_latest: dict[int, int] = {}            # session id -> ticket of its newest committed RSVP change
 
     async def handle(self, press: Press) -> None:
         match press.action:
@@ -417,3 +425,53 @@ class Interactions:
                                           instance_url=self._config.instance_url)
         await self._rest.edit_message(pn.channel_id, pn.message_id, content=payload["content"],
                                       embeds=payload["embeds"], allowed_mentions={"parse": []})
+
+    async def rsvp_changed(self, session_id: int, user_id: str, choice: rsvp.Choice, added: bool) -> None:
+        """An RSVP reaction was added or removed on a session message. The presence row and the states change in one
+        transaction under the card's lock, and only while the session is upcoming (AC4.10). The message is then edited,
+        and each promoted user is DMed. RSVPs bypass the kill switch and the rate limits, and never kick the poller: the
+        card's count updates on its next scheduled tick. `user_id` is stored and never logged."""
+        if self._session_post is None:
+            return
+        found = await self._db.run(lambda c: sessions.get(c, session_id))
+        if found is None:
+            return
+        now = int(self._clock())
+
+        def tx(c: Any) -> tuple[Session, Card, rsvp.Outcome] | None:
+            s = sessions.get(c, session_id)
+            if s is None or s.state != "upcoming":
+                return None                                   # AC4.10: frozen once ended or cancelled
+            card = cards.get_by_id(c, s.card_id)
+            if card is None:
+                return None                                   # checked before any write, so no half-change commits
+            changed = (sessions.add_presence(c, s, user_id, choice, now) if added
+                       else sessions.remove_presence(c, session_id, user_id, choice))
+            if not changed:
+                return None
+            return s, card, sessions.recompute(c, s, sessions.effective_seats(s, card), now)
+
+        async with self._locks.get(found.card_id):
+            result = await self._db.run(tx)
+            if result is None:
+                return
+            ticket = next(self._session_tickets)
+            self._session_latest[session_id] = ticket
+        session, card, outcome = result
+        log_event(log, "rsvp_changed", session_id=session_id, card_id=session.card_id, action=choice,
+                  outcome="added" if added else "removed", count=len(outcome.promoted))
+        await self._edit_session_coalesced(session, ticket)
+        await self._session_post.dm_promoted(session, card, outcome.promoted)
+
+    async def _edit_session_coalesced(self, session: Session, ticket: int) -> None:
+        """Edits the session message unless a newer RSVP change has already committed: that change's edit renders after
+        this one and covers it. The ticket check only skips redundant edits. `edit_session` re-reads the session, its card
+        and the counts under the edit lock, so the last PATCH always shows the newest state, a cancel included. It edits
+        only the session's stored channel (AC10.3)."""
+        if self._session_post is None or self._session_latest.get(session.id) != ticket:
+            return
+        try:
+            await self._session_post.edit_session(session.id)
+        except Exception as exc:  # noqa: BLE001 - a failed count edit is logged; the next change edits again
+            log_event(log, "session_edit_failed", level=logging.WARNING, session_id=session.id,
+                      **_failure_fields(exc))
