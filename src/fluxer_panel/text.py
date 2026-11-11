@@ -267,3 +267,14 @@ WAKE_ADMIN_CLOSED = {
     "expired": "Nobody started {card} ({slug}). The request from {people} has expired.",
     "cleared": "The request for {card} ({slug}) from {people} was cleared.",
 }
+# Session times: the refusal replies for a typed time (`session_time.parse`), and the example that follows each one.
+SESSION_TIME_EXAMPLE = "Reply like `sat 14:00`, `tomorrow 19:30`, `today 9:05` or `2026-11-14 14:00`."
+SESSION_TIME_REFUSED = {
+    "format": "I couldn't read that time. Use a day and a 24-hour time.",
+    "date": "That date doesn't exist.",
+    "weekday_today": "That's today's weekday. Use `today HH:MM`, or a date like `2026-11-21 14:00`.",
+    "gap": "That time is skipped when the clocks change. Pick another time.",
+    "fold": "That time happens twice when the clocks change. Pick another time.",
+    "past": "That time has already passed.",
+    "too_far": "That's more than 60 days away.",
+}
