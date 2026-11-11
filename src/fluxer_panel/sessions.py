@@ -220,6 +220,33 @@ def remove_presence(conn: sqlite3.Connection, session_id: int, user_id: str, cho
     return cur.rowcount == 1
 
 
+RECONCILE_ORDER: tuple[rsvp.Choice, ...] = ("going", "maybe", "no")
+
+
+def reconcile_presence(conn: sqlite3.Connection, session: Session, actual: dict[rsvp.Choice, set[str]], now: int) -> bool:
+    """Makes the real (implicit = 0) presence rows match the reactions read from the message. A row whose reaction is
+    gone is deleted, and a reaction with no row is added. The proposer's implicit row goes first when they have any
+    reaction, since it shares the (session, user, going) key with a real going row. Missing rows go in the fixed order
+    going, maybe, no, and ascending user id within a choice, so the seqs are deterministic. The order in which reactions
+    were made while the bot was down is unknown, so this order is accepted. Returns whether anything changed."""
+    changed = False
+    if any(session.proposer_id in users for users in actual.values()):
+        cur = conn.execute("DELETE FROM rsvp_reaction WHERE session_id = ? AND user_id = ? AND implicit = 1",
+                           (session.id, session.proposer_id))
+        if cur.rowcount == 1:
+            changed = True
+    for user_id, choice in conn.execute(
+            "SELECT user_id, choice FROM rsvp_reaction WHERE session_id = ? AND implicit = 0",
+            (session.id,)).fetchall():
+        if user_id not in actual.get(choice, set()) and remove_presence(conn, session.id, user_id, choice):
+            changed = True
+    for choice in RECONCILE_ORDER:
+        for user_id in sorted(actual.get(choice, set()), key=int):
+            if add_presence(conn, session, user_id, choice, now):
+                changed = True
+    return changed
+
+
 def write_rsvps(conn: sqlite3.Connection, session_id: int, rsvps: rsvp.Rsvps, now: int) -> None:
     """Replaces the session's RSVP states. A user whose choice is unchanged keeps responded_at; anyone else gets now.
     Waiting rows go in ascending position so the waitlist index never sees a duplicate mid-write."""

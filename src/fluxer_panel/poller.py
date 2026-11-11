@@ -175,6 +175,11 @@ class Poller:
                 if sub.message_id is not None:
                     await self._reconcile_copy(card, sub, sub.message_id)
         await self._reconcile_board()
+        if self._interactions is not None:
+            try:
+                await self._interactions.reconcile_sessions()
+            except Exception as exc:  # noqa: BLE001 - a session repair never stops the poller; the next start retries
+                log_event(log, "session_reconcile_failed", level=logging.WARNING, reason=type(exc).__name__)
 
     async def _reconcile_copy(self, card: cards.Card, sub: subscriptions.Subscription, message_id: str) -> None:
         """Checks one stored copy, the way the card's message is checked, and seeds the reactions it is missing. A copy

@@ -40,6 +40,9 @@ log = logging.getLogger(__name__)
 
 REACTOR_PAGE = 100   # the largest page the reactor list returns
 MAX_REACTOR_PAGES = 20   # the most pages one count reads: at most 2000 reactors are counted
+# The RSVP reactions the startup reconcile reads, with the choice each one stands for.
+_RSVP_READINGS: tuple[tuple[str, rsvp.Choice], ...] = (
+    (rsvp.GOING_EMOJI, "going"), (rsvp.MAYBE_EMOJI, "maybe"), (rsvp.NO_EMOJI, "no"))
 
 
 class GamesChannelRefused(Exception):
@@ -475,3 +478,79 @@ class Interactions:
         except Exception as exc:  # noqa: BLE001 - a failed count edit is logged; the next change edits again
             log_event(log, "session_edit_failed", level=logging.WARNING, session_id=session.id,
                       **_failure_fields(exc))
+
+    async def reconcile_sessions(self) -> None:
+        """At startup, each upcoming session's stored RSVP rows are corrected from the reactions on its message, then
+        recomputed. The reactor lists are read before the card lock is taken. A session whose lists cannot all be read is
+        skipped whole, so a partial read never deletes a row. An edit and the promotion DMs follow only when a row changed.
+        There is no kick: the poller's first tick follows its reconcile anyway."""
+        if self._session_post is None:
+            return
+        upcoming = await self._db.run(sessions.all_upcoming)
+        for listed in upcoming:
+            await self._reconcile_session(listed)
+
+    async def _reconcile_session(self, listed: Session) -> None:
+        readings: dict[rsvp.Choice, set[str]] = {}
+        for emoji, choice in _RSVP_READINGS:
+            ids = await self._reactor_ids(listed.channel_id, listed.message_id, emoji)
+            if ids is None:
+                log_event(log, "session_reconcile_skipped", level=logging.WARNING, session_id=listed.id,
+                          reason="reactors_unreadable")
+                return
+            readings[choice] = ids
+        now = int(self._clock())
+
+        def tx(c: Any) -> tuple[Session, Card, rsvp.Outcome | None] | None:
+            s = sessions.get(c, listed.id)
+            if s is None or s.state != "upcoming":
+                return None                                   # only upcoming sessions are repaired
+            card = cards.get_by_id(c, s.card_id)
+            if card is None:
+                return None
+            if not sessions.reconcile_presence(c, s, readings, now):
+                return s, card, None
+            return s, card, sessions.recompute(c, s, sessions.effective_seats(s, card), now)
+
+        ticket = 0   # the real tickets start at 1, so 0 never matches a newer change
+        async with self._locks.get(listed.card_id):
+            result = await self._db.run(tx)
+            if result is None:
+                return
+            session, card, outcome = result
+            if outcome is not None:
+                ticket = next(self._session_tickets)
+                self._session_latest[session.id] = ticket
+        log_event(log, "session_reconciled", session_id=session.id, card_id=session.card_id,
+                  outcome="changed" if outcome is not None else "unchanged")
+        if outcome is None:
+            return
+        await self._edit_session_coalesced(session, ticket)
+        await self._session_post.dm_promoted(session, card, outcome.promoted)
+
+    async def _reactor_ids(self, channel_id: str, message_id: str, emoji: str) -> set[str] | None:
+        """The non-bot users on one reaction of a message, paged the way `_count_playing` pages them: each page waits for
+        the channel's budget, pages follow `has_more` and `next_after`, and the bot's own id is skipped. None when the
+        paging stalls, runs past MAX_REACTOR_PAGES, or a page fails, so the caller leaves the rows alone."""
+        reactors: set[str] = set()
+        seen: set[str] = set()
+        after: str | None = None
+        for _ in range(MAX_REACTOR_PAGES):
+            await self._pacer.wait(channel_id)
+            try:
+                page = await self._rest.get_reaction_users_page(channel_id, message_id, emoji,
+                                                                limit=REACTOR_PAGE, after=after)
+            except Exception:  # noqa: BLE001 - a failed page skips this session; the caller logs it
+                return None
+            before = len(seen)
+            for user in page.users:
+                seen.add(user["id"])
+                if user.get("bot") is not True and user["id"] != self._identity.user_id:
+                    reactors.add(user["id"])
+            if not page.has_more:
+                return reactors
+            cursor = page.next_after or (page.users[-1]["id"] if page.users else None)
+            if cursor is None or cursor == after or len(seen) == before:
+                return None
+            after = cursor
+        return None
