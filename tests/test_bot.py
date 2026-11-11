@@ -61,7 +61,7 @@ FAST: dict[str, Any] = {
 
 
 def make_config(admins: str = "1001") -> Config:
-    return Config.from_env({"FLUXER_TOKEN": TOKEN, "FLUXER_INSTANCE_URL": "https://fluxer.invalid",
+    return Config.from_env({"FLUXER_TOKEN": TOKEN, "SESSION_TIME_ZONE": "UTC", "FLUXER_INSTANCE_URL": "https://fluxer.invalid",
                             "ADMIN_USER_IDS": admins})
 
 

@@ -124,7 +124,7 @@ async def no_sleep(_seconds: float) -> None:
 
 def config_for(**overrides: str) -> Config:
     env = {
-        "FLUXER_TOKEN": TOKEN,
+        "FLUXER_TOKEN": TOKEN, "SESSION_TIME_ZONE": "UTC",
         "FLUXER_INSTANCE_URL": "https://fluxer.invalid",
         "ADMIN_USER_IDS": "1001,1002",
         "GAMES_CHANNEL_ID": GAMES,

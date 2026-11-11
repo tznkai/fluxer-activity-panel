@@ -58,7 +58,7 @@ def base_roles() -> list[dict[str, Any]]:
 
 
 def make_config() -> Config:
-    env = {"FLUXER_TOKEN": TOKEN, "FLUXER_INSTANCE_URL": "https://fluxer.invalid", "ADMIN_USER_IDS": "1001"}
+    env = {"FLUXER_TOKEN": TOKEN, "SESSION_TIME_ZONE": "UTC", "FLUXER_INSTANCE_URL": "https://fluxer.invalid", "ADMIN_USER_IDS": "1001"}
     return Config.from_env(env)
 
 

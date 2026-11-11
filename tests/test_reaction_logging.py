@@ -154,7 +154,7 @@ async def run(tmp_path: Path, aiohttp_server: Any, session: aiohttp.ClientSessio
     database = Database.open(tmp_path / "logging.db")
     try:
         await database.run(seed)
-        config = Config.from_env({"FLUXER_TOKEN": TOKEN, "FLUXER_INSTANCE_URL": URL, "ADMIN_USER_IDS": ADMIN,
+        config = Config.from_env({"FLUXER_TOKEN": TOKEN, "SESSION_TIME_ZONE": "UTC", "FLUXER_INSTANCE_URL": URL, "ADMIN_USER_IDS": ADMIN,
                                   "GAMES_CHANNEL_ID": GAMES, "PLAY_NOW_CHANNEL_ID": PLAY_CH})
         identity = BotIdentity()
         clock = Clock()

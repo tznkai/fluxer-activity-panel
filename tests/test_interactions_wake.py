@@ -55,7 +55,7 @@ async def session() -> AsyncIterator[aiohttp.ClientSession]:
 
 
 def make_interactions(db: Database, session: aiohttp.ClientSession, wake: RecordingWake | None) -> Interactions:
-    config = Config.from_env({"FLUXER_TOKEN": TOKEN, "FLUXER_INSTANCE_URL": "https://fluxer.invalid",
+    config = Config.from_env({"FLUXER_TOKEN": TOKEN, "SESSION_TIME_ZONE": "UTC", "FLUXER_INSTANCE_URL": "https://fluxer.invalid",
                               "ADMIN_USER_IDS": "1001", "GAMES_CHANNEL_ID": GAMES})
     rest = FluxerREST(session, API, TOKEN)
     pacer = ChannelPacer()

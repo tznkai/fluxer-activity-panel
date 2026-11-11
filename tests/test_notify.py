@@ -41,7 +41,7 @@ def captured(caplog: pytest.LogCaptureFixture) -> pytest.LogCaptureFixture:
 
 
 def make_config(admins: str) -> Config:
-    env = {"FLUXER_TOKEN": TOKEN, "FLUXER_INSTANCE_URL": "https://fluxer.invalid", "ADMIN_USER_IDS": admins}
+    env = {"FLUXER_TOKEN": TOKEN, "SESSION_TIME_ZONE": "UTC", "FLUXER_INSTANCE_URL": "https://fluxer.invalid", "ADMIN_USER_IDS": admins}
     return Config.from_env(env)
 
 

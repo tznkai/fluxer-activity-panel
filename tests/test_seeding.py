@@ -39,7 +39,7 @@ def make_card(**fields: Any) -> cards.Card:
 
 
 def make_config(**extra: str) -> Config:
-    env = {"FLUXER_TOKEN": TOKEN, "FLUXER_INSTANCE_URL": "https://fluxer.invalid", "ADMIN_USER_IDS": "1001", **extra}
+    env = {"FLUXER_TOKEN": TOKEN, "SESSION_TIME_ZONE": "UTC", "FLUXER_INSTANCE_URL": "https://fluxer.invalid", "ADMIN_USER_IDS": "1001", **extra}
     return Config.from_env(env)
 
 

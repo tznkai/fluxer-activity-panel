@@ -51,7 +51,7 @@ def link_to(label: str, message: str, *, guild: str = GUILD, channel: str = GAME
 
 def env(**overrides: str) -> dict[str, str]:
     values = {
-        "FLUXER_TOKEN": TOKEN,
+        "FLUXER_TOKEN": TOKEN, "SESSION_TIME_ZONE": "UTC",
         "FLUXER_INSTANCE_URL": INSTANCE,
         "ADMIN_USER_IDS": "1001,1002",
         "GAMES_CHANNEL_ID": GAMES,

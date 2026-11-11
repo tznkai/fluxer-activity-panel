@@ -8,12 +8,16 @@ import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import time as dtime
 from pathlib import Path
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 _ADMIN_ID = re.compile(r"[1-9][0-9]{0,24}")        # snowflake without leading zeros
 _POSITIVE_INT = re.compile(r"[1-9][0-9]{0,9}")
+_HHMM = re.compile(r"([01][0-9]|2[0-3]):([0-5][0-9])")
+MAX_SLOT_TEMPLATES = 6
 _TOKEN = re.compile(r"[\x21-\x7e]{1,512}")          # printable ASCII, no spaces: it goes in a header
 _FOLLOW_ROLE_PREFIX = re.compile(r"[a-z0-9_-]{1,40}")   # becomes part of role names, which Fluxer shows
 INSTANCE_URL_MAX = 128   # longest FLUXER_INSTANCE_URL in UTF-16 units: Fluxer counts text in units, and a card's Channels field is 1024
@@ -49,6 +53,25 @@ def _positive_int(env: Mapping[str, str], name: str, default: str) -> int:
     return int(raw)
 
 
+def _zone(env: Mapping[str, str], name: str) -> ZoneInfo:
+    raw = _opt(env, name)
+    if raw is None:
+        raise ConfigError(f"{name} is required")
+    try:
+        return ZoneInfo(raw)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        raise ConfigError(f"{name} must be an IANA time zone name") from None
+
+
+def _slot_templates(env: Mapping[str, str], name: str, default: str) -> tuple[dtime, ...]:
+    raw = _opt(env, name) or default
+    parts = [p.strip() for p in raw.split(",")]
+    matches = [_HHMM.fullmatch(p) for p in parts]
+    if not 1 <= len(parts) <= MAX_SLOT_TEMPLATES or not all(matches) or len(set(parts)) != len(parts):
+        raise ConfigError(f"{name} must be 1 to {MAX_SLOT_TEMPLATES} distinct HH:MM times")
+    return tuple(sorted(dtime(int(m.group(1)), int(m.group(2))) for m in matches))
+
+
 @dataclass(frozen=True)
 class Config:
     token: str = field(repr=False)
@@ -79,6 +102,12 @@ class Config:
     press_user_window_seconds: int = 10
     press_card_window_seconds: int = 10
     press_card_burst: int = 10
+    session_time_zone: ZoneInfo = field(default_factory=lambda: ZoneInfo("UTC"))   # from_env requires the variable
+    session_slots_weekday: tuple[dtime, ...] = (dtime(16, 0), dtime(19, 0))
+    session_slots_weekend: tuple[dtime, ...] = (dtime(10, 0), dtime(14, 0), dtime(19, 0))
+    session_length_seconds: int = 7200
+    session_retention_seconds: int = 604800
+    dm_backoff_seconds: int = 3600
 
     @property
     def pterodactyl_configured(self) -> bool:
@@ -153,4 +182,10 @@ class Config:
             press_user_window_seconds=_positive_int(env, "PRESS_USER_WINDOW_SECONDS", "10"),
             press_card_window_seconds=_positive_int(env, "PRESS_CARD_WINDOW_SECONDS", "10"),
             press_card_burst=_positive_int(env, "PRESS_CARD_BURST", "10"),
+            session_time_zone=_zone(env, "SESSION_TIME_ZONE"),
+            session_slots_weekday=_slot_templates(env, "SESSION_SLOTS_WEEKDAY", "16:00,19:00"),
+            session_slots_weekend=_slot_templates(env, "SESSION_SLOTS_WEEKEND", "10:00,14:00,19:00"),
+            session_length_seconds=_positive_int(env, "SESSION_LENGTH_SECONDS", "7200"),
+            session_retention_seconds=_positive_int(env, "SESSION_RETENTION_SECONDS", "604800"),
+            dm_backoff_seconds=_positive_int(env, "DM_BACKOFF_SECONDS", "3600"),
         )

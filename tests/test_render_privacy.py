@@ -97,7 +97,7 @@ def member(user_id: str, roles: list[str]) -> dict[str, Any]:
 
 
 def config_for() -> Config:
-    return Config.from_env({"FLUXER_TOKEN": TOKEN, "FLUXER_INSTANCE_URL": URL, "ADMIN_USER_IDS": ADMIN,
+    return Config.from_env({"FLUXER_TOKEN": TOKEN, "SESSION_TIME_ZONE": "UTC", "FLUXER_INSTANCE_URL": URL, "ADMIN_USER_IDS": ADMIN,
                             "GAMES_CHANNEL_ID": GAMES, "POLL_INTERVAL_SECONDS": "3600"})
 
 

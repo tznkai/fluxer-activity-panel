@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Config validation: every error names its variable and never echoes its value."""
 
+from datetime import time as dtime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -18,7 +20,7 @@ TOO_LONG_INSTANCE_URL = instance_url_of_length(129)   # one character over the 1
 def env(**overrides: str | None) -> dict[str, str]:
     """Build a mapping from scratch (never os.environ). A value of None removes the key."""
     base = {
-        "FLUXER_TOKEN": TOKEN,
+        "FLUXER_TOKEN": TOKEN, "SESSION_TIME_ZONE": "UTC",
         "FLUXER_INSTANCE_URL": "https://fluxer.invalid",
         "ADMIN_USER_IDS": "1001",
     }
@@ -294,3 +296,58 @@ def test_invalid_config_names_variable_not_value(variable, overrides, bad_value)
     if bad_value is not None:
         assert bad_value not in message
     assert "SENTINEL" not in message
+
+
+def test_session_defaults_are_applied():
+    config = Config.from_env(env())
+    assert config.session_time_zone == ZoneInfo("UTC")
+    assert config.session_slots_weekday == (dtime(16, 0), dtime(19, 0))
+    assert config.session_slots_weekend == (dtime(10, 0), dtime(14, 0), dtime(19, 0))
+    assert config.session_length_seconds == 7200
+    assert config.session_retention_seconds == 604800
+    assert config.dm_backoff_seconds == 3600
+
+
+def test_session_time_zone_is_read_from_the_environment():
+    config = Config.from_env(env(SESSION_TIME_ZONE="America/New_York"))
+    assert config.session_time_zone == ZoneInfo("America/New_York")
+
+
+@pytest.mark.parametrize("raw", [None, "   ", "", "Nope/Zone", "utc", "../etc", "America"])
+def test_missing_or_invalid_session_time_zone_names_the_variable_only(raw):
+    with pytest.raises(ConfigError) as info:
+        Config.from_env(env(SESSION_TIME_ZONE=raw))
+    message = str(info.value)
+    assert message.startswith("SESSION_TIME_ZONE")
+    assert "ZoneInfo" not in message
+    if raw:
+        assert raw not in message
+
+
+def test_session_slots_are_sorted():
+    config = Config.from_env(env(SESSION_SLOTS_WEEKDAY="19:00, 16:00", SESSION_SLOTS_WEEKEND="14:00,10:00"))
+    assert config.session_slots_weekday == (dtime(16, 0), dtime(19, 0))
+    assert config.session_slots_weekend == (dtime(10, 0), dtime(14, 0))
+
+
+@pytest.mark.parametrize("name", ["SESSION_SLOTS_WEEKDAY", "SESSION_SLOTS_WEEKEND"])
+@pytest.mark.parametrize("raw", [
+    "9:00", "24:00", "16:00,16:00", "16:00,", "noon",
+    "10:00,11:00,12:00,13:00,14:00,15:00,16:00",
+])
+def test_bad_session_slot_template_names_the_variable_not_the_value(name, raw):
+    with pytest.raises(ConfigError) as info:
+        Config.from_env(env(**{name: raw}))
+    message = str(info.value)
+    assert name in message
+    assert "SENTINEL" not in message
+    assert raw not in message
+
+
+@pytest.mark.parametrize("name", ["SESSION_LENGTH_SECONDS", "SESSION_RETENTION_SECONDS", "DM_BACKOFF_SECONDS"])
+@pytest.mark.parametrize("raw", ["0", "-1", "abc"])
+def test_bad_session_integer_names_the_variable(name, raw):
+    with pytest.raises(ConfigError) as info:
+        Config.from_env(env(**{name: raw}))
+    assert name in str(info.value)
+    assert raw not in str(info.value)

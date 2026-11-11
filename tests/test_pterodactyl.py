@@ -584,7 +584,7 @@ async def test_plugin_failure_log_has_no_key_or_base_url(session, panel, sleeps,
 
 # AC2.11: with Pterodactyl config absent, the kind is unavailable and no Panel request is made.
 def _config(**overrides: str) -> Config:
-    env = {"FLUXER_TOKEN": TOKEN, "FLUXER_INSTANCE_URL": "https://fluxer.invalid", "ADMIN_USER_IDS": "1001"}
+    env = {"FLUXER_TOKEN": TOKEN, "SESSION_TIME_ZONE": "UTC", "FLUXER_INSTANCE_URL": "https://fluxer.invalid", "ADMIN_USER_IDS": "1001"}
     env.update(overrides)
     return Config.from_env(env)
 

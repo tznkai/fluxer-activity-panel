@@ -57,7 +57,7 @@ def child_env(tmp_path: Path, **overrides: str | None) -> dict[str, str]:
     env = {
         "PATH": os.environ["PATH"],
         "HOME": str(tmp_path),
-        "FLUXER_TOKEN": TOKEN,
+        "FLUXER_TOKEN": TOKEN, "SESSION_TIME_ZONE": "UTC",
         "FLUXER_INSTANCE_URL": "https://fluxer.invalid",
         "ADMIN_USER_IDS": ADMIN_DEFAULT,
         "DATA_DIR": str(tmp_path / "data"),
@@ -359,6 +359,21 @@ def test_config_errors_exit_2_and_name_the_variable(name, overrides, tmp_path):
     assert "Traceback" not in proc.stderr
 
 
+@pytest.mark.parametrize(("name", "overrides"), [
+    ("SESSION_TIME_ZONE", {"SESSION_TIME_ZONE": None}),
+    ("SESSION_SLOTS_WEEKEND", {"SESSION_SLOTS_WEEKEND": "25:00"}),
+])
+async def test_bad_session_settings_exit_2_and_name_the_variable(name, overrides, tmp_path):
+    # `purge` makes no Fluxer connection, so a config that wrongly passes cannot hang the test
+    code, out, err = await run_panel(child_env(tmp_path, **overrides), tmp_path, "purge")
+
+    assert code == 2
+    assert "Configuration error:" in err
+    assert name in err
+    assert "25:00" not in err + out
+    assert "Traceback" not in err
+
+
 async def test_unknown_subcommand_exits_2_with_usage(tmp_path):
     code, out, err = await run_panel(child_env(tmp_path), tmp_path, "frobnicate")
 
@@ -498,7 +513,7 @@ def test_purge_once_exits_1_when_the_purge_fails(tmp_path):
     with contextlib.closing(sqlite3.connect(tmp_path / "panel.db")) as conn:
         conn.execute("DROP TABLE rsvps")
         conn.commit()
-    config = Config.from_env({"FLUXER_TOKEN": TOKEN, "FLUXER_INSTANCE_URL": "https://fluxer.invalid",
+    config = Config.from_env({"FLUXER_TOKEN": TOKEN, "SESSION_TIME_ZONE": "UTC", "FLUXER_INSTANCE_URL": "https://fluxer.invalid",
                               "ADMIN_USER_IDS": ADMIN_DEFAULT, "DATA_DIR": str(tmp_path)})
     try:
         assert purge_once(config, db) == 1
@@ -534,7 +549,7 @@ async def _in_process_panel(aiohttp_server, tmp_path: Path, gateway_script) -> t
     gateway_server = await aiohttp_server(make_gateway_app(gateway_script))
     gateway_url = str(gateway_server.make_url("/gateway").with_scheme("ws"))
     rest = await aiohttp_server(make_rest_app(FakeFluxerState(gateway_url=gateway_url)))
-    config = Config.from_env({"FLUXER_TOKEN": TOKEN, "FLUXER_API_URL": str(rest.make_url("/api")).rstrip("/"),
+    config = Config.from_env({"FLUXER_TOKEN": TOKEN, "SESSION_TIME_ZONE": "UTC", "FLUXER_API_URL": str(rest.make_url("/api")).rstrip("/"),
                               "FLUXER_GATEWAY_URL": gateway_url, "ADMIN_USER_IDS": ADMIN_DEFAULT,
                               "DATA_DIR": str(tmp_path)})
     return config, Database.open(tmp_path / "panel.db")

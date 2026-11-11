@@ -17,6 +17,7 @@ dependencies = [
     "yarl>=1.17",
     "mcstatus==14.2.0",
     "python-a2s==1.4.2",
+    "tzdata>=2025.2",
 ]
 
 [project.optional-dependencies]

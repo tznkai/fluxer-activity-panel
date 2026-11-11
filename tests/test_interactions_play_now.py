@@ -150,7 +150,7 @@ async def harness(tmp_path: Path, session, fake) -> AsyncIterator[Callable[..., 
         database = Database.open(tmp_path / f"panel{len(opened)}.db")
         opened.append(database)
         await database.run(seed)
-        base = {"FLUXER_TOKEN": TOKEN, "ADMIN_USER_IDS": ADMIN, "GAMES_CHANNEL_ID": GAMES}
+        base = {"FLUXER_TOKEN": TOKEN, "SESSION_TIME_ZONE": "UTC", "ADMIN_USER_IDS": ADMIN, "GAMES_CHANNEL_ID": GAMES}
         base["FLUXER_INSTANCE_URL" if instance_url else "FLUXER_API_URL"] = JUMP_URL if instance_url else API
         config = Config.from_env({**base, **env})
         games = GamesGuild(rest, config)

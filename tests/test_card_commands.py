@@ -78,7 +78,7 @@ class World:
 
 async def build(db: Database, state: FakeFluxerState, base: str, session: aiohttp.ClientSession,
                 **env: str) -> World:
-    config = Config.from_env({"FLUXER_TOKEN": TOKEN, "FLUXER_INSTANCE_URL": "https://fluxer.invalid",
+    config = Config.from_env({"FLUXER_TOKEN": TOKEN, "SESSION_TIME_ZONE": "UTC", "FLUXER_INSTANCE_URL": "https://fluxer.invalid",
                               "ADMIN_USER_IDS": "1001", **env})
     rest = FluxerREST(session, f"{base}/api", TOKEN)
     kicks: list[int] = []

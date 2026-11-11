@@ -125,7 +125,7 @@ async def harness(tmp_path: Path, session, fake) -> AsyncIterator[Callable[..., 
         database = Database.open(tmp_path / f"panel{len(opened)}.db")
         opened.append(database)
         await database.run(seed)
-        config = Config.from_env({"FLUXER_TOKEN": TOKEN, "FLUXER_INSTANCE_URL": JUMP_URL,
+        config = Config.from_env({"FLUXER_TOKEN": TOKEN, "SESSION_TIME_ZONE": "UTC", "FLUXER_INSTANCE_URL": JUMP_URL,
                                   "ADMIN_USER_IDS": ADMIN, "GAMES_CHANNEL_ID": GAMES, **env})
         games = GamesGuild(rest, config)
         pacer = ChannelPacer(max_calls=1000)

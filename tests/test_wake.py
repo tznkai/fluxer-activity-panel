@@ -67,7 +67,7 @@ class Harness:
 
 
 def make_config() -> Config:
-    env = {"FLUXER_TOKEN": TOKEN, "FLUXER_INSTANCE_URL": "https://fluxer.invalid",
+    env = {"FLUXER_TOKEN": TOKEN, "SESSION_TIME_ZONE": "UTC", "FLUXER_INSTANCE_URL": "https://fluxer.invalid",
            "ADMIN_USER_IDS": f"{ADMIN_B},{ADMIN_A}"}
     return Config.from_env(env)
 
