@@ -34,6 +34,7 @@ from fluxer_panel.seeding import Seeder
 from fluxer_panel.wake import WakeRequests
 
 if TYPE_CHECKING:   # type-only: session_post imports GamesChannelRefused from this module
+    from fluxer_panel.session_flow import SessionFlow
     from fluxer_panel.session_post import SessionPost
     from fluxer_panel.sessions import Session
 
@@ -69,15 +70,40 @@ def _failure_fields(exc: Exception) -> dict[str, Any]:
     return {"reason": type(exc).__name__}
 
 
+async def card_target(rest: FluxerREST, config: Config, card: Card, *,
+                      failed_event: str = "play_now_failed") -> tuple[tuple[str, str] | None, str | None]:
+    """The card's target channel as (channel id, community id), with no DM: the verified channel the card links to, else
+    PLAY_NOW_CHANNEL_ID. The second item is the reason there is none: "no_channel" or "unavailable". A failed lookup is
+    logged under `failed_event`, with ids and the exception type only."""
+    own = card.play_now_channel
+    if own is not None and own.verified:
+        return (own.channel_id, own.guild_id), None
+    configured = config.play_now_channel_id
+    if configured is None:
+        return None, "no_channel"
+    try:
+        channel = await rest.get_channel(configured)
+    except Exception as exc:  # noqa: BLE001 - an unreachable channel is refused, never raised
+        log_event(log, failed_event, level=logging.WARNING, card_id=card.id, channel_id=configured,
+                  reason=type(exc).__name__)
+        return None, "unavailable"
+    guild_id = channel.get("guild_id")
+    if not is_snowflake(guild_id):
+        return None, "unavailable"
+    return (configured, guild_id), None
+
+
 class Interactions:
     def __init__(self, *, db: Database, rest: FluxerREST, config: Config, locks: CardLocks, games_guild: GamesGuild,
                  seeder: Seeder, pacer: ChannelPacer, identity: BotIdentity, roles: RoleCache,
                  clock: Callable[[], float] = time.time, kick: Callable[[], None] = lambda: None,
                  wake: WakeRequests | None = None,
                  status_of: Callable[[int], CardStatus | None] = lambda _id: None,
-                 session_post: SessionPost | None = None, backoff: DmBackoff | None = None) -> None:
+                 session_post: SessionPost | None = None, backoff: DmBackoff | None = None,
+                 session_flow: SessionFlow | None = None) -> None:
         self._db = db
         self._wake = wake
+        self._session_flow = session_flow   # the calendar's DM flow: a 📅 press starts a draft there
         self._backoff = backoff   # the press replies' DM backoff (dm_user checks it)
         self._rest = rest
         self._config = config
@@ -107,7 +133,14 @@ class Interactions:
             case Action.PLAY_NOW:
                 await self.play_now(press)
             case Action.SESSION:
-                return   # no session flow is wired yet: the press is admitted, then removed, and does nothing more
+                await self.session(press)
+
+    async def session(self, press: Press) -> None:
+        """A calendar press starts a session draft on a card or a home copy. A play-now post never plans a session, and
+        without a flow nothing happens."""
+        if press.surface.kind == "play_now" or self._session_flow is None:
+            return
+        await self._session_flow.start(press)
 
     async def wake(self, press: Press) -> None:
         """A wake press on any surface (card, copy or play-now post) wakes the card (AC4.8)."""
@@ -246,24 +279,8 @@ class Interactions:
         return [card_target]
 
     async def _card_target(self, card: Card) -> tuple[tuple[str, str] | None, str | None]:
-        """The card's play-now target as (channel id, community id), with no DM: the verified play-now channel, else
-        PLAY_NOW_CHANNEL_ID. The second item is the reason there is none: "no_channel" or "unavailable"."""
-        own = card.play_now_channel
-        if own is not None and own.verified:
-            return (own.channel_id, own.guild_id), None
-        configured = self._config.play_now_channel_id
-        if configured is None:
-            return None, "no_channel"
-        try:
-            channel = await self._rest.get_channel(configured)
-        except Exception as exc:  # noqa: BLE001 - an unreachable channel is refused, never raised
-            log_event(log, "play_now_failed", level=logging.WARNING, card_id=card.id, channel_id=configured,
-                      reason=type(exc).__name__)
-            return None, "unavailable"
-        guild_id = channel.get("guild_id")
-        if not is_snowflake(guild_id):
-            return None, "unavailable"
-        return (configured, guild_id), None
+        """The play-now target of a card (see `card_target`), logged as a play-now failure."""
+        return await card_target(self._rest, self._config, card)
 
     async def _send_and_store(self, card: Card, channel_id: str, guild_id: str, role_id: str | None, presser_id: str,
                               *, offers_wake: bool, now: int) -> str:

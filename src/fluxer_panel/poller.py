@@ -36,6 +36,7 @@ from fluxer_panel.wake import WakeRequests
 
 if TYPE_CHECKING:
     from fluxer_panel.interactions import Interactions
+    from fluxer_panel.session_flow import SessionFlow
 
 log = logging.getLogger(__name__)
 
@@ -86,6 +87,7 @@ class Poller:
         self._requested: dict[int, int] = {}                 # each card's open wake request count, read per tick
         self._wake: WakeRequests | None = None               # set by set_wake, before the loop starts
         self._interactions: Interactions | None = None       # set by set_interactions, before the loop starts
+        self._session_flow: SessionFlow | None = None        # set by set_session_flow, before the loop starts
         self._deleted: OrderedDict[tuple[str, str], None] = OrderedDict()
         self._warned_no_channel = False
         self._games_guild = games_guild if games_guild is not None else GamesGuild(rest, config)
@@ -106,6 +108,10 @@ class Poller:
     def set_interactions(self, interactions: Interactions) -> None:
         """Given the interactions once, after both are built: each tick ends the play-now messages that are due."""
         self._interactions = interactions
+
+    def set_session_flow(self, flow: SessionFlow) -> None:
+        """Given the calendar flow once, after both are built: each tick expires the drafts that are past their time."""
+        self._session_flow = flow
 
     def on_games_message(self, channel_id: str) -> None:
         """Arms the board check when a message lands in the board's channel. It does not kick the loop: a kick runs a
@@ -246,6 +252,8 @@ class Poller:
             await self._wake.close_due()
         if self._interactions is not None:
             await self._interactions.expire_play_now()
+        if self._session_flow is not None:
+            await self._session_flow.expire_drafts()
 
     def _forget_cards_not_in(self, live_ids: set[int]) -> None:
         """Drops the cached schedule, channel name check and status of every card not in `live_ids`, the live set of this

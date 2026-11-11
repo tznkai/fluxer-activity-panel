@@ -17,10 +17,10 @@ Paths are relative to this directory.
 - `src/fluxer_client/rest.py:102` `self._headers = {"Authorization": f"Bot {token}"}` — the only place REST sends the token. It goes in a header, never in a URL or a log line.
 - `src/fluxer_client/gateway.py:135` `"token": self.token, "session_id"` — the resume frame (op 6) carries the token.
 - `src/fluxer_client/gateway.py:173` `"token": self.token,` — the identify frame (op 2) carries the token.
-- `src/fluxer_panel/__main__.py:161` `print(f"Configuration error: {exc}"` — one of the two panel prints (the other is the usage line below). It writes to stderr a configuration message, which names variables and never values.
-- `src/fluxer_panel/__main__.py:156` `print(USAGE, file=sys.stderr)` — the second panel print, for a bad command line. It writes the fixed `USAGE` text to stderr, which names no values.
-- `src/fluxer_panel/__main__.py:163` `setup_logging(config.log_level, [s for s in (config.token, config.pterodactyl_api_key) if s])` — the token and the Pterodactyl key are handed to the redaction filter before anything can log.
-- `src/fluxer_panel/__main__.py:178` `last resort: log (redacted) and exit 1` — the last-resort catch-all logs through the redacting handler and returns 1. No raw traceback reaches stderr.
+- `src/fluxer_panel/__main__.py:170` `print(f"Configuration error: {exc}"` — one of the two panel prints (the other is the usage line below). It writes to stderr a configuration message, which names variables and never values.
+- `src/fluxer_panel/__main__.py:165` `print(USAGE, file=sys.stderr)` — the second panel print, for a bad command line. It writes the fixed `USAGE` text to stderr, which names no values.
+- `src/fluxer_panel/__main__.py:172` `setup_logging(config.log_level, [s for s in (config.token, config.pterodactyl_api_key) if s])` — the token and the Pterodactyl key are handed to the redaction filter before anything can log.
+- `src/fluxer_panel/__main__.py:187` `last resort: log (redacted) and exit 1` — the last-resort catch-all logs through the redacting handler and returns 1. No raw traceback reaches stderr.
 
 ## Logging
 
@@ -39,7 +39,7 @@ Paths are relative to this directory.
 - `src/fluxer_client/events.py:263` `log.warning("malformed %s payload: field %s", t, exc.field_name)` — a malformed payload is logged with the field name only.
 - `src/fluxer_client/events.py:267` `field "?"` — the catch-all logs a placeholder, not the exception text, which may carry the value.
 - `src/fluxer_client/gateway.py:76` `log.warning("gateway connection failed: %r", exc)` — a plain-text `fluxer_client` record. Its repr can include the instance host in stdout logs. That is acceptable because logs are not tracked, but reviewers should know it is there. Token redaction still applies.
-- `src/fluxer_panel/poller.py:774` `log_event(log, "subscription_failed", level=logging.WARNING, card_id=card_id, channel_id=channel_id,` — a failed copy is logged with its card id, channel id and exception type only. No title, slug, channel name or message text is logged.
+- `src/fluxer_panel/poller.py:782` `log_event(log, "subscription_failed", level=logging.WARNING, card_id=card_id, channel_id=channel_id,` — a failed copy is logged with its card id, channel id and exception type only. No title, slug, channel name or message text is logged.
 
 ## Admin authorization
 
@@ -100,11 +100,11 @@ Paths are relative to this directory.
 
 ## Play-now mentions
 
-- `src/fluxer_panel/interactions.py:55` `return {"parse": []}` — a play-now message with no follow role mentions nobody.
-- `src/fluxer_panel/interactions.py:56` `return {"parse": [], "roles": [role_id], "replied_user": False}` — the play-now role ping. Only the card's own follow role can be mentioned, and only when `_role_in` has matched it.
-- `src/fluxer_panel/interactions.py:62` `return follow.role_id if follow is not None and follow.guild_id == guild_id else None` — the follow-role community check: a role from another community is never mentioned.
-- `src/fluxer_panel/interactions.py:297` `if channel_id == self._config.games_channel_id:` — the play-now guard in `send_play_now`. A play-now message is never sent to the games channel.
-- `src/fluxer_panel/interactions.py:298` `raise GamesChannelRefused` — the refusal happens before any REST call.
+- `src/fluxer_panel/interactions.py:56` `return {"parse": []}` — a play-now message with no follow role mentions nobody.
+- `src/fluxer_panel/interactions.py:57` `return {"parse": [], "roles": [role_id], "replied_user": False}` — the play-now role ping. Only the card's own follow role can be mentioned, and only when `_role_in` has matched it.
+- `src/fluxer_panel/interactions.py:63` `return follow.role_id if follow is not None and follow.guild_id == guild_id else None` — the follow-role community check: a role from another community is never mentioned.
+- `src/fluxer_panel/interactions.py:314` `if channel_id == self._config.games_channel_id:` — the play-now guard in `send_play_now`. A play-now message is never sent to the games channel.
+- `src/fluxer_panel/interactions.py:315` `raise GamesChannelRefused` — the refusal happens before any REST call.
 
 ## Purge deletion
 
@@ -116,10 +116,10 @@ Paths are relative to this directory.
 - `src/fluxer_panel/purge.py:66` `def write_status(` — the status file is written atomically and holds only timestamps and counts.
 - `src/fluxer_panel/purge.py:82` `await db.checkpoint()` — a WAL checkpoint after each run. A checkpoint failure after the commit is reported as `ok: false`, though the rows may already be gone.
 - `src/fluxer_panel/purge.py:109` `log.exception("purge_loop_error")` — the per-iteration catch-all. A failing iteration is logged, and the loop goes on.
-- `src/fluxer_panel/__main__.py:114` `purge_task = asyncio.create_task(purge_loop(` — the purge task and the poller start only once the gateway task exists, so a stop that wins discovery never starts either.
-- `src/fluxer_panel/__main__.py:130` `gw_task.cancel()` — `run()`'s finally cancels the gateway task first, so the session never closes under a live reconnect.
-- `src/fluxer_panel/__main__.py:135` `poller_task.cancel()` — the card poller is cancelled and awaited after the gateway task and before the purge task, so no card write is in flight when the session closes.
-- `src/fluxer_panel/__main__.py:139` `purge_task.cancel()` — the purge task is cancelled and awaited on every exit, after the poller.
+- `src/fluxer_panel/__main__.py:123` `purge_task = asyncio.create_task(purge_loop(` — the purge task and the poller start only once the gateway task exists, so a stop that wins discovery never starts either.
+- `src/fluxer_panel/__main__.py:139` `gw_task.cancel()` — `run()`'s finally cancels the gateway task first, so the session never closes under a live reconnect.
+- `src/fluxer_panel/__main__.py:144` `poller_task.cancel()` — the card poller is cancelled and awaited after the gateway task and before the purge task, so no card write is in flight when the session closes.
+- `src/fluxer_panel/__main__.py:148` `purge_task.cancel()` — the purge task is cancelled and awaited on every exit, after the poller.
 - `src/fluxer_panel/migrations/0008_sessions.sql:11` `REFERENCES cards(id) ON DELETE RESTRICT` — a card that still has sessions cannot be deleted.
 - `src/fluxer_panel/migrations/0008_sessions.sql:23` `state IN ('upcoming', 'ended', 'cancelled')` — the session states the purge reads.
 - `src/fluxer_panel/migrations/0008_sessions.sql:29` `CHECK ((state = 'upcoming') = (closed_at IS NULL))` — a session has a close time exactly when it is no longer upcoming, so `closed_at` is the purge's clock.
@@ -253,7 +253,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/render.py:254` `fit(escape(card.title), LIMITS["board_title"])` — a board cell's title is escaped before it is fitted, so a title cannot ping anyone or form a link.
 - `src/fluxer_panel/render.py:278` `card.channel_id == games_channel_id` — a board status is a jump link only for a card whose message is in the board's channel, so the link's community is the one looked up for that channel, and no link leaves it.
 - `src/fluxer_panel/render.py:271` `return {"embeds": embeds, "allowed_mentions": {"parse": []}}` — the summary board message carries empty `allowed_mentions`.
-- `src/fluxer_panel/poller.py:567` `payload = render.card_message(embed)` — a subscription copy is sent with the card's own payload, whose `allowed_mentions` is `{"parse": []}`. A copy mentions nobody, the same as the card.
+- `src/fluxer_panel/poller.py:575` `payload = render.card_message(embed)` — a subscription copy is sent with the card's own payload, whose `allowed_mentions` is `{"parse": []}`. A copy mentions nobody, the same as the card.
 
 ## Card commands
 
@@ -274,26 +274,26 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 
 ## Card poller
 
-- `src/fluxer_panel/poller.py:272` `log_event(log, "card_poll_failed"` — one card's failure is logged with the card id and the exception type only. The other cards still run.
-- `src/fluxer_panel/poller.py:703` `await self._rest.edit_message(channel_id, message_id, embeds=` — the edit sends embeds and `allowed_mentions` and never `content`, so an edit cannot erase the message text.
-- `src/fluxer_panel/poller.py:310` `cards.set_probe_tracking(c, card.id` — the alert state is saved before the DM goes out. A crash or a failed DM cannot send the alert a second time.
-- `src/fluxer_panel/poller.py:312` `await self._alert(card)` — the admin DM that follows that save.
-- `src/fluxer_panel/poller.py:746` `for kind, slots, channel_type in (("voice", card.voices, VOICE_CHANNEL_TYPE),` — the name refresh covers every verified link in all three voice slots and all three text channel slots, each checked against the channel type its slot takes.
-- `src/fluxer_panel/poller.py:355` `cards.set_voice_name_if(c, card_id` — a refreshed voice name is written only if that voice slot still holds the link that was read, so an admin's change during the lookup wins.
-- `src/fluxer_panel/poller.py:357` `cards.set_text_channel_name_if(c, card_id, slot` — the same compare-and-set for a text channel, keyed by slot: a name is written only while that slot still holds the link that was read.
-- `src/fluxer_panel/poller.py:344` `event = "voice_refresh_failed" if kind == "voice"` — a failed name check is logged with the card id and the exception type only. No channel name reaches the log.
-- `src/fluxer_panel/poller.py:720` `cards.set_hash_if(c, card_id` — the rendered hash is stored only if the message is still the same one, so a delete during an edit is not written back.
-- `src/fluxer_panel/poller.py:53` `_DELETED_CAP = 256` — the remembered deletes are bounded. The oldest entries are evicted, which covers the window between a send and its commit.
-- `src/fluxer_panel/poller.py:734` `self._deleted[(channel_id, message_id)] = None` — a repeated delete keeps its place, so eviction is by insertion order.
-- `src/fluxer_panel/__main__.py:135` `poller_task.cancel()` — the poller is cancelled and awaited before the purge task, so no card write is in flight when the session closes.
+- `src/fluxer_panel/poller.py:280` `log_event(log, "card_poll_failed"` — one card's failure is logged with the card id and the exception type only. The other cards still run.
+- `src/fluxer_panel/poller.py:711` `await self._rest.edit_message(channel_id, message_id, embeds=` — the edit sends embeds and `allowed_mentions` and never `content`, so an edit cannot erase the message text.
+- `src/fluxer_panel/poller.py:318` `cards.set_probe_tracking(c, card.id` — the alert state is saved before the DM goes out. A crash or a failed DM cannot send the alert a second time.
+- `src/fluxer_panel/poller.py:320` `await self._alert(card)` — the admin DM that follows that save.
+- `src/fluxer_panel/poller.py:754` `for kind, slots, channel_type in (("voice", card.voices, VOICE_CHANNEL_TYPE),` — the name refresh covers every verified link in all three voice slots and all three text channel slots, each checked against the channel type its slot takes.
+- `src/fluxer_panel/poller.py:363` `cards.set_voice_name_if(c, card_id` — a refreshed voice name is written only if that voice slot still holds the link that was read, so an admin's change during the lookup wins.
+- `src/fluxer_panel/poller.py:365` `cards.set_text_channel_name_if(c, card_id, slot` — the same compare-and-set for a text channel, keyed by slot: a name is written only while that slot still holds the link that was read.
+- `src/fluxer_panel/poller.py:352` `event = "voice_refresh_failed" if kind == "voice"` — a failed name check is logged with the card id and the exception type only. No channel name reaches the log.
+- `src/fluxer_panel/poller.py:728` `cards.set_hash_if(c, card_id` — the rendered hash is stored only if the message is still the same one, so a delete during an edit is not written back.
+- `src/fluxer_panel/poller.py:54` `_DELETED_CAP = 256` — the remembered deletes are bounded. The oldest entries are evicted, which covers the window between a send and its commit.
+- `src/fluxer_panel/poller.py:742` `self._deleted[(channel_id, message_id)] = None` — a repeated delete keeps its place, so eviction is by insertion order.
+- `src/fluxer_panel/__main__.py:144` `poller_task.cancel()` — the poller is cancelled and awaited before the purge task, so no card write is in flight when the session closes.
 
-- `src/fluxer_panel/poller.py:529` `log_event(log, "board_sync_failed"` — a failed board post or edit is logged with the exception type only, and the next tick retries it. No title or status is logged.
-- `src/fluxer_panel/poller.py:561` `board.set_hash_if(c, channel_id` — the board hash is stored only while the board still holds that message, so a delete during an edit is not written back.
-- `src/fluxer_panel/poller.py:757` `if cards.clear_message_if(conn, channel_id, message_id) is not None:` — a MESSAGE_DELETE forgets a card message, a card's copy or the board message, in one transaction. Message ids are unique, so only one of the three can match.
-- `src/fluxer_panel/poller.py:518` `channel_id = state.channel_id if state.channel_id is not None else games_channel_id` — a stored board is edited in the channel it was posted in, so a change of `GAMES_CHANNEL_ID` never moves it. Its community is looked up for that channel.
-- `src/fluxer_panel/poller.py:513` `if state.message_id is None and not may_post:` — when this tick's first read of the stored board failed, no new board is posted in that tick, so a board is never posted while the stored state is unknown.
-- `src/fluxer_panel/poller.py:645` `await self._sync(card_id, post_channel=sub.channel_id, edit_channel=sub.channel_id,` — a copy's post and edit run the card's own sync path, so each send carries the card's `allowed_mentions`. One copy's failure is caught here and does not stop the others.
-- `src/fluxer_panel/poller.py:668` `await self._dm_admins(alert.format(slug=slug, channel_id=channel_id),` — the pause DM takes a fixed text, the card's slug (a-z, 0-9 and -) and a channel id. No title or other card text reaches it, and the channel is shown as a mention.
+- `src/fluxer_panel/poller.py:537` `log_event(log, "board_sync_failed"` — a failed board post or edit is logged with the exception type only, and the next tick retries it. No title or status is logged.
+- `src/fluxer_panel/poller.py:569` `board.set_hash_if(c, channel_id` — the board hash is stored only while the board still holds that message, so a delete during an edit is not written back.
+- `src/fluxer_panel/poller.py:765` `if cards.clear_message_if(conn, channel_id, message_id) is not None:` — a MESSAGE_DELETE forgets a card message, a card's copy or the board message, in one transaction. Message ids are unique, so only one of the three can match.
+- `src/fluxer_panel/poller.py:526` `channel_id = state.channel_id if state.channel_id is not None else games_channel_id` — a stored board is edited in the channel it was posted in, so a change of `GAMES_CHANNEL_ID` never moves it. Its community is looked up for that channel.
+- `src/fluxer_panel/poller.py:521` `if state.message_id is None and not may_post:` — when this tick's first read of the stored board failed, no new board is posted in that tick, so a board is never posted while the stored state is unknown.
+- `src/fluxer_panel/poller.py:653` `await self._sync(card_id, post_channel=sub.channel_id, edit_channel=sub.channel_id,` — a copy's post and edit run the card's own sync path, so each send carries the card's `allowed_mentions`. One copy's failure is caught here and does not stop the others.
+- `src/fluxer_panel/poller.py:676` `await self._dm_admins(alert.format(slug=slug, channel_id=channel_id),` — the pause DM takes a fixed text, the card's slug (a-z, 0-9 and -) and a channel id. No title or other card text reaches it, and the channel is shown as a mention.
 - `src/fluxer_panel/text.py:194` `SUBSCRIPTION_PAUSED_ALERT = (` — the 403 pause DM's text. Its placeholders are the card's slug and the channel id, and nothing else.
 - `src/fluxer_panel/text.py:197` `SUBSCRIPTION_CHANNEL_GONE_ALERT = (` — the 404 pause DM's text. Its placeholders are the card's slug and the channel id, and nothing else.
 

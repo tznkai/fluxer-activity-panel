@@ -34,6 +34,7 @@ from fluxer_panel.poller import Poller
 from fluxer_panel.presses import Presses
 from fluxer_panel.purge import purge_loop, run_purge
 from fluxer_panel.seeding import Seeder
+from fluxer_panel.session_flow import SessionFlow
 from fluxer_panel.session_post import SessionPost
 from fluxer_panel.sources.registry import build_sources
 from fluxer_panel.wake import WakeRequests
@@ -94,19 +95,27 @@ async def run(config: Config, db: Database) -> None:
             poller.set_wake(wake)
             card_ctx.wake = wake
             session_post = SessionPost(db=db, rest=rest, config=config, pacer=pacer, backoff=backoff)
+            # One limiter for every non-admin DM path: commands, replies and the calendar's DM reactions share its budget.
+            limiter = NonAdminLimiter(config)
+            # The calendar flow needs the poller's kick, so it is built after the poller and before its users.
+            session_flow = SessionFlow(db=db, rest=rest, config=config, locks=card_ctx.locks,
+                                       session_post=session_post, games_guild=games_guild, pacer=pacer,
+                                       identity=identity, backoff=backoff, limiter=limiter, kick=poller.kick)
+            poller.set_session_flow(session_flow)   # each tick expires the drafts that are past their time
             interactions = Interactions(db=db, rest=rest, config=config, locks=card_ctx.locks,
                                         games_guild=games_guild, seeder=seeder, pacer=pacer, identity=identity,
                                         roles=roles, kick=poller.kick, wake=wake, status_of=poller.status_of,
-                                        session_post=session_post, backoff=backoff)
+                                        session_post=session_post, backoff=backoff, session_flow=session_flow)
             poller.set_interactions(interactions)   # each tick ends the play-now messages that are due
             presses = Presses(db=db, rest=rest, config=config, handler=interactions, games_guild=games_guild,
                               pacer=pacer, identity=identity, backoff=backoff)
             # Every DM passes the router first: the non-admin path is rate limited, and admin heads still reach admin.handle.
-            limiter = NonAdminLimiter(config)
-            dm_router = DmRouter(config=config, rest=rest, card_ctx=card_ctx, limiter=limiter)
+            dm_router = DmRouter(config=config, rest=rest, card_ctx=card_ctx, limiter=limiter,
+                                 session_flow=session_flow)
             bot = Bot(rest=rest, config=config, roles=roles, card_ctx=card_ctx,
                       on_message_delete=poller.on_message_delete, presses=presses, identity=identity,
-                      on_games_message=poller.on_games_message, dm_router=dm_router)
+                      on_games_message=poller.on_games_message, dm_router=dm_router,
+                      on_dm_reaction=session_flow.on_dm_reaction)
             gateway = Gateway(session, gateway_url, config.token, bot.on_dispatch, properties=IDENTIFY_PROPERTIES)
             gw_task = asyncio.create_task(gateway.run())
             # Started only now: a stop that won discovery above never starts a purge or the poller. The purge loop

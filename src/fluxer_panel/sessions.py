@@ -108,6 +108,16 @@ def add(conn: sqlite3.Connection, *, card_id: int, guild_id: str, channel_id: st
     return session_id
 
 
+def provisional(*, card_id: int, guild_id: str, channel_id: str, starts_at: int, ends_at: int, proposer_id: str,
+                now: int, location_text: str | None = None, seats: int | None = None) -> Session:
+    """The session that a first post renders before it is stored: no id yet, and every field set explicitly. Nothing
+    reads it from the database. The store assigns the real id in `add`."""
+    return Session(id=0, card_id=card_id, guild_id=guild_id, channel_id=channel_id, message_id="0",
+                   starts_at=starts_at, ends_at=ends_at, proposer_id=proposer_id, location_text=location_text,
+                   seats=seats, recurrence=None, series_id=0, next_posted=False, state="upcoming", closed_at=None,
+                   moved=False, headsup_sent=False, created_at=now)
+
+
 def get(conn: sqlite3.Connection, session_id: int) -> Session | None:
     rows = _rows(conn, "WHERE id = ?", (session_id,))
     return rows[0] if rows else None
@@ -131,6 +141,18 @@ def next_for_card(conn: sqlite3.Connection, card_id: int, now: int) -> Session |
 
 def all_upcoming(conn: sqlite3.Connection) -> list[Session]:
     return _rows(conn, "WHERE state = 'upcoming' ORDER BY starts_at, id")
+
+
+def conflicts_for(conn: sqlite3.Connection, user_id: str, starts_at: int, ends_at: int) -> list[tuple[Session, str]]:
+    """The upcoming sessions where this user is going or waiting, and that overlap [starts_at, ends_at), each with its
+    card's title, in start order. The caller shows only the proposer's own conflicts, and never another user."""
+    columns = ", ".join(f"s.{name.strip()}" for name in _COLUMNS.split(","))
+    rows = conn.execute(
+        f"SELECT {columns}, c.title FROM sessions s JOIN cards c ON c.id = s.card_id "
+        "JOIN rsvps r ON r.session_id = s.id AND r.user_id = ? "
+        "WHERE r.choice IN ('going', 'waiting') AND s.state = 'upcoming' AND s.starts_at < ? AND s.ends_at > ? "
+        "ORDER BY s.starts_at, s.id", (user_id, ends_at, starts_at)).fetchall()
+    return [(_load(tuple(row[:-1])), row[-1]) for row in rows]
 
 
 def _close_if(conn: sqlite3.Connection, session_id: int, now: int, state: str) -> bool:

@@ -295,3 +295,20 @@ SESSION_MOVED = "Time changed"
 SESSION_PROMOTED = "A seat opened up: you're now going to {card}. {link}"
 SESSION_PROMOTED_NO_LINK = "A seat opened up: you're now going to {card}."
 SESSION_LINK_LABEL = "Open the session"
+# The calendar DM flow. `{card}` is always render.escape(card.title); the keycaps are passed in as the `key` value.
+SESSION_PROMPT = ("Pick a time for {card}: react with its number, or reply with a time like `sat 14:00`. "
+                  "This expires in 15 minutes.")
+SESSION_PROMPT_SLOT = "{key} <t:{ts}:F>"
+SESSION_CONFIRM = "{card} at <t:{ts}:F> (<t:{ts}:R>). React ✅ to post it."
+SESSION_CONFLICT = "You're already going to {card} then."
+SESSION_POSTED = "Your session is posted: {link}"
+SESSION_POSTED_NO_LINK = "Your session is posted."
+SESSION_POST_FAILED = "I couldn't post that session. Try again later."
+SESSION_DRAFT_EXPIRED = "This session draft expired. Press \U0001F4C5 on the card to start again."
+SESSION_ELSEWHERE = "Sessions are planned on the card itself: {link}"
+SESSION_ELSEWHERE_NO_LINK = "Sessions are planned on the card itself, in the games channel."
+SESSION_NO_CHANNEL = "This card has no channel for sessions yet."
+SESSION_CAP = {
+    "proposer": "You already have 3 upcoming sessions for {card}.",
+    "card": "{card} already has 10 upcoming sessions.",
+}

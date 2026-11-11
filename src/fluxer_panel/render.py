@@ -411,9 +411,11 @@ def play_now_message(card: Card, *, role_id: str | None, playing: int | None, en
 # The session message: an embed with no mention in it. The sender adds allowed_mentions, and the text is escaped here.
 
 def session_message(card: Card, session: Session, counts: Counts, *, effective_location: str | None,
-                    effective_seats: int | None, instance_url: str | None, scrubbed: bool = False) -> dict[str, Any]:
+                    effective_seats: int | None, instance_url: str | None, scrubbed: bool = False,
+                    provisional: bool = False) -> dict[str, Any]:
     """The session message. `effective_location` and `effective_seats` are the values the session resolves to; the
-    caller passes them, so this renderer reads nothing else. A cancelled or scrubbed session shows no location."""
+    caller passes them, so this renderer reads nothing else. A cancelled or scrubbed session shows no location. A
+    provisional session has no stored id yet, so its message has no footer; the real footer comes with the first edit."""
     fields: list[dict[str, Any]] = []
     if session.state != "upcoming" or session.moved:
         fields.append({"name": text.SESSION_FIELD_STATUS, "value": _session_status(session), "inline": False})
@@ -435,8 +437,9 @@ def session_message(card: Card, session: Session, counts: Counts, *, effective_l
         "title": fit(escape(card.title), LIMITS["title"]),
         "color": NEUTRAL,
         "fields": fields,
-        "footer": {"text": text.SESSION_FOOTER.format(n=session.id)},
     }
+    if not provisional:
+        embed["footer"] = {"text": text.SESSION_FOOTER.format(n=session.id)}
     join = [field for field in fields if field["name"] == text.FIELD_JOIN]
     _fit_session_budget(embed, [*join, *([location] if location is not None else [])])
     return {"embeds": [embed], "allowed_mentions": {"parse": []}}
