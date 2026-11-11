@@ -8,11 +8,12 @@ import itertools
 import sqlite3
 from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from fluxer_panel import sessions
+from fluxer_panel import rsvp, sessions
 from fluxer_panel.db import Database
 from fluxer_panel.sessions import SessionCapReached
 
@@ -306,3 +307,131 @@ async def test_set_series_recurrence_touches_only_that_series(db: Database) -> N
     assert (await _get(db, first)).recurrence == "weekly"
     assert (await _get(db, second)).recurrence == "weekly"
     assert (await _get(db, other)).recurrence is None
+
+
+# Presence and RSVP store (Phase 2) ------------------------------------------------------------------
+
+async def _presence(db: Database, session_id: int) -> list[tuple[str, str, int, bool]]:
+    rows = await db.run(lambda c: sessions.presence_of(c, session_id))
+    return [(p.user_id, p.choice, p.seq, p.implicit) for p in rows]
+
+
+async def _rsvps(db: Database, session_id: int) -> rsvp.Rsvps:
+    return await db.run(lambda c: sessions.rsvps_of(c, session_id))
+
+
+async def test_after_add_one_implicit_going_row_and_the_proposer_is_going(db: Database) -> None:
+    session_id = await _add(db, await _card(db), proposer="1001")
+
+    assert await _presence(db, session_id) == [("1001", "going", 1, True)]
+    assert await _rsvps(db, session_id) == {"1001": ("going", None)}
+
+
+async def test_the_proposers_real_reaction_replaces_the_implicit_row(db: Database) -> None:
+    session_id = await _add(db, await _card(db), proposer="1001")
+    session = await _get(db, session_id)
+
+    inserted = await db.run(lambda c: sessions.add_presence(c, session, "1001", "maybe", NOW))
+    outcome = await db.run(lambda c: sessions.recompute(c, session, None, NOW))
+
+    assert inserted is True
+    assert await _presence(db, session_id) == [("1001", "maybe", 1, False)]
+    assert outcome.rsvps == {"1001": ("maybe", None)}
+
+
+async def test_other_users_reactions_get_increasing_seqs_and_removing_the_newest_falls_back(db: Database) -> None:
+    session_id = await _add(db, await _card(db), proposer="1001")
+    session = await _get(db, session_id)
+    await db.run(lambda c: sessions.add_presence(c, session, "1002", "going", NOW))
+    await db.run(lambda c: sessions.add_presence(c, session, "1002", "maybe", NOW))
+
+    assert [seq for _, _, seq, _ in await _presence(db, session_id)] == [1, 2, 3]
+
+    removed = await db.run(lambda c: sessions.remove_presence(c, session_id, "1002", "maybe"))
+    await db.run(lambda c: sessions.recompute(c, session, None, NOW))
+
+    assert removed is True
+    assert (await _rsvps(db, session_id))["1002"] == ("going", None)
+
+
+async def test_remove_presence_never_deletes_the_implicit_row_and_a_duplicate_add_is_false(db: Database) -> None:
+    session_id = await _add(db, await _card(db), proposer="1001")
+    session = await _get(db, session_id)
+
+    removed = await db.run(lambda c: sessions.remove_presence(c, session_id, "1001", "going"))
+    first = await db.run(lambda c: sessions.add_presence(c, session, "1002", "going", NOW))
+    second = await db.run(lambda c: sessions.add_presence(c, session, "1002", "going", NOW))
+
+    assert removed is False
+    assert (first, second) == (True, False)
+    assert ("1001", "going", 1, True) in await _presence(db, session_id)
+
+
+async def test_write_rsvps_keeps_responded_at_for_unchanged_users(db: Database) -> None:
+    session_id = await _add(db, await _card(db), proposer="1001")
+    session = await _get(db, session_id)
+    await db.run(lambda c: sessions.add_presence(c, session, "1002", "going", NOW))
+    await db.run(lambda c: sessions.recompute(c, session, None, NOW))
+
+    later = NOW + 100
+    await db.run(lambda c: sessions.add_presence(c, session, "1003", "going", later))
+    await db.run(lambda c: sessions.recompute(c, session, None, later))
+    even_later = NOW + 200
+    await db.run(lambda c: sessions.add_presence(c, session, "1001", "maybe", even_later))
+    await db.run(lambda c: sessions.recompute(c, session, None, even_later))
+
+    stamps = await db.run(lambda c: dict(c.execute(
+        "SELECT user_id, responded_at FROM rsvps WHERE session_id = ?", (session_id,)).fetchall()))
+    assert stamps == {"1001": even_later, "1002": NOW, "1003": later}
+
+
+async def test_recompute_waitlists_a_second_going_and_promotes_when_the_proposer_says_no(db: Database) -> None:
+    session_id = await _add(db, await _card(db), proposer="1001")
+    session = await _get(db, session_id)
+    await db.run(lambda c: sessions.add_presence(c, session, "1002", "going", NOW))
+
+    first = await db.run(lambda c: sessions.recompute(c, session, 1, NOW))
+    assert first.rsvps == {"1001": ("going", None), "1002": ("waiting", 1)}
+
+    await db.run(lambda c: sessions.add_presence(c, session, "1001", "no", NOW + 1))
+    second = await db.run(lambda c: sessions.recompute(c, session, 1, NOW + 1))
+
+    assert second.rsvps == {"1001": ("no", None), "1002": ("going", None)}
+    assert second.promoted == ["1002"]
+
+
+async def test_counts_of_totals_the_stored_states(db: Database) -> None:
+    session_id = await _add(db, await _card(db), proposer="1001")
+    session = await _get(db, session_id)
+    await db.run(lambda c: sessions.add_presence(c, session, "1002", "maybe", NOW))
+    await db.run(lambda c: sessions.recompute(c, session, None, NOW))
+
+    assert await db.run(lambda c: sessions.counts_of(c, session_id)) == rsvp.Counts(going=1, maybe=1, waiting=0)
+
+
+# Effective seats and location -----------------------------------------------------------------------
+
+def _card_stub(seats: int | None, location_text: str | None) -> Any:
+    return SimpleNamespace(seats=seats, location=None if location_text is None else SimpleNamespace(text=location_text))
+
+
+async def test_session_seats_override_the_card_seats(db: Database) -> None:
+    session = await _get(db, await _add(db, await _card(db), seats=6))
+
+    assert sessions.effective_seats(session, _card_stub(4, None)) == 6
+
+
+async def test_the_card_seats_apply_when_the_session_has_none(db: Database) -> None:
+    session = await _get(db, await _add(db, await _card(db)))
+
+    assert sessions.effective_seats(session, _card_stub(4, None)) == 4
+    assert sessions.effective_seats(session, _card_stub(None, None)) is None
+
+
+async def test_session_location_overrides_the_card_location(db: Database) -> None:
+    override = await _get(db, await _add(db, await _card(db), location_text="Lobby"))
+    plain = await _get(db, await _add(db, await _card(db)))
+
+    assert sessions.effective_location(override, _card_stub(None, "Hall")) == "Lobby"
+    assert sessions.effective_location(plain, _card_stub(None, "Hall")) == "Hall"
+    assert sessions.effective_location(plain, _card_stub(None, None)) is None

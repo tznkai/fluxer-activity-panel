@@ -11,6 +11,12 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+from fluxer_panel import rsvp
+
+if TYPE_CHECKING:
+    from fluxer_panel.cards import Card
 
 MAX_PER_PROPOSER = 3   # upcoming sessions per proposer per card
 MAX_PER_CARD = 10      # upcoming sessions per card
@@ -175,3 +181,75 @@ def set_location_if(conn: sqlite3.Connection, session_id: int, text: str | None)
 def set_seats_if(conn: sqlite3.Connection, session_id: int, seats: int | None) -> bool:
     cur = conn.execute("UPDATE sessions SET seats = ? WHERE id = ? AND state = 'upcoming'", (seats, session_id))
     return cur.rowcount == 1
+
+
+# Presence and RSVP rows. The engine is rsvp.apply; these functions read and write the rows around it. Every
+# caller runs them inside one db.run transaction.
+
+def presence_of(conn: sqlite3.Connection, session_id: int) -> list[rsvp.Presence]:
+    rows = conn.execute("SELECT user_id, choice, seq, implicit FROM rsvp_reaction WHERE session_id = ? ORDER BY seq",
+                        (session_id,)).fetchall()
+    return [rsvp.Presence(user_id=user_id, choice=choice, seq=seq, implicit=bool(implicit))
+            for user_id, choice, seq, implicit in rows]
+
+
+def rsvps_of(conn: sqlite3.Connection, session_id: int) -> rsvp.Rsvps:
+    rows = conn.execute("SELECT user_id, choice, waitlist_pos FROM rsvps WHERE session_id = ?",
+                        (session_id,)).fetchall()
+    return {user_id: (state, pos) for user_id, state, pos in rows}
+
+
+def add_presence(conn: sqlite3.Connection, session: Session, user_id: str, choice: str, now: int) -> bool:
+    """Adds one RSVP reaction. The proposer's implicit row goes first, so the first real reaction replaces it and
+    both rows never coexist. Returns False when the same reaction is already there."""
+    if user_id == session.proposer_id:
+        conn.execute("DELETE FROM rsvp_reaction WHERE session_id = ? AND user_id = ? AND implicit = 1",
+                     (session.id, user_id))
+    cur = conn.execute(
+        "INSERT INTO rsvp_reaction (session_id, user_id, choice, added_at, seq, implicit) "
+        "SELECT ?, ?, ?, ?, COALESCE(MAX(seq), 0) + 1, 0 FROM rsvp_reaction WHERE session_id = ? "
+        "ON CONFLICT DO NOTHING",
+        (session.id, user_id, choice, now, session.id))
+    return cur.rowcount == 1
+
+
+def remove_presence(conn: sqlite3.Connection, session_id: int, user_id: str, choice: str) -> bool:
+    """Removes one real RSVP reaction. The implicit proposer row is never removed here."""
+    cur = conn.execute("DELETE FROM rsvp_reaction WHERE session_id = ? AND user_id = ? AND choice = ? AND implicit = 0",
+                       (session_id, user_id, choice))
+    return cur.rowcount == 1
+
+
+def write_rsvps(conn: sqlite3.Connection, session_id: int, rsvps: rsvp.Rsvps, now: int) -> None:
+    """Replaces the session's RSVP states. A user whose choice is unchanged keeps responded_at; anyone else gets now.
+    Waiting rows go in ascending position so the waitlist index never sees a duplicate mid-write."""
+    previous = {user_id: (choice, responded_at) for user_id, choice, responded_at in conn.execute(
+        "SELECT user_id, choice, responded_at FROM rsvps WHERE session_id = ?", (session_id,)).fetchall()}
+    conn.execute("DELETE FROM rsvps WHERE session_id = ?", (session_id,))
+    for user_id, (state, pos) in sorted(rsvps.items(), key=lambda item: item[1][1] or 0):
+        old_choice, old_at = previous.get(user_id, (None, None))
+        responded_at = old_at if old_choice == state else now
+        conn.execute("INSERT INTO rsvps (session_id, user_id, choice, responded_at, waitlist_pos) "
+                     "VALUES (?, ?, ?, ?, ?)", (session_id, user_id, state, responded_at, pos))
+
+
+def recompute(conn: sqlite3.Connection, session: Session, seats: int | None, now: int) -> rsvp.Outcome:
+    """Runs the engine on the stored presence and states and writes the result. Every presence change calls this in
+    the same transaction as the change."""
+    outcome = rsvp.apply(rsvps_of(conn, session.id), presence_of(conn, session.id), seats)
+    write_rsvps(conn, session.id, outcome.rsvps, now)
+    return outcome
+
+
+def counts_of(conn: sqlite3.Connection, session_id: int) -> rsvp.Counts:
+    return rsvp.counts(rsvps_of(conn, session_id))
+
+
+def effective_seats(session: Session, card: Card) -> int | None:
+    return session.seats if session.seats is not None else card.seats
+
+
+def effective_location(session: Session, card: Card) -> str | None:
+    if session.location_text is not None:
+        return session.location_text
+    return card.location.text if card.location is not None else None
