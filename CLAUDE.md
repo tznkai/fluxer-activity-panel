@@ -239,7 +239,9 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   (its message was deleted) cancels an upcoming session through that hook (`SessionPost.set_on_gone`).
 - `session_jobs.SessionJobs.run` runs on every poller tick (session ends, the weekly series, the admins' heads-up
   `sessions.HEADSUP_WINDOW` before a session with people going, draft expiry), and its next due time shortens the
-  poller's wait. Each job lists without a lock and acts under the card's lock. Known limitation: a weekly occurrence
+  poller's wait. A tick whose card pass did not finish runs it with `headsup=False`, because the heads-up reads the
+  cached statuses; that heads-up stays pending and goes out on the next tick whose card pass finishes. Each job lists
+  without a lock and acts under the card's lock. Known limitation: a weekly occurrence
   is stored at most once, but a lost send response can post a second visible message, which has no row.
 
 ## Reactions rules

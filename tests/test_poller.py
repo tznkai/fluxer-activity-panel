@@ -37,6 +37,7 @@ from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.interactions import Interactions
 from fluxer_panel.logs import setup_logging
 from fluxer_panel.pacer import ChannelPacer
+from fluxer_panel import poller as poller_module
 from fluxer_panel.poller import _DELETED_CAP, Poller
 from fluxer_panel.presses import WAKE_EMOJI, Presses
 from fluxer_panel.resolver import StatusKind
@@ -1998,9 +1999,9 @@ async def test_a_tick_runs_the_session_jobs(world: World, db: Database) -> None:
 
 
 class StubJobs:
-    """Stands in for SessionJobs where only the poller's use of it matters. Each run is counted. A run leaves
-    `refreshed_due` in `due`, as a real run leaves the soonest time still to come, and leaves `due` alone when it is
-    None. `run_error` makes a run raise."""
+    """Stands in for SessionJobs where only the poller's use of it matters. Each run is counted, and `headsups` records
+    the `headsup` flag each run was given. A run leaves `refreshed_due` in `due`, as a real run leaves the soonest time
+    still to come, and leaves `due` alone when it is None. `run_error` makes a run raise."""
 
     def __init__(self, due: float | None, *, refreshed_due: float | None = None,
                  run_error: BaseException | None = None) -> None:
@@ -2008,9 +2009,11 @@ class StubJobs:
         self.refreshed_due = refreshed_due
         self.run_error = run_error
         self.runs = 0
+        self.headsups: list[bool] = []
 
-    async def run(self) -> None:
+    async def run(self, *, headsup: bool = True) -> None:
         self.runs += 1
+        self.headsups.append(headsup)
         if self.run_error is not None:
             raise self.run_error
         if self.refreshed_due is not None:
@@ -2049,6 +2052,7 @@ async def test_a_failed_tick_still_runs_the_session_jobs_and_refreshes_their_due
     with pytest.raises(RuntimeError, match="database unavailable"):
         await poller.tick()
     assert jobs.runs == 1
+    assert jobs.headsups == [False]                  # the card pass did not finish, so the cached statuses are not read
     assert jobs.due == 3000.0
     assert poller._wait_timeout() == 1000.0          # the refreshed due, 1000 seconds away, is under the poll interval
 
@@ -2062,6 +2066,7 @@ async def test_a_failed_after_tick_step_still_runs_the_session_jobs_and_refreshe
     with pytest.raises(RuntimeError, match="wake pass failed"):
         await poller.tick()
     assert jobs.runs == 1
+    assert jobs.headsups == [True]                   # the card pass finished, so the statuses are this tick's
     assert jobs.due == 3000.0
     assert poller._wait_timeout() == 1000.0
 
@@ -2076,13 +2081,140 @@ async def test_a_failing_session_job_run_does_not_replace_the_tick_error(
     assert records(caplog, "session_job_failed")
 
 
-async def test_a_stale_repost_due_does_not_make_the_wait_zero(world: World, poller: Poller) -> None:
-    # A re-post due time left over from a tick that failed before its board check ran again.
-    poller._repost_due = 1000.0
+class SlowWake:
+    """A wake pass that takes `seconds` on the fake clock, as its DMs would, and fails when `fail` is set."""
+
+    def __init__(self, world: World, seconds: float, *, fail: bool = False) -> None:
+        self.world, self.seconds, self.fail = world, seconds, fail
+
+    async def close_due(self) -> int:
+        self.world.clock.now += self.seconds
+        if self.fail:
+            raise RuntimeError("wake pass failed")
+        return 0
+
+
+class SlowJobs(StubJobs):
+    """A StubJobs whose run takes `seconds` on the fake clock and leaves `due` where it is: the worst case for the wait."""
+
+    def __init__(self, world: World, due: float, seconds: float) -> None:
+        super().__init__(due)
+        self.world, self.seconds = world, seconds
+
+    async def run(self, *, headsup: bool = True) -> None:
+        await super().run(headsup=headsup)
+        self.world.clock.now += self.seconds
+
+
+async def test_a_repost_that_falls_due_during_the_tick_gives_a_zero_wait(world: World, poller: Poller) -> None:
+    # The board check reads the clock before the re-post is due, and the wake pass after it takes the clock past it.
+    poller._board_armed = False
+    poller._repost_due = 2003.0
     world.clock.now = 2000.0
+    poller.set_wake(SlowWake(world, 5.0))
+    await poller.tick()
+    assert poller._repost_due == 2003.0 and world.clock.now == 2005.0
+    assert poller._wait_timeout() == 0.0
+
+
+async def test_a_session_job_due_that_falls_due_during_the_tick_gives_a_zero_wait(world: World, poller: Poller) -> None:
+    poller.set_session_jobs(SlowJobs(world, due=2003.0, seconds=5.0))
+    world.clock.now = 2000.0
+    await poller.tick()
+    assert world.clock.now == 2005.0
+    assert poller._wait_timeout() == 0.0
+
+
+async def test_a_stale_repost_due_does_not_make_the_wait_zero(
+        world: World, poller: Poller, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A re-post due time from before a tick that failed early: that tick had its chance at it, so it is stale.
+    poller._repost_due = 1000.0
+    monkeypatch.setattr(wake_requests, "open_counts", failing_open_counts)
+    world.clock.now = 2000.0
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await poller.tick()
     assert poller._wait_timeout() == world.config.poll_interval_seconds
-    poller._repost_due = 2500.0
+    poller._repost_due = 2500.0                      # set after that tick started: still ahead of it
     assert poller._wait_timeout() == 500.0
+
+
+class _StopLoop(BaseException):
+    """Ends the run loop from the fake wait below, so the test never sleeps."""
+
+
+@pytest.mark.parametrize("mode", ["session_due", "repost_due"])
+async def test_a_tick_that_keeps_failing_with_a_mid_tick_due_time_retries_once_then_waits(
+        world: World, poller: Poller, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+    # The run loop with its wait replaced by one that only moves the fake clock. Each tick fails after the due time has
+    # passed during it. The first wait is zero. The next tick starts after the due time, so the time is stale there
+    # and the loop waits the poll interval from then on.
+    waits: list[float] = []
+
+    def fake_wait_for(awaitable: Any, timeout: float) -> None:
+        awaitable.close()
+        waits.append(timeout)
+        world.clock.now += timeout
+        if len(waits) == 3:
+            raise _StopLoop()
+        raise TimeoutError()
+
+    class FakeAsyncio:
+        wait_for = staticmethod(fake_wait_for)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(asyncio, name)
+
+    monkeypatch.setattr(poller_module, "asyncio", FakeAsyncio())
+    world.clock.now = 2000.0
+    poller._board_armed = False
+    if mode == "session_due":
+        poller.set_session_jobs(SlowJobs(world, due=2003.0, seconds=5.0))
+        poller.set_wake(FailingWake())
+    else:
+        poller._repost_due = 2003.0
+        poller.set_wake(SlowWake(world, 5.0, fail=True))
+    with pytest.raises(_StopLoop):
+        await poller.run()
+    interval = float(world.config.poll_interval_seconds)
+    assert waits == [0.0, interval, interval]
+    assert waits.count(0.0) == 1
+
+
+# The asleep heads-up after a failed tick (AC5.6): the cached status is not read by a tick whose card pass did not finish.
+
+HEADSUP_START = 200_000   # a session's start on the fake clock; its heads-up window opens 30 minutes before
+
+
+def headsup_dms(world: World, content: str) -> list[Recorded]:
+    return [r for r in dm_messages(world.fluxer) if r.payload.get("content") == content]
+
+
+async def test_a_failed_tick_before_the_card_pass_sends_no_heads_up_from_a_cached_status(
+        world: World, poller: Poller, db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    world.panel.servers[SERVER].current_state = "offline"
+    card_id = await seed(db, "alpha", title=CARD_TITLE, manager=cards.ManagerRef("pterodactyl", SERVER))
+    wired_session_jobs(world, poller)
+    await add_upcoming_session(db, card_id, starts_at=HEADSUP_START, ends_at=HEADSUP_START + 3600)
+    expected = text.SESSION_HEADSUP.format(card=render.escape(CARD_TITLE), ts=HEADSUP_START, n=1)
+
+    world.clock.now = HEADSUP_START - 2 * 3600       # outside the window: the good tick caches ASLEEP, sends nothing
+    await poller.tick()
+    status = poller.status_of(card_id)
+    assert status is not None and status.kind is StatusKind.ASLEEP
+    assert headsup_dms(world, expected) == []
+
+    world.clock.now = HEADSUP_START - 29 * 60        # inside the window, with the cached ASLEEP status still held
+    original_open_counts = wake_requests.open_counts
+    monkeypatch.setattr(wake_requests, "open_counts", failing_open_counts)
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await poller.tick()
+    assert headsup_dms(world, expected) == []
+
+    monkeypatch.setattr(wake_requests, "open_counts", original_open_counts)
+    await poller.tick()
+    assert len(headsup_dms(world, expected)) == 2    # one DM to each of the two admins
+    await poller.tick()
+    assert len(headsup_dms(world, expected)) == 2    # sent once, not again on the next tick
 
 
 # The next session on a card and its copies (AC3.5-AC3.7). The games channel is in GUILD, so a copy in GUILD is a home

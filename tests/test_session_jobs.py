@@ -551,6 +551,23 @@ async def test_a_session_moved_out_of_its_window_after_the_listing_gets_no_heads
     assert not (await row(world, sid)).headsup_sent
 
 
+async def test_a_run_without_the_heads_up_step_sends_none_and_the_next_run_sends_it_once(world: World) -> None:
+    # The poller skips the heads-up on a tick whose card pass did not finish. The heads-up stays pending, `due` is still
+    # read, and the next run that includes the step sends it.
+    await set_manager(world)
+    world.statuses[world.card_id] = CardStatus(StatusKind.ASLEEP)
+    sid = await add_session(world)
+    world.clock.now = S - 29 * 60
+    await world.jobs.run(headsup=False)
+    assert dms_to(world, ADMIN) == []
+    assert not (await row(world, sid)).headsup_sent
+    assert world.jobs.due == S + HOUR                 # the session's end: the window is open, so it is not a wake-up
+    await world.jobs.run()
+    assert dms_to(world, ADMIN) == [headsup_text(1)]
+    await world.jobs.run()
+    assert dms_to(world, ADMIN) == [headsup_text(1)]
+
+
 # Stored channel only (AC10.2) ----------------------------------------------------------------------------------------
 
 async def test_the_jobs_touch_only_the_session_channel(world: World) -> None:

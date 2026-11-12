@@ -160,9 +160,14 @@ class SessionJobs:
         self._backoff = backoff
         self.due: float | None = None   # the soonest time anything is still to happen: the poller's wait ends there
 
-    async def run(self) -> None:
-        """One pass of every job. A failing job is logged and never stops the others or the poller. Then `due` is read."""
-        for step in (self._expire_drafts, self._end, self._recur, self._headsup):
+    async def run(self, *, headsup: bool = True) -> None:
+        """One pass of every job. A failing job is logged and never stops the others or the poller. The heads-up reads the
+        poller's cached statuses, so the poller passes `headsup=False` on a tick whose card pass did not finish. The
+        heads-up then stays pending, and the next tick that does finish sends it. Then `due` is read either way."""
+        steps = [self._expire_drafts, self._end, self._recur]
+        if headsup:
+            steps.append(self._headsup)
+        for step in steps:
             try:
                 await step()
             except Exception as exc:  # noqa: BLE001 - one failed job never stops the others or the poller

@@ -97,6 +97,7 @@ class Poller:
         self._board_armed = True
         self._board_channel: str | None = None   # the stored board's channel, once read: a moved GAMES_CHANNEL_ID never moves it
         self._repost_due: float | None = None
+        self._tick_started = float("-inf")   # the clock when the current or last tick began: no tick yet, so nothing is stale
         self._last_repost = float("-inf")
         self._stale_boards: list[tuple[str, str]] = []   # replaced boards whose delete failed, retried by each check
 
@@ -155,15 +156,20 @@ class Poller:
                 pass
 
     def _wait_timeout(self) -> float:
-        """How long the run loop waits before its next tick: the poll interval, or less when a re-post or a session
-        job is due sooner. A due time that has already passed is ignored, so a stale value never makes the wait zero.
-        The next tick does that work, and a tick that keeps failing cannot spin the loop."""
+        """How long the run loop waits before its next tick: the poll interval, or less when a re-post or a session job
+        is due sooner. A due time at or before the start of the last tick is stale: that tick had its chance at it, so
+        it is ignored. A due time that passed during the last tick (after it started) gives a zero wait, so the next
+        tick runs at once. That tick starts after the due time, so the time is stale there. A tick that keeps failing
+        therefore gets at most one immediate retry, then waits the poll interval."""
         now = self._clock()
         timeout = float(self._config.poll_interval_seconds)
         session_due = self._session_jobs.due if self._session_jobs is not None else None
         for due in (self._repost_due, session_due):
-            if due is not None and due > now:
-                timeout = min(timeout, due - now)
+            if due is None or due <= self._tick_started:
+                continue
+            if due <= now:
+                return 0.0
+            timeout = min(timeout, due - now)
         return timeout
 
     async def reconcile(self) -> None:
@@ -232,15 +238,20 @@ class Poller:
         card does not hold back the others. The board is brought up to date after the cards, so a board posted here sits
         below them. When this tick's read of the stored board fails, the cards publish as they would with a board stored,
         and no new board is posted in this tick. The session jobs run last, and they run even when an earlier step
-        raised: their `due` is what the wait reads, so it must be refreshed on every tick. The error is raised again
-        afterwards, so the run loop logs it as before. A cancelled tick is not an Exception, so a shutdown does not
-        start the jobs."""
+        raised: their `due` is what the wait reads, so it must be refreshed on every tick. The heads-up among them reads
+        the cached statuses, so it is skipped when the card pass did not finish; it stays pending for the next tick that
+        finishes it. The error is raised again afterwards, so the run loop logs it as before. A cancelled tick is not an
+        Exception, so a shutdown does not start the jobs."""
+        self._tick_started = self._clock()
+        cards_done = False
         try:
             self._requested = await self._db.run(wake_requests.open_counts)
             await self._tick_cards()
+            cards_done = True
             await self._after_tick()
-        except Exception:  # noqa: BLE001 - re-raised below, once the session jobs have run
-            await self._run_session_jobs()
+        except Exception:
+            # Re-raised below, once the session jobs have run.
+            await self._run_session_jobs(headsup=cards_done)
             raise
         await self._run_session_jobs()
 
@@ -269,13 +280,14 @@ class Poller:
         if self._interactions is not None:
             await self._interactions.expire_play_now()
 
-    async def _run_session_jobs(self) -> None:
+    async def _run_session_jobs(self, *, headsup: bool = True) -> None:
         """Runs the timed session jobs. `SessionJobs.run` never raises, and this guard keeps it that way for the poller:
-        a failure here must not replace the tick's own error or stop the run loop."""
+        a failure here must not replace the tick's own error or stop the run loop. `headsup` is passed on: False skips
+        the heads-up on a tick whose card pass did not finish."""
         if self._session_jobs is None:
             return
         try:
-            await self._session_jobs.run()
+            await self._session_jobs.run(headsup=headsup)
         except Exception as exc:  # noqa: BLE001 - logged; the run loop goes on
             log_event(log, "session_job_failed", level=logging.ERROR, kind="run", reason=type(exc).__name__)
 
