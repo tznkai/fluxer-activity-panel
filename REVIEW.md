@@ -308,6 +308,79 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `tests/test_repo_hygiene.py:512` `offenders.append(f"{path.relative_to(root)}:{number}")` — a finding is the path and the line only. The denylisted literal is never printed. Secret files are skipped before any read.
 - `tests/test_repo_hygiene.py:560` `pytest.skip("private denylist absent")` — where the denylist is absent, as in the published split repository, the test skips.
 
+## Session time parser
+
+- `src/fluxer_panel/session_time.py:56` `if len(parts) != 2:` — a typed time is exactly a day word or date and a clock, so free text cannot ride along inside the time.
+- `src/fluxer_panel/session_time.py:18` `_TIME = re.compile(` — the clock is 24-hour, `H:MM` or `HH:MM`, and it must match the whole token (`fullmatch`).
+- `src/fluxer_panel/session_time.py:70` `raise TimeRefused("weekday_today")` — a weekday name for today is refused rather than read as the next week.
+- `src/fluxer_panel/session_time.py:76` `raise TimeRefused("date") from None` — an impossible date is refused, and the parser's own message is dropped.
+- `src/fluxer_panel/session_time.py:40` `if back != wall:` — a wall time that does not exist (the spring-forward gap) is refused as `gap`.
+- `src/fluxer_panel/session_time.py:42` `if aware.utcoffset() != aware.replace(fold=1).utcoffset():` — a wall time that occurs twice (the fall-back fold) is refused as `fold`, so a session never lands on the wrong hour.
+- `src/fluxer_panel/session_time.py:33` `later.astimezone(timezone.utc) - earlier` — elapsed time is taken in UTC. Python subtracts two datetimes with the same zone by wall clock, which is an hour off across a clock change.
+- `src/fluxer_panel/session_time.py:83` `if elapsed > HORIZON:` — a time more than 60 days out is refused. The comparison is strict, so a time exactly at the horizon is accepted.
+
+## Session purge scrub
+
+- `src/fluxer_panel/purge.py:72` `for session in due:` — the scrub loop in `run`. Every due session is visited before any row is deleted.
+- `src/fluxer_panel/purge.py:74` `await scrub(session)` — the scrub edits the message to its closed form without the location, while the row still exists.
+- `src/fluxer_panel/purge.py:76` `"session_scrub_failed"` — a failed scrub is logged with the session id and the exception type only.
+- `src/fluxer_panel/purge.py:79` `_purge_tx(conn, now, session_ids=session_ids` — the delete runs for every due id after the loop, even when a scrub failed. The delete re-checks the due rule, so a row that changed since it was read is kept.
+- `src/fluxer_panel/__main__.py:135` `scrub=session_post.scrub,` — the `run` purge is the only caller that gets the scrubber.
+- `src/fluxer_panel/__main__.py:171` `scrub=None,` — the `purge` subcommand passes no scrubber, so due sessions stay in place and are reported as deferred.
+
+## Waitlist promotion
+
+- `src/fluxer_panel/rsvp.py:58` `and state[u] == "going"]` — a user who is already going stays going, so a later change in the list cannot move them.
+- `src/fluxer_panel/rsvp.py:61` `newcomers = sorted(` — a new reaction is queued by the order it was added. A newcomer who finds the seats full joins the back of the waiting list.
+- `src/fluxer_panel/rsvp.py:69` `while waiting and (seats is None or len(going) < seats):` — the promotion loop fills free seats from the front of the waiting list.
+- `src/fluxer_panel/rsvp.py:72` `if state[u] == "waiting":` — `promoted` lists only users who were waiting before this run. A newcomer who takes a free seat is not reported as promoted.
+- `src/fluxer_panel/sessions.py:311` `DELETE FROM rsvp_reaction WHERE session_id` — the proposer's first real reaction replaces their implicit going row, so both rows never coexist.
+- `src/fluxer_panel/session_post.py:147` `async def dm_promoted(` — one promotion DM per promoted user. It bypasses the DM backoff.
+
+## Session channel guard
+
+- `src/fluxer_panel/session_post.py:40` `if channel_id == self._config.games_channel_id:` — `send_session` checks the games channel before any REST call.
+- `src/fluxer_panel/session_post.py:41` `raise GamesChannelRefused` — the refusal for a session post.
+- `src/fluxer_panel/session_post.py:71` `if session.channel_id == self._config.games_channel_id:` — `edit_session` makes the same check against the session's stored channel.
+- `src/fluxer_panel/session_post.py:72` `raise GamesChannelRefused` — the refusal for a session edit.
+- `src/fluxer_panel/session_jobs.py:248` `send_session(session.channel_id, payload)` — a recurrence posts the next occurrence to the session's own channel, which the guard above keeps out of the games channel.
+
+## Non-admin DM path
+
+- `src/fluxer_panel/dm_router.py:105` `if event.guild_id is not None:` — a guild message goes to `admin.handle`, which refuses a command and gives no reply. Nothing from a guild channel reaches the session path.
+- `src/fluxer_panel/dm_router.py:108` `if event.author_is_bot or not is_snowflake(event.author_id):` — a bot or non-snowflake author goes to `admin.handle`, which refuses it and logs it.
+- `src/fluxer_panel/dm_router.py:53` `def admit(self, user_id: str) -> bool:` — `NonAdminLimiter.admit` allows 5 commands, replies or DM reactions per 60 seconds per non-admin user.
+- `src/fluxer_panel/dm_router.py:54` `if user_id in self._config.admin_user_ids:` — admins are exempt from the limit.
+- `src/fluxer_panel/dm_router.py:113` `if not self._limiter.admit(event.author_id):` — a `!session` command from a non-admin is rate limited before it is parsed.
+- `src/fluxer_panel/dm_router.py:118` `if admin.parse_head(event.content, self._config.prefix) is not None:` — admin heads (`!admin`, `!card`, `!request`) go to `admin.handle` unchanged, and `authorize` checks them there.
+- `src/fluxer_panel/session_flow.py:226` `if not self._limiter.admit(user):` — a 📅 reaction in a DM uses the same limiter.
+- `src/fluxer_panel/session_commands.py:137` `return event.author_id == session.proposer_id or admin.authorize(event, self._config)` — a session change needs the proposer or an admin.
+
+## DM backoff
+
+- `src/fluxer_panel/dm_backoff.py:19` `def blocked(self, user_id: str) -> bool:` — the backoff is in memory. A user whose DM failed gets no further DM for the backoff window (`DM_BACKOFF_SECONDS`).
+- `src/fluxer_panel/notify.py:34` `and not bypass and backoff.blocked(user_id):` — the skip. It is logged as `user_dm_skipped` with reason `backoff`, and no request is made.
+- `src/fluxer_panel/notify.py:28` `bypass: bool = False)` — the promotion, cancel, move and series-stopped DMs pass `bypass`, so they go out even while the user is in backoff.
+- `src/fluxer_panel/notify.py:18` `async def dm_admins(` — admin DMs never take the backoff path, so an admin is always told.
+- `src/fluxer_panel/session_flow.py:161` `if self._backoff.blocked(user):` — a 📅 start is refused while the proposer is in backoff, before any DM is sent.
+
+## What the phase 4 prompt got wrong
+
+This section compares the phase 4 brief and plan with the design and with what planning and execution found. The design's "Out of date in the prompt" list is the source for the first six items. The others come from planning and from the checks, and each one was checked against the code.
+
+- **DM backoff and footer hint:** the prompt assumed an existing DM-failure backoff and footer hint. Neither existed. Both are new in this phase.
+- **Sessions and RSVP tables:** phase 1's `sessions` and `rsvps` tables had `group_role_id` and no message or state columns. They were rebuilt, not extended.
+- **The `purge` subcommand:** it has no REST, so it cannot scrub. It defers due sessions and reports them as `sessions_deferred`. Only the running bot scrubs and deletes them.
+- **Failed scrubs:** a failed scrub edit is mostly a 404 (`UNKNOWN_CHANNEL` or `UNKNOWN_MESSAGE`), not a 403. A failure is logged, and the delete still runs.
+- **Open-ended series:** the brief's rule that an open-ended series is never purged is replaced by a per-occurrence purge. A weekly occurrence whose successor is not posted yet is kept, so its purge cannot end the series.
+- **Outcome section:** the reactions design has no "Outcome" section. Only the cards design does.
+- **Reaction names:** `▶` (U+25B6) is wake and `🙋` (U+1F64B) is play-now. The 📅 seed is a third emoji and collides with neither.
+- **Card status:** status is computed in memory from the stored fields and the probe results. It is never stored, so there is no status column to migrate.
+- **Location limit:** the limit is 200 characters, from `card_fields.TEXT_LIMITS["location"]`.
+- **The `moved` column:** migration 0008 adds `moved`, which records a time change, so the "Time changed" line survives later edits to the same session.
+- **The purge keep rule:** the rule was first written as `recurrence = 'weekly'`. For a session with no recurrence that test is NULL, so `NOT (...)` was NULL and a non-recurring session could be kept past retention. The bug was found in Phase 7. The test uses the NULL-safe `IS`.
+- **Elapsed time across a clock change:** two aware datetimes with the same zone subtract by wall clock, so an elapsed time across a DST change was an hour off. The time parser converts both values to UTC first.
+
 ## What the phase 2 prompt got wrong
 
 This section compares the phase 2 brief and plan with what the design and the implementation decided. The design's "Deviations from the phase 2 prompt" section is the source for the first items. The others come from the implementation and its checks, and each one was checked against the code.

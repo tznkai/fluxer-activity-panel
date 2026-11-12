@@ -58,9 +58,16 @@ TOPICS = [
     "Card commands",
     "Card poller",
     "Private denylist",
+    "Session time parser",
+    "Session purge scrub",
+    "Waitlist promotion",
+    "Session channel guard",
+    "Non-admin DM path",
+    "DM backoff",
     "What the phase 1 prompt got wrong",
     "What the phase 2 prompt got wrong",
     "What the phase 3 prompt got wrong",
+    "What the phase 4 prompt got wrong",
 ]
 
 # Prose sections state findings in words and cite no code. Every other topic must hold a reference.
@@ -68,6 +75,7 @@ PROSE_TOPICS = {
     "What the phase 1 prompt got wrong",
     "What the phase 2 prompt got wrong",
     "What the phase 3 prompt got wrong",
+    "What the phase 4 prompt got wrong",
 }
 
 
