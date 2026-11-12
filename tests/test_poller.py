@@ -1997,6 +1997,94 @@ async def test_a_tick_runs_the_session_jobs(world: World, db: Database) -> None:
     assert ended is not None and ended.state == "ended"
 
 
+class StubJobs:
+    """Stands in for SessionJobs where only the poller's use of it matters. Each run is counted. A run leaves
+    `refreshed_due` in `due`, as a real run leaves the soonest time still to come, and leaves `due` alone when it is
+    None. `run_error` makes a run raise."""
+
+    def __init__(self, due: float | None, *, refreshed_due: float | None = None,
+                 run_error: BaseException | None = None) -> None:
+        self.due = due
+        self.refreshed_due = refreshed_due
+        self.run_error = run_error
+        self.runs = 0
+
+    async def run(self) -> None:
+        self.runs += 1
+        if self.run_error is not None:
+            raise self.run_error
+        if self.refreshed_due is not None:
+            self.due = self.refreshed_due
+
+
+class FailingWake:
+    """A wake pass that fails on every tick."""
+
+    async def close_due(self) -> int:
+        raise RuntimeError("wake pass failed")
+
+
+def failing_open_counts(conn: Any) -> dict[int, int]:
+    raise RuntimeError("database unavailable")
+
+
+async def test_a_failed_tick_leaves_a_stale_session_due_out_of_the_wait(
+        world: World, poller: Poller, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The due time is left over from an earlier tick and is now in the past. This tick fails before any step that a
+    # run would refresh, so the wait must not drop to zero because of it.
+    poller.set_session_jobs(StubJobs(due=1000.0))
+    monkeypatch.setattr(wake_requests, "open_counts", failing_open_counts)
+    world.clock.now = 2000.0
+    with pytest.raises(RuntimeError):
+        await poller.tick()
+    assert poller._wait_timeout() == world.config.poll_interval_seconds
+
+
+async def test_a_failed_tick_still_runs_the_session_jobs_and_refreshes_their_due(
+        world: World, poller: Poller, monkeypatch: pytest.MonkeyPatch) -> None:
+    jobs = StubJobs(due=1000.0, refreshed_due=3000.0)
+    poller.set_session_jobs(jobs)
+    monkeypatch.setattr(wake_requests, "open_counts", failing_open_counts)
+    world.clock.now = 2000.0
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await poller.tick()
+    assert jobs.runs == 1
+    assert jobs.due == 3000.0
+    assert poller._wait_timeout() == 1000.0          # the refreshed due, 1000 seconds away, is under the poll interval
+
+
+async def test_a_failed_after_tick_step_still_runs_the_session_jobs_and_refreshes_their_due(
+        world: World, poller: Poller) -> None:
+    jobs = StubJobs(due=1000.0, refreshed_due=3000.0)
+    poller.set_session_jobs(jobs)
+    poller.set_wake(FailingWake())
+    world.clock.now = 2000.0
+    with pytest.raises(RuntimeError, match="wake pass failed"):
+        await poller.tick()
+    assert jobs.runs == 1
+    assert jobs.due == 3000.0
+    assert poller._wait_timeout() == 1000.0
+
+
+async def test_a_failing_session_job_run_does_not_replace_the_tick_error(
+        world: World, poller: Poller, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.ERROR, logger="fluxer_panel.poller")
+    poller.set_session_jobs(StubJobs(due=None, run_error=ValueError("jobs failed")))
+    poller.set_wake(FailingWake())
+    with pytest.raises(RuntimeError, match="wake pass failed"):
+        await poller.tick()
+    assert records(caplog, "session_job_failed")
+
+
+async def test_a_stale_repost_due_does_not_make_the_wait_zero(world: World, poller: Poller) -> None:
+    # A re-post due time left over from a tick that failed before its board check ran again.
+    poller._repost_due = 1000.0
+    world.clock.now = 2000.0
+    assert poller._wait_timeout() == world.config.poll_interval_seconds
+    poller._repost_due = 2500.0
+    assert poller._wait_timeout() == 500.0
+
+
 # The next session on a card and its copies (AC3.5-AC3.7). The games channel is in GUILD, so a copy in GUILD is a home
 # copy, and a copy in another community is a far copy that gets the line without its jump link.
 

@@ -155,12 +155,15 @@ class Poller:
                 pass
 
     def _wait_timeout(self) -> float:
-        """How long the run loop waits before its next tick: the poll interval, or less when a re-post is due sooner."""
+        """How long the run loop waits before its next tick: the poll interval, or less when a re-post or a session
+        job is due sooner. A due time that has already passed is ignored, so a stale value never makes the wait zero.
+        The next tick does that work, and a tick that keeps failing cannot spin the loop."""
+        now = self._clock()
         timeout = float(self._config.poll_interval_seconds)
-        if self._repost_due is not None:
-            timeout = min(timeout, max(0.0, self._repost_due - self._clock()))
-        if self._session_jobs is not None and self._session_jobs.due is not None:
-            timeout = min(timeout, max(0.0, self._session_jobs.due - self._clock()))
+        session_due = self._session_jobs.due if self._session_jobs is not None else None
+        for due in (self._repost_due, session_due):
+            if due is not None and due > now:
+                timeout = min(timeout, due - now)
         return timeout
 
     async def reconcile(self) -> None:
@@ -228,10 +231,18 @@ class Poller:
         """Keeps the cards and the board up to date. Each card is published as soon as its own evaluation ends, so one slow
         card does not hold back the others. The board is brought up to date after the cards, so a board posted here sits
         below them. When this tick's read of the stored board fails, the cards publish as they would with a board stored,
-        and no new board is posted in this tick."""
-        self._requested = await self._db.run(wake_requests.open_counts)
-        await self._tick_cards()
-        await self._after_tick()
+        and no new board is posted in this tick. The session jobs run last, and they run even when an earlier step
+        raised: their `due` is what the wait reads, so it must be refreshed on every tick. The error is raised again
+        afterwards, so the run loop logs it as before. A cancelled tick is not an Exception, so a shutdown does not
+        start the jobs."""
+        try:
+            self._requested = await self._db.run(wake_requests.open_counts)
+            await self._tick_cards()
+            await self._after_tick()
+        except Exception:  # noqa: BLE001 - re-raised below, once the session jobs have run
+            await self._run_session_jobs()
+            raise
+        await self._run_session_jobs()
 
     async def _tick_cards(self) -> None:
         """The card and board passes. Without a games channel there is no board, so only the cards are published."""
@@ -251,13 +262,22 @@ class Poller:
     async def _after_tick(self) -> None:
         """The passes that run on every tick, with or without a games channel. A request that is ready or expired closes
         here. Closing kicks the poller, so the next loop renders the card without the suffix. Play-now messages that are
-        due end here too (AC4.10), so they expire without a games channel as well."""
+        due end here too (AC4.10), so they expire without a games channel as well. `tick` runs the session jobs after
+        these."""
         if self._wake is not None:
             await self._wake.close_due()
         if self._interactions is not None:
             await self._interactions.expire_play_now()
-        if self._session_jobs is not None:
+
+    async def _run_session_jobs(self) -> None:
+        """Runs the timed session jobs. `SessionJobs.run` never raises, and this guard keeps it that way for the poller:
+        a failure here must not replace the tick's own error or stop the run loop."""
+        if self._session_jobs is None:
+            return
+        try:
             await self._session_jobs.run()
+        except Exception as exc:  # noqa: BLE001 - logged; the run loop goes on
+            log_event(log, "session_job_failed", level=logging.ERROR, kind="run", reason=type(exc).__name__)
 
     def _forget_cards_not_in(self, live_ids: set[int]) -> None:
         """Drops the cached schedule, channel name check and status of every card not in `live_ids`, the live set of this
