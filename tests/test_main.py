@@ -513,6 +513,35 @@ async def test_purge_subcommand_defers_due_sessions_and_exits_zero(tmp_path):
     assert counts == [2, 2, 1, 0]
 
 
+async def test_purge_subcommand_uses_the_configured_session_retention(tmp_path):
+    now = int(time.time())
+    db = Database.open(tmp_path / "panel.db")
+    try:
+        # closed two days ago: due under a one-day retention, kept under the seven-day default
+        def seed(conn: sqlite3.Connection) -> None:
+            card = conn.execute("INSERT INTO cards (title, created_by, created_at, updated_at) "
+                                "VALUES ('Game', '1001', ?, ?)", (now, now)).lastrowid
+            conn.execute(
+                "INSERT INTO sessions (card_id, guild_id, channel_id, message_id, starts_at, ends_at, proposer_id, "
+                "created_at, state, closed_at) VALUES (?, '3001', '3002', '3003', ?, ?, '1001', ?, 'ended', ?)",
+                (card, now - 3 * DAY, now - 2 * DAY - 3600, now - 3 * DAY, now - 2 * DAY))
+
+        await db.run(seed)
+    finally:
+        db.close()
+
+    env = child_env(tmp_path, DATA_DIR=str(tmp_path), SESSION_RETENTION_SECONDS=str(DAY))
+    code, out, err = await run_panel(env, tmp_path, "purge")
+
+    assert code == 0
+    status = json.loads((tmp_path / "purge-status.json").read_text())
+    assert status["sessions_deferred"] == 1
+    assert status["deleted"]["sessions"] == 0
+    with contextlib.closing(sqlite3.connect(tmp_path / "panel.db")) as conn:
+        assert conn.execute("SELECT count(*) FROM sessions").fetchone()[0] == 1
+    assert TOKEN not in out + err
+
+
 def test_purge_once_exits_1_when_the_purge_fails(tmp_path):
     db = Database.open(tmp_path / "panel.db")
     # break a purge query without touching the panel's own connection. The play-now delete runs on every purge, even

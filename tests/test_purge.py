@@ -538,6 +538,52 @@ async def test_a_session_that_changes_before_its_delete_runs_is_kept(db: Databas
     assert await db.run(lambda conn: _count(conn, "rsvps")) == 1
 
 
+# Shutdown: a cancel during a scrub stops the purge. It is not a failed scrub, so nothing is deleted. ----
+
+async def test_a_cancel_raised_by_a_scrub_propagates_and_the_next_session_is_not_scrubbed(
+        db: Database, caplog: pytest.LogCaptureFixture) -> None:
+    def seed(conn: sqlite3.Connection) -> tuple[int, int]:
+        card = _card(conn)
+        return _session(conn, card, closed_at=CUT - 1), _session(conn, card, closed_at=CUT - 2)
+
+    first, second = await db.run(seed)
+    scrub = _Scrubber(db, fail=asyncio.CancelledError())
+    caplog.set_level(logging.WARNING, logger="fluxer_panel.purge")
+
+    with pytest.raises(asyncio.CancelledError):
+        await _purge(db, NOW, scrub=scrub)
+
+    assert scrub.calls == [first]                  # the cancel stops the loop before the second session
+    assert await db.run(_session_ids) == {first, second}
+    assert not [r for r in caplog.records if r.getMessage() == "session_scrub_failed"]
+
+
+async def test_a_task_cancelled_during_a_scrub_ends_run_purge_without_deleting_or_recording(
+        db: Database, status: Path, caplog: pytest.LogCaptureFixture) -> None:
+    session_id = await db.run(lambda conn: _session(conn, _card(conn), closed_at=CUT - 1))
+    in_scrub = asyncio.Event()
+    never_released = asyncio.Event()
+    scrub_calls: list[int] = []
+
+    async def blocking_scrub(session: Session) -> None:
+        scrub_calls.append(session.id)
+        in_scrub.set()
+        await never_released.wait()                # blocks until the task is cancelled
+
+    caplog.set_level(logging.WARNING, logger="fluxer_panel.purge")
+    task = asyncio.create_task(run_purge(db, status, NOW, scrub=blocking_scrub))
+    await asyncio.wait_for(in_scrub.wait(), 5)     # the scrub is running; the cancel lands inside it
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert scrub_calls == [session_id]             # no scrub after the cancelled one
+    assert await db.run(_session_ids) == {session_id}
+    assert not status.exists()                     # the run ended before its status write
+    assert not [r for r in caplog.records if r.getMessage() == "session_scrub_failed"]
+
+
 # AC9.6 (purge subcommand): with no scrubber, due sessions stay and are reported as deferred. ----------
 
 async def test_without_a_scrubber_due_sessions_stay_and_are_counted_as_deferred(db: Database, status: Path) -> None:
@@ -565,17 +611,22 @@ async def test_without_a_scrubber_due_sessions_stay_and_are_counted_as_deferred(
     }
 
 
-async def test_purge_loop_passes_the_scrubber_to_each_run(db: Database, status: Path) -> None:
-    sid = await db.run(lambda conn: _session(conn, _card(conn), closed_at=CUT - 1))
+async def test_purge_loop_passes_the_scrubber_and_the_retention_to_each_run(db: Database, status: Path) -> None:
+    def seed(conn: sqlite3.Connection) -> tuple[int, int]:
+        card = _card(conn)
+        return _session(conn, card, closed_at=NOW - 61), _session(conn, card, closed_at=NOW - 60)
+
+    due, at_cutoff = await db.run(seed)
     scrub = _Scrubber(db)
-    task = asyncio.create_task(purge_loop(db, status, interval=60, scrub=scrub, clock=lambda: NOW))
+    task = asyncio.create_task(purge_loop(db, status, interval=60, scrub=scrub, retention=60, clock=lambda: NOW))
     try:
         await wait_until(lambda: (_read_status(status) or {}).get("ok") is True, waiting_for="the purge status file")
     finally:
         task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert scrub.calls == [sid]
+    assert scrub.calls == [due]                    # 61 s closed is due under a 60 s retention; 60 s is not
+    assert await db.run(_session_ids) == {at_cutoff}
 
 
 # AC9.7: the cutoff is strict, the retention comes from the argument, and an upcoming session is never scrubbed. --
