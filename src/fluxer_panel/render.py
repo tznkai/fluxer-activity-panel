@@ -242,7 +242,7 @@ def embed_units(embed: Mapping[str, Any]) -> int:
 def _fit_budget(embed: dict[str, Any], fields: list[dict[str, Any]]) -> None:
     """Keeps the embed within EMBED_CHAR_LIMIT by shortening first_time, then the description, then join, each only as
     far as needed and never below the ellipsis. Nothing else is shortened. Without those three, the worst case is
-    about 4300 units, so the limit always holds."""
+    about 4580 units, so the limit always holds."""
     over = embed_units(embed) - EMBED_CHAR_LIMIT
     by_name = {field["name"]: field for field in fields}
     for holder, key in ((by_name.get(text.FIELD_FIRST_TIME), "value"), (embed, "description"),

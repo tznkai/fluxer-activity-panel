@@ -8,6 +8,11 @@ Each job lists what is due without a lock, then acts on each item under the card
 transaction that reads the session again, so a move, a cancel or a repeat change made since the listing is respected, and
 a write refuses when the row has changed. No DM is sent while the lock is held, and each message edit runs after it.
 `due` is the soonest time anything is still to happen, so the poller's wait ends there and never passes it.
+
+Known limitation (AC5.4): a weekly occurrence is stored at most once, but its message is not guaranteed to be posted once.
+If a send reaches Fluxer and its response is lost, or the process dies between the send and the store, the next tick
+posts a second visible message for the same occurrence. Only one row is ever stored for it, and the first message has no
+row, so the bot never edits or deletes it. AC5.4 is a guarantee about stored rows, not about messages a member can see.
 """
 
 from __future__ import annotations
