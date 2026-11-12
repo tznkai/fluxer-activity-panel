@@ -65,7 +65,7 @@ class _Evaluated:
     card: cards.Card
     status: CardStatus | None
     embed: dict[str, Any] | None
-    far_embed: dict[str, Any] | None = None
+    far_embed: dict[str, Any] | None
 
 
 class Poller:
@@ -284,11 +284,13 @@ class Poller:
                 log_event(log, "card_poll_failed", level=logging.WARNING, card_id=card.id,
                           reason=type(exc).__name__)
                 self._statuses[card.id] = None
-                return _Evaluated(card, None, None)
+                return _Evaluated(card, None, None, None)
 
     async def _publish_guarded(self, result: _Evaluated, sem: asyncio.Semaphore) -> None:
         async with sem:
-            assert result.embed is not None and result.far_embed is not None
+            # A failed evaluation has no embed and is never published. This check does not rely on asserts.
+            if result.embed is None or result.far_embed is None:
+                return
             try:
                 await self._publish(result.card.id, result.embed, result.far_embed)
             except Exception as exc:  # noqa: BLE001 - one card's failure must not stop the other cards
