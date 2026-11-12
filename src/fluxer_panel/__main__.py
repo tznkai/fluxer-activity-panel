@@ -36,6 +36,7 @@ from fluxer_panel.purge import purge_loop, run_purge
 from fluxer_panel.seeding import Seeder
 from fluxer_panel.session_commands import SessionCommands
 from fluxer_panel.session_flow import SessionFlow
+from fluxer_panel.session_jobs import SessionJobs
 from fluxer_panel.session_post import SessionPost
 from fluxer_panel.sources.registry import build_sources
 from fluxer_panel.wake import WakeRequests
@@ -102,7 +103,12 @@ async def run(config: Config, db: Database) -> None:
             session_flow = SessionFlow(db=db, rest=rest, config=config, locks=card_ctx.locks,
                                        session_post=session_post, games_guild=games_guild, pacer=pacer,
                                        identity=identity, backoff=backoff, limiter=limiter, kick=poller.kick)
-            poller.set_session_flow(session_flow)   # each tick expires the drafts that are past their time
+            # The timed session jobs (ends, the weekly series, the heads-up) run on each tick, and their next due time
+            # shortens the poller's wait.
+            session_jobs = SessionJobs(db=db, rest=rest, config=config, locks=card_ctx.locks, session_post=session_post,
+                                       session_flow=session_flow, status_of=poller.status_of, kick=poller.kick,
+                                       backoff=backoff)
+            poller.set_session_jobs(session_jobs)
             session_commands = SessionCommands(db=db, rest=rest, config=config, locks=card_ctx.locks,
                                                session_post=session_post, kick=poller.kick)
             session_post.set_on_gone(session_commands.on_message_gone)   # a deleted session message cancels it

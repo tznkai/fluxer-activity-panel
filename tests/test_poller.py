@@ -26,11 +26,13 @@ from fluxer_client.events import MessageCreate, MessageDelete
 from fluxer_client.gateway import Gateway
 from fluxer_client.rest import FluxerREST
 from fluxer_client.roles import RoleCache
-from fluxer_panel import admin, board, cards, play_now, render, subscriptions, text, wake_requests
+from fluxer_panel import admin, board, cards, play_now, render, sessions, subscriptions, text, wake_requests
 from fluxer_panel.bot import Bot
 from fluxer_panel.card_commands import CardContext, CardLocks
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
+from fluxer_panel.dm_backoff import DmBackoff
+from fluxer_panel.dm_router import NonAdminLimiter
 from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.interactions import Interactions
 from fluxer_panel.logs import setup_logging
@@ -39,6 +41,9 @@ from fluxer_panel.poller import _DELETED_CAP, Poller
 from fluxer_panel.presses import WAKE_EMOJI, Presses
 from fluxer_panel.resolver import StatusKind
 from fluxer_panel.seeding import Seeder
+from fluxer_panel.session_flow import SessionFlow
+from fluxer_panel.session_jobs import SessionJobs
+from fluxer_panel.session_post import SessionPost
 from fluxer_panel.sources.base import PlayerCounts, ProbeDetails, ProbeFailed, ProbeResult
 from fluxer_panel.sources.pterodactyl import PterodactylManager
 from fluxer_panel.sources.registry import Sources
@@ -1928,3 +1933,65 @@ async def test_a_due_play_now_message_ends_on_a_tick_even_without_a_games_channe
     assert ended.payload["content"] == text.PLAY_NOW_ENDED_CONTENT.format(card=render.escape(CARD_TITLE))
     assert [r for r in world.fluxer.requests
             if r.method == "DELETE" and r.path == f"{GAMES_MESSAGES}/{PLAY_MESSAGE}/reactions"]
+
+
+# The timed session jobs in the poller: each tick runs them, and their next due time ends the wait (AC5, poller wake-ups).
+
+SESSION_CHANNEL = "3301"   # a session channel that is not the games channel
+
+
+def wired_session_jobs(world: World, poller: Poller) -> SessionJobs:
+    """The session jobs as `__main__` builds them, handed to the poller: a real flow and post on the test database."""
+    pacer = ChannelPacer(max_calls=1000)
+    post = SessionPost(db=world.db, rest=world.rest, config=world.config, pacer=pacer)
+    flow = SessionFlow(db=world.db, rest=world.rest, config=world.config, locks=world.locks, session_post=post,
+                       games_guild=GamesGuild(world.rest, world.config), pacer=pacer,
+                       identity=BotIdentity(user_id=WAKE_BOT),
+                       backoff=DmBackoff(world.config.dm_backoff_seconds, clock=world.clock),
+                       limiter=NonAdminLimiter(world.config, clock=world.clock), clock=world.clock)
+    jobs = SessionJobs(db=world.db, rest=world.rest, config=world.config, locks=world.locks, session_post=post,
+                       session_flow=flow, status_of=poller.status_of, clock=world.clock)
+    poller.set_session_jobs(jobs)
+    return jobs
+
+
+async def add_upcoming_session(db: Database, card_id: int, *, starts_at: int, ends_at: int) -> int:
+    def tx(conn: Any) -> int:
+        return sessions.add(conn, card_id=card_id, guild_id=GUILD, channel_id=SESSION_CHANNEL, message_id="5501",
+                            starts_at=starts_at, ends_at=ends_at, proposer_id=AUTHOR, now=0)
+
+    return await db.run(tx)
+
+
+async def test_the_wait_ends_when_the_next_session_job_is_due(world: World, db: Database) -> None:
+    poller = world.make_poller()
+    jobs = wired_session_jobs(world, poller)
+    card_id = await seed(db, "alpha", title=CARD_TITLE)
+    await add_upcoming_session(db, card_id, starts_at=900, ends_at=1000)
+
+    world.clock.now = 800
+    await jobs.run()
+    assert poller._wait_timeout() == 200           # the end at 1000, not the poll interval
+    world.clock.now = 960
+    assert poller._wait_timeout() == 40
+
+
+async def test_the_wait_is_the_poll_interval_when_no_session_job_is_pending(world: World) -> None:
+    poller = world.make_poller()
+    jobs = wired_session_jobs(world, poller)
+    world.clock.now = 800
+    await jobs.run()
+    assert jobs.due is None
+    assert poller._wait_timeout() == world.config.poll_interval_seconds
+
+
+async def test_a_tick_runs_the_session_jobs(world: World, db: Database) -> None:
+    poller = world.make_poller()
+    wired_session_jobs(world, poller)
+    card_id = await seed(db, "alpha", title=CARD_TITLE)
+    session_id = await add_upcoming_session(db, card_id, starts_at=900, ends_at=1000)
+
+    world.clock.now = 1000
+    await poller.tick()
+    ended = await db.run(lambda c: sessions.get(c, session_id))
+    assert ended is not None and ended.state == "ended"

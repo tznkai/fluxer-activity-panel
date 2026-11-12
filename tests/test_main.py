@@ -605,7 +605,7 @@ def _probe_poller(monkeypatch: pytest.MonkeyPatch) -> _PollerProbe:
         def set_interactions(self, interactions: Any) -> None:
             probe.interactions = interactions
 
-        def set_session_flow(self, flow: Any) -> None:
+        def set_session_jobs(self, jobs: Any) -> None:
             pass
 
         def on_games_message(self, channel_id: str) -> None:

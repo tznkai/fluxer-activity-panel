@@ -20,6 +20,8 @@ if TYPE_CHECKING:
 
 MAX_PER_PROPOSER = 3   # upcoming sessions per proposer per card
 MAX_PER_CARD = 10      # upcoming sessions per card
+RECURRENCE_LEAD = 86400   # a weekly series posts its next occurrence this long after the current start
+HEADSUP_WINDOW = 1800     # the admins' heads-up goes out this long before a session with people going
 
 
 class SessionCapReached(Exception):
@@ -176,6 +178,42 @@ def upcoming_with_titles(conn: sqlite3.Connection) -> list[tuple[Session, str]]:
         f"SELECT {_QUALIFIED}, c.title FROM sessions s JOIN cards c ON c.id = s.card_id "
         "WHERE s.state = 'upcoming' ORDER BY s.starts_at, s.id").fetchall()
     return [(_load(tuple(row[:-1])), row[-1]) for row in rows]
+
+
+def due_to_end(conn: sqlite3.Connection, now: int) -> list[Session]:
+    """Upcoming sessions whose end time has passed."""
+    return _rows(conn, "WHERE state = 'upcoming' AND ends_at <= ? ORDER BY ends_at, id", (now,))
+
+
+def recurrence_due(conn: sqlite3.Connection, now: int) -> list[Session]:
+    """Weekly occurrences whose successor is not posted yet and is due. Any state: a cancelled or ended occurrence
+    still spawns its successor."""
+    return _rows(conn, "WHERE recurrence = 'weekly' AND next_posted = 0 AND starts_at + ? <= ? ORDER BY starts_at, id",
+                 (RECURRENCE_LEAD, now))
+
+
+def headsup_candidates(conn: sqlite3.Connection, now: int) -> list[Session]:
+    """Upcoming sessions that have not started and are inside their heads-up window, and have not had one yet."""
+    return _rows(conn, "WHERE state = 'upcoming' AND headsup_sent = 0 AND starts_at > ? AND starts_at - ? <= ? "
+                       "ORDER BY starts_at, id", (now, HEADSUP_WINDOW, now))
+
+
+def next_times(conn: sqlite3.Connection, now: int) -> list[int]:
+    """The soonest future time of each pending job: an end, a recurrence and a heads-up. Work that is already due but
+    still pending is never a wake time, so the poller cannot spin on it. Each query ignores NULLs and the times <= now."""
+    queries = (
+        ("SELECT MIN(ends_at) FROM sessions WHERE state = 'upcoming' AND ends_at > ?", (now,)),
+        ("SELECT MIN(starts_at + ?) FROM sessions WHERE recurrence = 'weekly' AND next_posted = 0 AND starts_at + ? > ?",
+         (RECURRENCE_LEAD, RECURRENCE_LEAD, now)),
+        ("SELECT MIN(starts_at - ?) FROM sessions WHERE state = 'upcoming' AND headsup_sent = 0 AND starts_at - ? > ?",
+         (HEADSUP_WINDOW, HEADSUP_WINDOW, now)),
+    )
+    found: list[int] = []
+    for sql, params in queries:
+        value = conn.execute(sql, params).fetchone()[0]
+        if value is not None:
+            found.append(int(value))
+    return found
 
 
 def _close_if(conn: sqlite3.Connection, session_id: int, now: int, state: str) -> bool:

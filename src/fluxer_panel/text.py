@@ -333,3 +333,6 @@ SESSION_SEATS_DONE = "Session {n}'s seats are updated."
 SESSION_CANCELLED_DM = "The {card} session at <t:{ts}:F> was cancelled."
 SESSION_MOVED_DM = "The {card} session moved to <t:{ts}:F> (<t:{ts}:R>). {link}"
 SESSION_MOVED_DM_NO_LINK = "The {card} session moved to <t:{ts}:F> (<t:{ts}:R>)."
+# The timed jobs. The series note goes to the proposer; the heads-up goes to each admin, with the card's escaped title.
+SESSION_SERIES_STOPPED = "Your weekly {card} session stopped repeating: the card already has 10 upcoming sessions."
+SESSION_HEADSUP = "{card} session at <t:{ts}:F>, {n} going, server is asleep."
