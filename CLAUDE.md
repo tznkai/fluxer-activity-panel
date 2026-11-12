@@ -232,6 +232,15 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   Promotion, cancel, move and series-stopped DMs, and the wake request close DMs (ready, expired and cleared), pass
   `bypass=True`. Admin DMs (`notify.dm_admins`) never use the
   backoff. A 📅 start is refused while the proposer is in backoff.
+- A reaction with no guild id (a DM reaction) goes to `SessionFlow.on_dm_reaction` and never to `presses`.
+- A `!session` change is one compare-and-set transaction under the card's lock that reads the session again; the
+  message edit and the DMs run after the lock is released. The exceptions are `cancel_card_sessions_locked` (called
+  by `!card archive` with the lock held) and `on_message_gone`, which takes no card lock. A 404 on a session edit
+  (its message was deleted) cancels an upcoming session through that hook (`SessionPost.set_on_gone`).
+- `session_jobs.SessionJobs.run` runs on every poller tick (session ends, the weekly series, the admins' heads-up
+  `sessions.HEADSUP_WINDOW` before a session with people going, draft expiry), and its next due time shortens the
+  poller's wait. Each job lists without a lock and acts under the card's lock. Known limitation: a weekly occurrence
+  is stored at most once, but a lost send response can post a second visible message, which has no row.
 
 ## Reactions rules
 
@@ -307,7 +316,7 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   partial unique index `requests_open_once` keeps one open row per card and requester. New tables: `wake_request_dm`
   (the admin DMs about a request), `card_follow_role` (`role_id` unique: a role follows one card), `card_play_now_channel`,
   `play_now`, `interactions` (one row, the global switch), `card_interactions_off` and `reaction_degraded`.
-- Session tables (migration 0008): `sessions` is rebuilt, since phase 1 created it with `group_role_id` and no state
+- Session tables (migration 0008): `sessions` is rebuilt, since migration 0001 created it with `group_role_id` and no state
   columns. Its `state` is `upcoming`, `ended` or `cancelled`, and `closed_at` is set exactly when it is not upcoming.
   It also has `recurrence`, `series_id`, `next_posted` and `moved`. `rsvp_reaction` holds the presence rows (one
   implicit row for the proposer), and `rsvps` is rebuilt as the computed state (`waitlist_pos` for a waiting user).
