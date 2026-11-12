@@ -360,7 +360,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 
 - `src/fluxer_panel/dm_backoff.py:19` `def blocked(self, user_id: str) -> bool:` — the backoff is in memory. A user whose DM failed gets no further DM for the backoff window (`DM_BACKOFF_SECONDS`).
 - `src/fluxer_panel/notify.py:34` `and not bypass and backoff.blocked(user_id):` — the skip. It is logged as `user_dm_skipped` with reason `backoff`, and no request is made.
-- `src/fluxer_panel/notify.py:28` `bypass: bool = False)` — the promotion, cancel, move and series-stopped DMs, and the wake request close DMs (ready, gave up and cleared), pass `bypass`, so they go out even while the user is in backoff.
+- `src/fluxer_panel/notify.py:28` `bypass: bool = False)` — the promotion, cancel, move and series-stopped DMs, and the wake request close DMs (ready, expired and cleared), pass `bypass`, so they go out even while the user is in backoff.
 - `src/fluxer_panel/notify.py:18` `async def dm_admins(` — admin DMs never take the backoff path, so an admin is always told.
 - `src/fluxer_panel/session_flow.py:161` `if self._backoff.blocked(user):` — a 📅 start is refused while the proposer is in backoff, before any DM is sent.
 

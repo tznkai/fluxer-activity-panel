@@ -229,7 +229,7 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   change needs the proposer or `admin.authorize`. A guild message goes to `admin.handle` and never reaches the
   session path.
 - DM backoff (`dm_backoff.py`, in memory): a user whose DM failed gets no ordinary DM for `DM_BACKOFF_SECONDS`.
-  Promotion, cancel, move and series-stopped DMs, and the wake request close DMs (ready, gave up and cleared), pass
+  Promotion, cancel, move and series-stopped DMs, and the wake request close DMs (ready, expired and cleared), pass
   `bypass=True`. Admin DMs (`notify.dm_admins`) never use the
   backoff. A 📅 start is refused while the proposer is in backoff.
 
