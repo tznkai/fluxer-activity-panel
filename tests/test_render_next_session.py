@@ -11,18 +11,18 @@ import dataclasses
 import pytest
 
 from fluxer_panel import render, text
-from fluxer_panel.cards import ChannelLink, Location
+from fluxer_panel.cards import Location
+from fluxer_panel.config import INSTANCE_URL_MAX
 from fluxer_panel.render import NextSession
 from fluxer_panel.resolver import CardStatus, StatusKind
-from fluxer_panel.sources.base import PlayerCounts, ProbeDetails
-from tests.test_render import CAP_INSTANCE, INSTANCE, READY_FULL, fields_of, full_card, make_card, repeated
+from tests.test_render import INSTANCE, READY_FULL, fields_of, full_card, make_card
+from tests.test_render_slots import WORST_STATUS, _worst_card, instance_url_of_length, instance_url_of_units
 
 START = 1_800_000_000
 JUMP = ("2001", "3200", "5101")                       # (guild, channel, message) of the session message
 JUMP_URL = f"{INSTANCE}/channels/2001/3200/5101"
 ON = NextSession(starts_at=START, going=3, jump=JUMP, has_location=False)
 READY = CardStatus(StatusKind.READY)
-GROWTH_UNITS = ["*", "<#"]                            # the escaping worst cases, as in the card rendering tests
 SENTINEL_LOCATION = "SENTINEL-LOCATION-42"
 
 
@@ -73,22 +73,17 @@ def test_the_board_message_gains_no_footer_and_no_next_session_field() -> None:
     assert all(field["name"] != text.FIELD_NEXT_SESSION for field in board["embeds"][0]["fields"])
 
 
-@pytest.mark.parametrize("unit", GROWTH_UNITS)
-def test_the_longest_card_with_a_next_session_and_the_footer_stays_within_the_embed_limit(unit: str) -> None:
-    link = ChannelLink(guild_id="1001", channel_id="2001", channel_name=repeated(unit, 100), verified=True)
-    card = make_card(
-        title=repeated(unit, 200), description=repeated(unit, 1000), how_to_join=repeated(unit, 1000),
-        first_time=repeated(unit, 1000), location=Location(repeated(unit, 200)),
-        voice=link, voice2=link, voice3=link, text_channels=(link, link, link),
-        show_details=("map", "version", "game_mode"),
-    )
-    status = CardStatus(StatusKind.READY, counts=PlayerCounts(online=3, max=10),
-                        details=ProbeDetails(map=repeated(unit, 48), version=repeated(unit, 48),
-                                             game_mode=repeated(unit, 48)))
-    session = NextSession(starts_at=START, going=10_000, jump=("2001", "3200", "5101"), has_location=True)
-    embed = render.render_embed(card, status, repeated(unit, 200), instance_url=CAP_INSTANCE, next_session=session)
+@pytest.mark.parametrize("instance", [instance_url_of_length(INSTANCE_URL_MAX), instance_url_of_units(INSTANCE_URL_MAX)],
+                         ids=["ascii", "astral"])
+def test_the_worst_card_with_a_next_session_and_the_footer_stays_within_the_embed_limit(instance: str) -> None:
+    # The slot tests' worst card (all nine slots, the three addresses, the longest escapes), with the longest session the
+    # schema takes: 25-digit ids and a 999999-strong count. The total is the real worst case, and must stay in budget.
+    session = NextSession(starts_at=99_999_999_999, going=999_999, jump=("9" * 25, "9" * 25, "9" * 25), has_location=True)
+    embed = render.render_embed(_worst_card(instance), WORST_STATUS, "Restarts in 59 min", instance_url=instance,
+                                requested=999_999, next_session=session)
     assert text.FIELD_NEXT_SESSION in fields_of(embed)
     assert embed["footer"] == {"text": text.CARD_DM_HINT}
+    assert len(embed["fields"]) <= render.EMBED_MAX_FIELDS
     assert render.embed_units(embed) <= render.EMBED_CHAR_LIMIT
 
 

@@ -82,6 +82,8 @@ class World:
     locks: CardLocks
     statuses: dict[int, CardStatus | None]
     card_id: int
+    kicks: list[int]        # one entry per poller kick the jobs ask for
+    backoff: DmBackoff
 
 
 def config_for() -> Config:
@@ -99,6 +101,7 @@ async def world(tmp_path: Path, aiohttp_server: Any) -> AsyncIterator[World]:
     config = config_for()
     clock = Clock(float(S))
     statuses: dict[int, CardStatus | None] = {}
+    kicks: list[int] = []
     try:
         async with aiohttp.ClientSession() as client:
             rest = FluxerREST(client, f"{base}/api", TOKEN)
@@ -111,10 +114,11 @@ async def world(tmp_path: Path, aiohttp_server: Any) -> AsyncIterator[World]:
                                identity=BotIdentity(user_id=BOT_ID), backoff=backoff,
                                limiter=NonAdminLimiter(config, clock=clock), clock=clock)
             jobs = SessionJobs(db=database, rest=rest, config=config, locks=locks, session_post=post,
-                               session_flow=flow, status_of=statuses.get, clock=clock, backoff=backoff)
+                               session_flow=flow, status_of=statuses.get, clock=clock, backoff=backoff,
+                               kick=lambda: kicks.append(1))
             card_id = await database.run(_seed_card)
             yield World(db=database, state=state, rest=rest, clock=clock, config=config, post=post, flow=flow,
-                        jobs=jobs, locks=locks, statuses=statuses, card_id=card_id)
+                        jobs=jobs, locks=locks, statuses=statuses, card_id=card_id, kicks=kicks, backoff=backoff)
     finally:
         database.close()
 
@@ -247,6 +251,54 @@ async def test_an_rsvp_after_the_end_changes_nothing(world: World) -> None:
     assert len(patches(world)) == patched
 
 
+async def test_the_end_is_read_again_under_the_lock(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    sid = await add_session(world)
+    original = sessions.due_to_end
+
+    def move_after_the_candidate_read(conn: Any, now: int) -> list[Session]:
+        due = original(conn, now)
+        assert sessions.move_if(conn, sid, starts_at=S + HOUR, ends_at=S + 3 * HOUR)   # the end is now in the future
+        return due
+
+    monkeypatch.setattr(sessions, "due_to_end", move_after_the_candidate_read)
+    world.clock.now = S + HOUR
+    await world.jobs.run()
+    assert (await row(world, sid)).state == "upcoming"
+    assert patches(world) == []
+    assert world.kicks == []
+
+
+async def test_an_end_kicks_the_poller_once(world: World) -> None:
+    await add_session(world)
+    world.clock.now = S + HOUR
+    await world.jobs.run()
+    assert world.kicks == [1]
+
+
+async def test_an_ended_session_whose_message_is_gone_stays_ended_and_cancels_nothing(
+        world: World, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.WARNING, logger="fluxer_panel.session_jobs")
+    sid = await add_session(world)
+    await set_rsvps(world, sid, [(GOING, "going")])
+    gone = []
+    world.post.set_on_gone(lambda session_id: _record_gone(gone, session_id))   # the cancel hook, as in production
+    message = (await row(world, sid)).message_id
+    world.state.overrides[f"PATCH /api/v1/channels/{SESSION_CH}/messages/{message}"] = Override(404, SERVER_ERROR)
+    world.clock.now = S + HOUR
+    await world.jobs.run()
+
+    assert (await row(world, sid)).state == "ended"
+    assert gone == []                              # the hook runs only for an upcoming session
+    assert dms_to(world, GOING) == []
+    failed = [r for r in caplog.records if r.name == "fluxer_panel.session_jobs"
+              and getattr(r, FIELDS_ATTR, {}).get("session_id") == sid]
+    assert [r.getMessage() for r in failed] == ["session_edit_failed"]
+
+
+async def _record_gone(gone: list[int], session_id: int) -> None:
+    gone.append(session_id)
+
+
 # The weekly series (AC5.2, AC5.3, AC5.4, AC5.5) ----------------------------------------------------------------------
 
 async def test_a_weekly_session_posts_its_next_occurrence_one_day_after_its_start(world: World) -> None:
@@ -368,12 +420,30 @@ async def test_a_failed_store_deletes_the_posted_message_and_the_next_run_posts_
     assert [s.starts_at for s in await world.db.run(sessions.all_upcoming)] == [NEXT]
 
 
+async def test_a_posted_occurrence_kicks_the_poller_once(world: World) -> None:
+    await add_session(world, ends=S + 2 * DAY, recurrence="weekly")   # still running when its successor is posted
+    world.clock.now = S + DAY
+    await world.jobs.run()
+    assert len(posts(world)) == 1
+    assert world.kicks == [1]
+
+
+async def test_an_occurrence_of_an_archived_card_clears_the_series_and_posts_nothing(world: World) -> None:
+    sid = await add_session(world, recurrence="weekly")
+    await world.db.run(lambda c: cards.set_state(c, world.card_id, "archived", 1))
+    world.clock.now = S + DAY
+    await world.jobs.run()
+    assert posts(world) == []
+    assert (await row(world, sid)).recurrence is None
+
+
 async def test_the_cap_stops_the_series_and_dms_the_proposer_once(world: World) -> None:
     # The due occurrence is still upcoming (it runs two days), so with nine more it is the card's tenth.
     sid = await add_session(world, ends=S + 2 * DAY, recurrence="weekly")
     for n in range(9):
         await add_session(world, starts=S + 30 * DAY + n * HOUR, proposer=f"63{n:02d}", proposer_cap=False)
     world.clock.now = S + DAY
+    world.backoff.failed(PROPOSER)            # the proposer is in DM backoff: the stop note still goes out (bypass)
     await world.jobs.run()
     assert posts(world) == []
     assert (await row(world, sid)).recurrence is None
@@ -460,6 +530,27 @@ async def test_a_move_gives_the_new_time_its_own_heads_up(world: World) -> None:
     assert dms_to(world, ADMIN) == [headsup_text(1), text.SESSION_HEADSUP.format(card="Lobby", ts=moved, n=1)]
 
 
+async def test_a_session_moved_out_of_its_window_after_the_listing_gets_no_heads_up(
+        world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    await set_manager(world)
+    world.statuses[world.card_id] = CardStatus(StatusKind.ASLEEP)
+    sid = await add_session(world)
+    await set_rsvps(world, sid, [(GOING, "going")])
+    original = sessions.headsup_candidates
+
+    def move_after_the_listing(conn: Any, now: int) -> list[Session]:
+        due = original(conn, now)
+        moved = S + 2 * HOUR                   # two hours out: the window the listing saw is now over
+        assert sessions.move_if(conn, sid, starts_at=moved, ends_at=moved + HOUR)
+        return due
+
+    monkeypatch.setattr(sessions, "headsup_candidates", move_after_the_listing)
+    world.clock.now = S - 29 * 60
+    await world.jobs.run()
+    assert dms_to(world, ADMIN) == []
+    assert not (await row(world, sid)).headsup_sent
+
+
 # Stored channel only (AC10.2) ----------------------------------------------------------------------------------------
 
 async def test_the_jobs_touch_only_the_session_channel(world: World) -> None:
@@ -534,6 +625,47 @@ async def test_due_is_not_held_by_a_recurrence_that_keeps_failing(world: World) 
     assert len(posts(world)) == 2                              # the next tick retries the same occurrence
     assert (await row(world, sid)).next_posted
     assert [s.starts_at for s in await world.db.run(sessions.all_upcoming)] == [NEXT]
+
+
+async def test_due_is_the_later_end_when_an_earlier_end_is_still_pending(world: World,
+                                                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    # The end job fails, so the earlier session stays upcoming past its end: a pending time that is not a wake-up.
+    earlier = await add_session(world, proposer_cap=False)
+    later_start = S + 3 * DAY
+    later = await add_session(world, starts=later_start, proposer=GOING, proposer_cap=False)
+    await world.db.run(lambda c: sessions.mark_headsup_if(c, later))   # no heads-up wake for the later one either
+
+    def broken(conn: Any, now: int) -> list[Session]:
+        raise RuntimeError("end query failed")
+
+    monkeypatch.setattr(sessions, "due_to_end", broken)
+    world.clock.now = S + HOUR
+    await world.jobs.run()
+    assert (await row(world, earlier)).state == "upcoming"
+    assert (await row(world, later)).state == "upcoming"
+    assert world.jobs.due == later_start + HOUR
+
+
+async def test_due_is_the_later_heads_up_window_when_an_earlier_one_is_open_without_a_manager(world: World) -> None:
+    await add_session(world, ends=S + DAY, proposer_cap=False)          # its window is open, but no manager: pending
+    later = S + 2 * HOUR
+    await add_session(world, starts=later, ends=later + DAY, proposer=GOING, proposer_cap=False)
+    world.clock.now = S - 1000
+    await world.jobs.run()
+    assert dms_to(world, ADMIN) == []
+    assert world.jobs.due == later - sessions.HEADSUP_WINDOW
+
+
+async def test_due_is_the_later_recurrence_when_an_earlier_one_keeps_failing(world: World) -> None:
+    await add_session(world, recurrence="weekly", proposer_cap=False)  # due at S + DAY, and its POST keeps failing
+    later = S + 3 * HOUR
+    await add_session(world, starts=later, ends=later + 2 * DAY, recurrence="weekly", proposer=GOING,
+                      proposer_cap=False)
+    world.state.overrides[POST_OVERRIDE] = Override(500, SERVER_ERROR)
+    world.clock.now = S + DAY
+    await world.jobs.run()
+    assert len(posts(world)) == 1                 # the earlier occurrence's refused attempt, and nothing stored
+    assert world.jobs.due == later + DAY
 
 
 async def test_draft_expiry_still_runs_through_run(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
