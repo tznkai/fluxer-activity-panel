@@ -20,6 +20,7 @@ from fluxer_client.rest import FluxerHTTPError, FluxerREST
 from fluxer_panel import cards, rsvp, sessions
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
+from fluxer_panel.dm_backoff import DmBackoff
 from fluxer_panel.interactions import GamesChannelRefused
 from fluxer_panel.logs import FIELDS_ATTR
 from fluxer_panel.pacer import ChannelPacer
@@ -55,8 +56,9 @@ async def world(tmp_path: Path, aiohttp_server: Any) -> AsyncIterator[SimpleName
     try:
         async with aiohttp.ClientSession() as client:
             rest = FluxerREST(client, f"{base}/api", TOKEN)
-            post = SessionPost(db=database, rest=rest, config=config_for(), pacer=ChannelPacer())
-            yield SimpleNamespace(db=database, state=state, rest=rest, post=post)
+            backoff = DmBackoff(3600)
+            post = SessionPost(db=database, rest=rest, config=config_for(), pacer=ChannelPacer(), backoff=backoff)
+            yield SimpleNamespace(db=database, state=state, rest=rest, post=post, backoff=backoff)
     finally:
         database.close()
 
@@ -243,3 +245,106 @@ async def test_an_edit_in_flight_cannot_restore_an_upcoming_form_after_a_cancel(
     names = [f["name"] for f in last["fields"]]
     assert "Location" not in names
     assert ("Status", "Cancelled") in [(f["name"], f["value"]) for f in last["fields"]]
+
+
+# AC7.2 and the deleted-message hook. The attendee DMs go to going and waiting users, except the excluded user, and
+# bypass the DM backoff. A 404 on a session edit calls the hook only while the session is still upcoming.
+
+async def _rsvp(world: SimpleNamespace, session_id: int, rows: list[tuple[str, str, int | None]]) -> None:
+    def seed(conn: Any) -> None:
+        for user_id, choice, pos in rows:
+            conn.execute("INSERT INTO rsvps (session_id, user_id, choice, responded_at, waitlist_pos) "
+                         "VALUES (?, ?, ?, ?, ?)", (session_id, user_id, choice, STARTS, pos))
+
+    await world.db.run(seed)
+
+
+def dm_sends(world: SimpleNamespace, content: str) -> list[Any]:
+    return [r for r in writes(world, "POST") if r.payload and r.payload.get("content") == content]
+
+
+async def test_dm_attendees_sends_one_dm_to_each_going_and_waiting_user_except_the_excluded_user(
+        world: SimpleNamespace) -> None:
+    session_id = await seed(world)
+    await _rsvp(world, session_id, [("1003", "going", None), ("1004", "waiting", 1), ("1005", "maybe", None),
+                                    ("1006", "no", None)])
+    session = await world.db.run(lambda conn: sessions.get(conn, session_id))
+    assert session is not None
+
+    attempted = await world.post.dm_attendees(session, "dm-text", exclude=PROPOSER)
+
+    assert attempted == 2
+    assert set(world.state.dm_channels) == {"1003", "1004"}
+    assert len(dm_sends(world, "dm-text")) == 2
+
+
+async def test_dm_attendees_attempts_a_user_who_is_in_dm_backoff(world: SimpleNamespace) -> None:
+    session_id = await seed(world)
+    await _rsvp(world, session_id, [("1003", "going", None)])
+    session = await world.db.run(lambda conn: sessions.get(conn, session_id))
+    assert session is not None
+    world.backoff.failed("1003")
+
+    attempted = await world.post.dm_attendees(session, "dm-text", exclude=None)
+
+    assert attempted == 2   # the proposer and 1003
+    assert "1003" in world.state.dm_channels
+    assert len(dm_sends(world, "dm-text")) == 2
+
+
+async def test_a_404_on_an_upcoming_session_edit_calls_the_hook_once_and_still_raises(
+        world: SimpleNamespace) -> None:
+    session_id = await seed(world)
+    calls: list[int] = []
+
+    async def hook(gone_id: int) -> None:
+        calls.append(gone_id)
+
+    world.post.set_on_gone(hook)
+    world.state.overrides[f"PATCH {PATCH}"] = Override(404, b'{"code":"UNKNOWN_MESSAGE","message":"x"}')
+    with pytest.raises(FluxerHTTPError) as raised:
+        await world.post.edit_session(session_id)
+    assert raised.value.status == 404
+    assert calls == [session_id]
+
+
+async def test_a_404_on_an_ended_session_edit_does_not_call_the_hook(world: SimpleNamespace) -> None:
+    session_id = await seed(world)
+    await world.db.run(lambda conn: sessions.end_if(conn, session_id, 2))
+    calls: list[int] = []
+
+    async def hook(gone_id: int) -> None:
+        calls.append(gone_id)
+
+    world.post.set_on_gone(hook)
+    world.state.overrides[f"PATCH {PATCH}"] = Override(404, b'{"code":"UNKNOWN_MESSAGE","message":"x"}')
+    with pytest.raises(FluxerHTTPError):
+        await world.post.edit_session(session_id)
+    assert calls == []
+
+
+async def test_a_non_404_failure_does_not_call_the_hook(world: SimpleNamespace) -> None:
+    session_id = await seed(world)
+    calls: list[int] = []
+
+    async def hook(gone_id: int) -> None:
+        calls.append(gone_id)
+
+    world.post.set_on_gone(hook)
+    world.state.overrides[f"PATCH {PATCH}"] = Override(403, b'{"code":"MISSING_PERMISSIONS","message":"x"}')
+    with pytest.raises(FluxerHTTPError):
+        await world.post.edit_session(session_id)
+    assert calls == []
+
+
+async def test_a_failing_hook_does_not_replace_the_edit_failure(world: SimpleNamespace) -> None:
+    session_id = await seed(world)
+
+    async def broken_hook(gone_id: int) -> None:
+        raise RuntimeError("boom")
+
+    world.post.set_on_gone(broken_hook)
+    world.state.overrides[f"PATCH {PATCH}"] = Override(404, b'{"code":"UNKNOWN_MESSAGE","message":"x"}')
+    with pytest.raises(FluxerHTTPError) as raised:
+        await world.post.edit_session(session_id)
+    assert raised.value.status == 404

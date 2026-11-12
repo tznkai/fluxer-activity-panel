@@ -7,9 +7,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
+from collections.abc import Awaitable, Callable
 from typing import Any
 
-from fluxer_client.rest import FluxerREST
+from fluxer_client.rest import FluxerHTTPError, FluxerREST
 from fluxer_panel import cards, notify, render, rsvp, sessions, text
 from fluxer_panel.cards import Card
 from fluxer_panel.config import Config
@@ -33,6 +34,7 @@ class SessionPost:
         self._pacer = pacer
         self._backoff = backoff   # shared with the press replies; promotion DMs bypass it (AC7.2)
         self._edit_locks: dict[int, asyncio.Lock] = {}
+        self._on_gone: Callable[[int], Awaitable[None]] | None = None
 
     async def send_session(self, channel_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         if channel_id == self._config.games_channel_id:
@@ -75,8 +77,42 @@ class SessionPost:
                 instance_url=self._config.instance_url,
                 scrubbed=scrubbed,
             )
-            await self._rest.edit_message(session.channel_id, session.message_id, embeds=payload["embeds"],
-                                          allowed_mentions=payload["allowed_mentions"])
+            try:
+                await self._rest.edit_message(session.channel_id, session.message_id, embeds=payload["embeds"],
+                                              allowed_mentions=payload["allowed_mentions"])
+            except FluxerHTTPError as exc:
+                if exc.status == 404:
+                    await self._note_gone(session_id)
+                raise
+
+    def set_on_gone(self, callback: Callable[[int], Awaitable[None]]) -> None:
+        """Registers the hook for a session whose message was deleted (a 404 on its edit). Called with the session id,
+        only while the session is still upcoming. The hook must never take a card lock."""
+        self._on_gone = callback
+
+    async def _note_gone(self, session_id: int) -> None:
+        """Runs the deleted-message hook for an upcoming session. The state is read again here, after the failed edit, so
+        a session that ended or was cancelled meanwhile is not reported. A failing hook is logged and does not replace the
+        edit's own failure, which the caller still gets."""
+        if self._on_gone is None:
+            return
+        loaded = await self._load(session_id)
+        if loaded is None or loaded[0].state != "upcoming":
+            return
+        try:
+            await self._on_gone(session_id)
+        except Exception as exc:  # noqa: BLE001 - the edit's failure is what the caller must see
+            log_event(log, "session_gone_hook_failed", level=logging.WARNING, session_id=session_id,
+                      reason=type(exc).__name__)
+
+    async def dm_attendees(self, session: Session, content: str, *, exclude: str | None) -> int:
+        """One DM to each going and waiting user, except `exclude`. Bypasses the DM backoff (AC7.2). Returns how many
+        DMs were attempted."""
+        attendees = await self._db.run(lambda conn: sessions.attendees(conn, session.id))
+        targets = [user_id for user_id in attendees if user_id != exclude]
+        for user_id in targets:
+            await notify.dm_user(self._rest, user_id, content, backoff=self._backoff, bypass=True)
+        return len(targets)
 
     async def seed_session(self, channel_id: str, message_id: str) -> None:
         """Adds ✅ ❔ ❌ in that order. Not gated by the kill switch: RSVP reactions are state, not presses."""

@@ -435,3 +435,20 @@ async def test_session_location_overrides_the_card_location(db: Database) -> Non
     assert sessions.effective_location(override, _card_stub(None, "Hall")) == "Lobby"
     assert sessions.effective_location(plain, _card_stub(None, "Hall")) == "Hall"
     assert sessions.effective_location(plain, _card_stub(None, None)) is None
+
+
+async def test_attendees_are_the_going_and_waiting_users_going_first_then_by_waitlist_position(db: Database) -> None:
+    session_id = await _add(db, await _card(db), proposer="1001")
+    rows = [("1004", "going", None), ("1005", "maybe", None), ("1006", "no", None),
+            ("1007", "waiting", 2), ("1008", "waiting", 1)]
+
+    def seed(c: sqlite3.Connection) -> None:
+        for user_id, choice, pos in rows:
+            c.execute("INSERT INTO rsvps (session_id, user_id, choice, responded_at, waitlist_pos) "
+                      "VALUES (?, ?, ?, ?, ?)", (session_id, user_id, choice, NOW, pos))
+
+    await db.run(seed)
+
+    attendees = await db.run(lambda c: sessions.attendees(c, session_id))
+
+    assert attendees == ["1001", "1004", "1008", "1007"]

@@ -176,6 +176,15 @@ def move_if(conn: sqlite3.Connection, session_id: int, *, starts_at: int, ends_a
     return cur.rowcount == 1
 
 
+def attendees(conn: sqlite3.Connection, session_id: int) -> list[str]:
+    """The users who are going or waiting: going first, then the waitlist in position order."""
+    rows = conn.execute(
+        "SELECT user_id FROM rsvps WHERE session_id = ? AND choice IN ('going', 'waiting') "
+        "ORDER BY CASE choice WHEN 'going' THEN 0 ELSE 1 END, COALESCE(waitlist_pos, 0), user_id",
+        (session_id,)).fetchall()
+    return [row[0] for row in rows]
+
+
 def mark_next_posted_if(conn: sqlite3.Connection, session_id: int) -> bool:
     cur = conn.execute("UPDATE sessions SET next_posted = 1 WHERE id = ? AND next_posted = 0 "
                        "AND recurrence = 'weekly'", (session_id,))
