@@ -209,6 +209,7 @@ async def test_the_proposer_can_cancel_by_session_number(world: SimpleNamespace)
     await say(world, f"!session cancel {session_id}")
     assert (await read_session(world, session_id)).state == "cancelled"
     assert replies(world) == [text.SESSION_CANCEL_DONE.format(n=session_id)]
+    assert world.kicks == [1]
 
 
 async def test_the_admin_can_cancel_by_message_link(world: SimpleNamespace) -> None:
@@ -235,7 +236,7 @@ async def test_location_sets_then_clears_the_session_location(world: SimpleNames
     assert patches(world)
     await say(world, f"!session location {session_id} clear")
     assert (await read_session(world, session_id)).location_text is None
-    assert replies(world)[-1] == text.SESSION_LOCATION_DONE.format(n=session_id)
+    assert replies(world) == [text.SESSION_LOCATION_DONE.format(n=session_id)] * 2
 
 
 async def test_seats_set_then_clear(world: SimpleNamespace) -> None:
@@ -244,7 +245,8 @@ async def test_seats_set_then_clear(world: SimpleNamespace) -> None:
     assert (await read_session(world, session_id)).seats == 4
     await say(world, f"!session seats {session_id} clear")
     assert (await read_session(world, session_id)).seats is None
-    assert replies(world)[-1] == text.SESSION_SEATS_DONE.format(n=session_id)
+    assert replies(world) == [text.SESSION_SEATS_DONE.format(n=session_id)] * 2
+    assert world.kicks == [1, 1]
 
 
 async def test_move_changes_the_time_and_keeps_the_length_and_the_rsvps(world: SimpleNamespace) -> None:
@@ -256,6 +258,7 @@ async def test_move_changes_the_time_and_keeps_the_length_and_the_rsvps(world: S
     assert after.ends_at - after.starts_at == before[0].ends_at - before[0].starts_at
     assert await world.db.run(lambda conn: sessions.rsvps_of(conn, session_id)) == before[1]
     assert replies(world) == [text.SESSION_MOVE_DONE.format(n=session_id, ts=MOVE_TS)]
+    assert world.kicks == [1]
 
 
 # AC6.3: cancel and move DM each going and waiting user except the actor, and edit the message.
@@ -370,6 +373,7 @@ async def test_raising_seats_promotes_a_waiting_user_with_one_dm(world: SimpleNa
     assert promoted[WAITING] == ("going", None)
     link = render.jump_link(text.SESSION_LINK_LABEL, URL, GUILD, CHANNEL, MSG)
     assert sent_to(world, WAITING) == [text.SESSION_PROMOTED.format(card="Lobby", link=link)]
+    assert world.kicks == [1]
 
 
 # on_message_gone: a 404 on the session message cancels the session and DMs the attendees.
@@ -381,6 +385,7 @@ async def test_a_404_during_a_seats_change_cancels_the_session_and_dms_the_atten
     assert (await read_session(world, session_id)).state == "cancelled"
     assert sent_to(world, GOING) == [text.SESSION_CANCELLED_DM.format(card="Lobby", ts=STARTS)]
     assert replies(world) == [text.SESSION_NOT_UPCOMING]
+    assert world.kicks == [1]
 
 
 async def test_a_404_during_a_move_cancels_once_and_sends_no_moved_dm(world: SimpleNamespace) -> None:
@@ -393,6 +398,7 @@ async def test_a_404_during_a_move_cancels_once_and_sends_no_moved_dm(world: Sim
     assert sent_to(world, GOING) == cancel
     assert sent_to(world, WAITING) == cancel
     assert replies(world) == [text.SESSION_NOT_UPCOMING]
+    assert world.kicks == [1]
 
 
 async def test_a_404_during_a_location_change_cancels_and_says_not_upcoming(world: SimpleNamespace) -> None:
@@ -402,6 +408,7 @@ async def test_a_404_during_a_location_change_cancels_and_says_not_upcoming(worl
     assert (await read_session(world, session_id)).state == "cancelled"
     assert sent_to(world, GOING) == [text.SESSION_CANCELLED_DM.format(card="Lobby", ts=STARTS)]
     assert replies(world) == [text.SESSION_NOT_UPCOMING]
+    assert world.kicks == [1]
 
 
 async def test_on_message_gone_takes_no_card_lock(world: SimpleNamespace) -> None:
@@ -410,6 +417,7 @@ async def test_on_message_gone_takes_no_card_lock(world: SimpleNamespace) -> Non
     async with world.locks.get(card_id):   # held by the caller, as an archive holds it
         await asyncio.wait_for(world.commands.on_message_gone(session_id), 5)
     assert (await read_session(world, session_id)).state == "cancelled"
+    assert world.kicks == [1]
 
 
 async def test_on_message_gone_does_nothing_for_an_ended_session(world: SimpleNamespace) -> None:
@@ -417,6 +425,7 @@ async def test_on_message_gone_does_nothing_for_an_ended_session(world: SimpleNa
     await world.db.run(lambda conn: sessions.end_if(conn, session_id, 2))
     await world.commands.on_message_gone(session_id)
     assert sent_to(world, GOING) == []
+    assert world.kicks == []
 
 
 async def test_cancel_card_sessions_locked_runs_with_the_card_lock_held(world: SimpleNamespace) -> None:
