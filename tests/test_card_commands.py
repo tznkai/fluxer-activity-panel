@@ -19,12 +19,16 @@ import pytest
 
 from fluxer_client.events import MessageCreate
 from fluxer_client.rest import FluxerREST
-from fluxer_panel import admin, cards, render, text
+from fluxer_panel import admin, cards, render, sessions, text
 from fluxer_panel.card_commands import LIST_CHUNK, CardContext, chunks, help_fields_reply
 from fluxer_panel.cards import ChannelLink
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
+from fluxer_panel.dm_backoff import DmBackoff
 from fluxer_panel.logs import setup_logging
+from fluxer_panel.pacer import ChannelPacer
+from fluxer_panel.session_commands import SessionCommands
+from fluxer_panel.session_post import SessionPost
 from fluxer_panel.sources.registry import build_sources
 from tests.fakes import FakeFluxerState, Override, make_rest_app
 
@@ -43,6 +47,16 @@ NOT_TEXT = text.CHANNEL_WRONG_TYPE.format(kind=text.CHANNEL_KIND_TEXT)
 # The text channel field of each slot. Slot 1 is text_channel (it was text_channel1).
 TEXT_FIELD = {1: "text_channel", 2: "text_channel2", 3: "text_channel3"}
 PTERO_ENV = {"PTERODACTYL_URL": "https://fluxer.invalid", "PTERODACTYL_API_KEY": "test-key"}
+# Sessions for the archive tests: messages in the games channel, a guild of their own, and fake example times.
+SESSION_GUILD = "1001"
+ONE_MSG, WEEKLY_MSG, ENDED_MSG = "5201", "5202", "5203"
+ONE_PATH = f"/api/v1/channels/{GUILD}/messages/{ONE_MSG}"
+WEEKLY_PATH = f"/api/v1/channels/{GUILD}/messages/{WEEKLY_MSG}"
+ENDED_PATH = f"/api/v1/channels/{GUILD}/messages/{ENDED_MSG}"
+PROPOSER_ID, GOING_ID, WAITING_ID, MAYBE_ID = "1002", "1003", "1004", "1005"
+SESSION_START = 1_900_000_000
+WEEK = 7 * 24 * 3600
+SESSION_LENGTH = 3600
 
 
 def make_message(content: str, *, author: str = "1001", guild: str | None = None, bot: bool = False) -> MessageCreate:
@@ -893,6 +907,108 @@ async def test_archive_with_a_timed_out_delete_refuses_with_retry(db: Database, 
 
     assert world.last_reply() == text.ARCHIVE_RETRY
     assert (await world.card("mc")).state == "live"
+
+
+# Archive cancels the card's upcoming sessions. The session commands are wired as __main__ wires them.
+
+def wire_sessions(world: World) -> None:
+    clock = lambda: float(SESSION_START - 10 * WEEK)  # noqa: E731 - a fixed clock; the sessions are all upcoming
+    post = SessionPost(db=world.db, rest=world.rest, config=world.config, pacer=ChannelPacer(),
+                       backoff=DmBackoff(3600, clock=clock))
+    commands = SessionCommands(db=world.db, rest=world.rest, config=world.config, locks=world.ctx.locks,
+                               session_post=post, clock=clock, kick=lambda: world.kicks.append(1))
+    post.set_on_gone(commands.on_message_gone)
+    world.ctx.session_commands = commands
+
+
+def _attend(conn: Any, session_id: int, seats: int, rows: list[tuple[str, str]]) -> None:
+    for user_id, choice in rows:
+        session = sessions.get(conn, session_id)
+        assert session is not None
+        sessions.add_presence(conn, session, user_id, choice, 1)
+        sessions.recompute(conn, session, seats, 1)
+
+
+async def _card_with_sessions(world: World) -> dict[str, int]:
+    """The card "mc" with three sessions: an upcoming one-off (seats 2; the admin, 1001, is going, GOING is waitlisted,
+    WAITING is waitlisted and MAYBE is maybe), an upcoming weekly one (GOING going) and an ended one."""
+    await make_mc(world)
+    card = await world.card("mc")
+    assert card is not None
+
+    def build(conn: Any) -> dict[str, int]:
+        one = sessions.add(conn, card_id=card.id, guild_id=SESSION_GUILD, channel_id=GUILD, message_id=ONE_MSG,
+                           starts_at=SESSION_START, ends_at=SESSION_START + SESSION_LENGTH, proposer_id=PROPOSER_ID,
+                           now=1, seats=2, proposer_cap=False)
+        _attend(conn, one, 2, [("1001", "going"), (GOING_ID, "going"), (WAITING_ID, "going"), (MAYBE_ID, "maybe")])
+        weekly = sessions.add(conn, card_id=card.id, guild_id=SESSION_GUILD, channel_id=GUILD, message_id=WEEKLY_MSG,
+                              starts_at=SESSION_START + WEEK, ends_at=SESSION_START + WEEK + SESSION_LENGTH,
+                              proposer_id=PROPOSER_ID, now=1, seats=2, recurrence="weekly", proposer_cap=False)
+        _attend(conn, weekly, 2, [(GOING_ID, "going")])
+        ended = sessions.add(conn, card_id=card.id, guild_id=SESSION_GUILD, channel_id=GUILD, message_id=ENDED_MSG,
+                             starts_at=SESSION_START - WEEK, ends_at=SESSION_START - WEEK + SESSION_LENGTH,
+                             proposer_id=PROPOSER_ID, now=1, proposer_cap=False)
+        assert sessions.end_if(conn, ended, 1)
+        return {"one": one, "weekly": weekly, "ended": ended}
+
+    return await world.db.run(build)
+
+
+def _sent_to(world: World, user_id: str) -> list[str]:
+    channel = world.state.dm_channels.get(user_id)
+    if channel is None:
+        return []
+    path = f"/api/v1/channels/{channel}/messages"
+    return [r.payload["content"] for r in world.state.requests if r.method == "POST" and r.path == path]
+
+
+def _cancelled_dm(start: int) -> str:
+    return text.SESSION_CANCELLED_DM.format(card="Minecraft", ts=start)
+
+
+async def test_archive_cancels_the_upcoming_sessions_and_stops_their_series(world: World) -> None:
+    wire_sessions(world)
+    ids = await _card_with_sessions(world)
+    for message in (ONE_MSG, WEEKLY_MSG, ENDED_MSG):
+        world.state.messages[(GUILD, message)] = {"content": "posted"}
+    world.clear_requests()
+    await asyncio.wait_for(world.run("!card archive mc"), 5)
+
+    assert (await world.card("mc")).state == "archived"
+    stored = await world.db.run(lambda c: {name: sessions.get(c, sid) for name, sid in ids.items()})
+    assert stored["one"] is not None and stored["one"].state == "cancelled"
+    assert stored["weekly"] is not None and stored["weekly"].state == "cancelled"
+    assert stored["weekly"].recurrence is None
+    assert stored["ended"] is not None and stored["ended"].state == "ended"
+    # The two upcoming messages are edited to the cancelled form; the ended session's message is not touched.
+    patched = sorted(r.path for r in world.state.requests if r.method == "PATCH")
+    assert patched == sorted([ONE_PATH, WEEKLY_PATH])
+    for request in world.state.requests:
+        if request.method == "PATCH":
+            fields = {f["name"]: f["value"] for f in request.payload["embeds"][0]["fields"]}
+            assert fields[text.SESSION_FIELD_STATUS] == text.SESSION_CANCELLED
+    # One DM to each going or waiting attendee except the admin, one per session they attend.
+    cancelled_one, cancelled_weekly = _cancelled_dm(SESSION_START), _cancelled_dm(SESSION_START + WEEK)
+    assert sorted(_sent_to(world, PROPOSER_ID)) == sorted([cancelled_one, cancelled_weekly])
+    assert sorted(_sent_to(world, GOING_ID)) == sorted([cancelled_one, cancelled_weekly])
+    assert _sent_to(world, WAITING_ID) == [cancelled_one]
+    assert _sent_to(world, "1001") == []
+    assert _sent_to(world, MAYBE_ID) == []
+    assert world.last_reply() == text.CARD_ARCHIVED
+
+
+async def test_archive_with_a_404_on_a_session_message_completes(world: World) -> None:
+    """Hang guard: the cancel runs under the archive's own card lock, so any path that takes that lock again would
+    deadlock here and time out. The 404 is the session message the archive edits."""
+    wire_sessions(world)
+    ids = await _card_with_sessions(world)
+    world.state.messages[(GUILD, ONE_MSG)] = {"content": "posted"}
+    world.state.overrides[f"PATCH {ONE_PATH}"] = Override(404, b'{"code": "X", "message": "gone"}')
+    await asyncio.wait_for(world.run("!card archive mc"), 5)
+
+    assert (await world.card("mc")).state == "archived"
+    stored = await world.db.run(lambda c: sessions.get(c, ids["one"]))
+    assert stored is not None and stored.state == "cancelled"
 
 
 async def test_archive_waits_for_the_card_lock(world: World) -> None:

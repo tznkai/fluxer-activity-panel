@@ -106,6 +106,7 @@ async def run(config: Config, db: Database) -> None:
             session_commands = SessionCommands(db=db, rest=rest, config=config, locks=card_ctx.locks,
                                                session_post=session_post, kick=poller.kick)
             session_post.set_on_gone(session_commands.on_message_gone)   # a deleted session message cancels it
+            card_ctx.session_commands = session_commands   # `!card archive` cancels the card's upcoming sessions
             interactions = Interactions(db=db, rest=rest, config=config, locks=card_ctx.locks,
                                         games_guild=games_guild, seeder=seeder, pacer=pacer, identity=identity,
                                         roles=roles, kick=poller.kick, wake=wake, status_of=poller.status_of,

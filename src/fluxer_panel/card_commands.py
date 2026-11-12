@@ -30,6 +30,8 @@ from fluxer_panel.sources.registry import PROBES, Sources, known_manager_kinds, 
 
 if TYPE_CHECKING:
     # wake.py imports CardLocks from this module, so the wake requests are named for type checking only.
+    # session_commands imports CardLocks and chunks from this module too, so it is named for type checking only.
+    from fluxer_panel.session_commands import SessionCommands
     from fluxer_panel.wake import WakeRequests
 
 log = logging.getLogger(__name__)
@@ -92,6 +94,7 @@ class CardContext:
     seeder: Seeder | None = None
     identity: BotIdentity | None = None
     wake: WakeRequests | None = None
+    session_commands: SessionCommands | None = None
 
 
 @dataclass(frozen=True)
@@ -564,6 +567,11 @@ async def _archive(event: MessageCreate, ctx: CardContext, rest: str) -> _Result
         if current.state == "archived":
             await _say(ctx, event, text.ALREADY_ARCHIVED)
             return _Result(card_id)
+        # The sessions go first, while the lock is held: the cancel edits their messages and DMs their attendees.
+        # If a later step stops the archive (`_stop_archive`), the sessions stay cancelled while the card stays live.
+        # That is accepted, because an admin who meant to archive does not want those sessions either.
+        if ctx.session_commands is not None:
+            await ctx.session_commands.cancel_card_sessions_locked(card_id, event.author_id)
         # The copies go first and the card's own message last. A copy the bot is refused (403) stays where it is and is
         # named in the reply. Any other failure stops the archive while the card's message is still there.
         copies = await ctx.db.run(lambda c: subscriptions.list_for_card(c, card_id))
