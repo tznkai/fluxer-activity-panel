@@ -289,6 +289,55 @@ the raised hand when the card has a play-now target (its own verified play-now c
 and the bell when the card has a follow role, but neither works there: a press posts nothing and changes no role,
 and the presser gets a direct message pointing at the card in the games channel.
 
+### Sessions
+
+A card can plan sessions, posted in the card's session channel: its own verified play-now channel, or
+`PLAY_NOW_CHANNEL_ID` when the card has none. With neither set, a press on the calendar says the card has no channel
+for sessions yet, and the calendar is not added to the card.
+
+**Proposing.** A press on the calendar (📅) on the card, or on a home copy in the games community, opens a direct
+message with up to six offered times, one per keycap. React with a keycap to pick a time, or reply with a time
+instead:
+
+```
+sat 14:00          tomorrow 19:30          today 9:05          2026-11-14 14:00
+```
+
+Times are 24-hour, in `SESSION_TIME_ZONE`. A weekday name means the next such day, so a weekday name for today is
+refused (write `today HH:MM`). A typed time must be in the future and at most 60 days away. The offered times come
+from `SESSION_SLOTS_WEEKDAY` and `SESSION_SLOTS_WEEKEND`, start at least an hour from now and fall within the next
+14 days. The prompt expires after 15 minutes, and a new press on the calendar replaces an open prompt. A copy outside
+the games community only points back to the card.
+
+Picking a time sends a confirmation. React ✅ to post the session. The confirmation adds a line when the proposer is
+already going to an overlapping session. A proposer may have three upcoming sessions for one card, and a card may
+have ten upcoming sessions.
+
+**RSVPs.** The session message has three reactions: ✅ going, ❔ maybe and ❌ can't. The message counts update as
+people react. A session's seats are its own, set with `!session seats`, or else the card's `seats` field. When the
+seats are full, a ✅ joins the waitlist, and a waiting user who gets a seat is sent a direct message. A session that
+has ended or been cancelled takes no RSVP changes.
+
+**Commands.** A session is changed by `!session` in a direct message to the bot. A session is named by its number,
+as `!session list` shows it, or by its message link. The proposer and admins can run every change. `list` shows a
+member their own upcoming sessions, and an admin every upcoming session with its counts. A guild channel never gets
+a reply to `!session`.
+
+```
+!session list                              your upcoming sessions; an admin sees every upcoming session
+!session cancel <session>                  cancels it, edits its message and DMs its attendees
+!session move <session> <time>             moves it, keeping its length and RSVPs, and DMs its attendees
+!session repeat <session> weekly|off       marks the session's series weekly, or stops it
+!session location <session> <text|clear>   sets or clears the location
+!session seats <session> <n|clear>         sets the seats (1 to 999), or clears them back to the card's seats
+!session help                              lists these commands
+```
+
+Cancel and move DM each going and waiting attendee, except the person who made the change. Cancelling leaves a weekly
+series in place, so `!session repeat <session> off` stops it. `!card archive` cancels the card's upcoming sessions the
+same way and stops their series. When a session's message is deleted, the session is cancelled and its attendees are
+told.
+
 ### Fields
 
 - `title` (up to 200 characters), `description`, `join` (how to join) and `first_time` (up to 1000
