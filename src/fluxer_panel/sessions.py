@@ -155,6 +155,29 @@ def conflicts_for(conn: sqlite3.Connection, user_id: str, starts_at: int, ends_a
     return [(_load(tuple(row[:-1])), row[-1]) for row in rows]
 
 
+_QUALIFIED = ", ".join(f"s.{name.strip()}" for name in _COLUMNS.split(","))
+
+
+def upcoming_for_user(conn: sqlite3.Connection, user_id: str) -> list[tuple[Session, str, str, int | None]]:
+    """The upcoming sessions the user proposed or has an RSVP row in, each as (session, card title, the user's state,
+    waitlist position). The state is the RSVP choice; a proposer with no RSVP row shows as "proposer"."""
+    rows = conn.execute(
+        f"SELECT {_QUALIFIED}, c.title, r.choice, r.waitlist_pos FROM sessions s JOIN cards c ON c.id = s.card_id "
+        "LEFT JOIN rsvps r ON r.session_id = s.id AND r.user_id = ? "
+        "WHERE s.state = 'upcoming' AND (s.proposer_id = ? OR r.user_id IS NOT NULL) "
+        "ORDER BY s.starts_at, s.id", (user_id, user_id)).fetchall()
+    return [(_load(tuple(row[:-3])), row[-3], row[-2] if row[-2] is not None else "proposer", row[-1])
+            for row in rows]
+
+
+def upcoming_with_titles(conn: sqlite3.Connection) -> list[tuple[Session, str]]:
+    """Every upcoming session with its card's title, in start order."""
+    rows = conn.execute(
+        f"SELECT {_QUALIFIED}, c.title FROM sessions s JOIN cards c ON c.id = s.card_id "
+        "WHERE s.state = 'upcoming' ORDER BY s.starts_at, s.id").fetchall()
+    return [(_load(tuple(row[:-1])), row[-1]) for row in rows]
+
+
 def _close_if(conn: sqlite3.Connection, session_id: int, now: int, state: str) -> bool:
     cur = conn.execute("UPDATE sessions SET state = ?, closed_at = ? WHERE id = ? AND state = 'upcoming'",
                        (state, now, session_id))

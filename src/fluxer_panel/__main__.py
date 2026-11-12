@@ -34,6 +34,7 @@ from fluxer_panel.poller import Poller
 from fluxer_panel.presses import Presses
 from fluxer_panel.purge import purge_loop, run_purge
 from fluxer_panel.seeding import Seeder
+from fluxer_panel.session_commands import SessionCommands
 from fluxer_panel.session_flow import SessionFlow
 from fluxer_panel.session_post import SessionPost
 from fluxer_panel.sources.registry import build_sources
@@ -102,6 +103,9 @@ async def run(config: Config, db: Database) -> None:
                                        session_post=session_post, games_guild=games_guild, pacer=pacer,
                                        identity=identity, backoff=backoff, limiter=limiter, kick=poller.kick)
             poller.set_session_flow(session_flow)   # each tick expires the drafts that are past their time
+            session_commands = SessionCommands(db=db, rest=rest, config=config, locks=card_ctx.locks,
+                                               session_post=session_post, kick=poller.kick)
+            session_post.set_on_gone(session_commands.on_message_gone)   # a deleted session message cancels it
             interactions = Interactions(db=db, rest=rest, config=config, locks=card_ctx.locks,
                                         games_guild=games_guild, seeder=seeder, pacer=pacer, identity=identity,
                                         roles=roles, kick=poller.kick, wake=wake, status_of=poller.status_of,
@@ -111,7 +115,7 @@ async def run(config: Config, db: Database) -> None:
                               pacer=pacer, identity=identity, backoff=backoff)
             # Every DM passes the router first: the non-admin path is rate limited, and admin heads still reach admin.handle.
             dm_router = DmRouter(config=config, rest=rest, card_ctx=card_ctx, limiter=limiter,
-                                 session_flow=session_flow)
+                                 session_flow=session_flow, session_commands=session_commands.handle)
             bot = Bot(rest=rest, config=config, roles=roles, card_ctx=card_ctx,
                       on_message_delete=poller.on_message_delete, presses=presses, identity=identity,
                       on_games_message=poller.on_games_message, dm_router=dm_router,

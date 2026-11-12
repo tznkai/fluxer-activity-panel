@@ -312,3 +312,24 @@ SESSION_CAP = {
     "proposer": "You already have 3 upcoming sessions for {card}.",
     "card": "{card} already has 10 upcoming sessions.",
 }
+# `!session` in DMs. `{n}` is the session id, `{card}` the escaped card title, `{ts}` a Unix time in seconds.
+SESSION_USAGE = ("Commands: `!session list`, `!session cancel <session>`, `!session move <session> <time>`, "
+                 "`!session repeat <session> weekly|off`, `!session location <session> <text|clear>`, "
+                 "`!session seats <session> <n|clear>`. A session is its number or its message link.")
+SESSION_LIST_EMPTY = "You have no upcoming sessions."
+SESSION_LIST_MINE = "Session {n} · {card} · <t:{ts}:F> · you: {state}"
+SESSION_LIST_ALL = "Session {n} · {card} · <t:{ts}:F> · {counts}"
+SESSION_STATE = {"going": "going", "waiting": "waitlist #{pos}", "maybe": "maybe", "no": "can't",
+                 "proposer": "proposer"}
+SESSION_UNKNOWN = "No such session."
+SESSION_NOT_ALLOWED = "Only the proposer or an admin can change that session."
+SESSION_NOT_UPCOMING = "That session has already ended or been cancelled."
+SESSION_CANCEL_DONE = "Session {n} is cancelled."
+SESSION_MOVE_DONE = "Session {n} moved to <t:{ts}:F>."
+SESSION_REPEAT_ON = "Session {n} now repeats weekly."
+SESSION_REPEAT_OFF = "Session {n} no longer repeats."
+SESSION_LOCATION_DONE = "Session {n}'s location is updated."
+SESSION_SEATS_DONE = "Session {n}'s seats are updated."
+SESSION_CANCELLED_DM = "The {card} session at <t:{ts}:F> was cancelled."
+SESSION_MOVED_DM = "The {card} session moved to <t:{ts}:F> (<t:{ts}:R>). {link}"
+SESSION_MOVED_DM_NO_LINK = "The {card} session moved to <t:{ts}:F> (<t:{ts}:R>)."
