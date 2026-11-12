@@ -131,7 +131,9 @@ async def run(config: Config, db: Database) -> None:
             gw_task = asyncio.create_task(gateway.run())
             # Started only now: a stop that won discovery above never starts a purge or the poller. The purge loop
             # purges at once, then every interval, and never ends by itself.
-            purge_task = asyncio.create_task(purge_loop(db, config.purge_status_path, config.purge_interval_seconds))
+            purge_task = asyncio.create_task(purge_loop(
+                db, config.purge_status_path, config.purge_interval_seconds, scrub=session_post.scrub,
+                retention=config.session_retention_seconds))
             poller_task = asyncio.create_task(poller.run())
             try:
                 done, _ = await asyncio.wait({gw_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
@@ -165,7 +167,9 @@ async def run(config: Config, db: Database) -> None:
 
 def purge_once(config: Config, db: Database) -> int:
     """`purge` subcommand: one purge and one status write, never the network. 0 on success, 1 if the purge failed."""
-    result = asyncio.run(run_purge(db, config.purge_status_path, int(time.time())))
+    # This subcommand has no REST, so it passes no scrubber: due sessions are left in place and counted as deferred.
+    result = asyncio.run(run_purge(db, config.purge_status_path, int(time.time()), scrub=None,
+                                   retention=config.session_retention_seconds))
     return 0 if result is not None else 1
 
 

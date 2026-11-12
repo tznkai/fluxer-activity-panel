@@ -285,8 +285,12 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
 
 ## Retention purge (`purge.py`)
 
-- A session expires when it has been ended or cancelled (`closed_at`) for more than 7 days. Upcoming sessions are
-  never purged. RSVP rows go with their session by `ON DELETE CASCADE`.
+- A session is due when it has been ended or cancelled (`closed_at`) for more than `SESSION_RETENTION_SECONDS` (default
+  7 days), except a weekly occurrence whose successor isn't posted yet. In `run`, each due session's message is first
+  edited to its closed form without the location (the scrub). Then the rows are deleted, even if the edit failed
+  (`session_scrub_failed` is logged with the session id). The `purge` subcommand has no network, so it leaves due
+  sessions in place and reports `sessions_deferred` (status file schema 2). Upcoming sessions are never purged.
+  RSVP rows go with their session by `ON DELETE CASCADE`.
 - A request expires when `created_at` is more than 30 days ago, whatever its status.
 - A play-now post expires when `created_at` is more than 30 days ago, in either state.
 - Cutoffs are strict: a row exactly at a cutoff is kept. One transaction per run, then a WAL checkpoint.

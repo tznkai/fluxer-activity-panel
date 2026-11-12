@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import json
 import logging
 import os
@@ -33,6 +34,7 @@ from fluxer_panel.config import Config
 from fluxer_panel.db import LATEST_VERSION, Database
 from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.pacer import ChannelPacer
+from fluxer_panel.session_post import SessionPost
 from fluxer_panel.wake import WakeRequests
 from tests.fakes import (
     GATEWAY_STATE,
@@ -485,7 +487,7 @@ def _seed_purge_rows(conn: sqlite3.Connection, now: int) -> None:
                  "VALUES ('wake', ?, '5000', 'open', ?)", (card, now))
 
 
-async def test_purge_subcommand_runs_once_and_exits_zero(tmp_path):
+async def test_purge_subcommand_defers_due_sessions_and_exits_zero(tmp_path):
     now = int(time.time())
     db = Database.open(tmp_path / "panel.db")
     try:
@@ -497,21 +499,26 @@ async def test_purge_subcommand_runs_once_and_exits_zero(tmp_path):
 
     assert code == 0
     status = json.loads((tmp_path / "purge-status.json").read_text())
+    # ok is True with no network step: the subcommand has no REST, so the due session is deferred, not scrubbed
     assert status["ok"] is True
-    assert status["deleted"] == {"sessions": 1, "rsvps": 1, "requests": 1, "play_now": 1}
+    assert status["schema_version"] == 2
+    assert status["deleted"] == {"sessions": 0, "rsvps": 0, "requests": 1, "play_now": 1}
+    assert status["sessions_deferred"] == 1
     assert "purge_done" in [e["event"] for e in json_lines(out)]
     assert TOKEN not in out + err
     with contextlib.closing(sqlite3.connect(tmp_path / "panel.db")) as conn:
         counts = [conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
                   for table in ("sessions", "rsvps", "requests", "play_now")]
-    assert counts == [1, 1, 1, 0]   # only the expired rows went; the kept session, RSVP and request remain
+    # the due session and its RSVP stay; the old request and the old play-now post go, the open request stays
+    assert counts == [2, 2, 1, 0]
 
 
 def test_purge_once_exits_1_when_the_purge_fails(tmp_path):
     db = Database.open(tmp_path / "panel.db")
-    # break the purge's query without touching the panel's own connection
+    # break a purge query without touching the panel's own connection. The play-now delete runs on every purge, even
+    # with no due session (the subcommand defers sessions, so the RSVP query would not run).
     with contextlib.closing(sqlite3.connect(tmp_path / "panel.db")) as conn:
-        conn.execute("DROP TABLE rsvps")
+        conn.execute("DROP TABLE play_now")
         conn.commit()
     config = Config.from_env({"FLUXER_TOKEN": TOKEN, "SESSION_TIME_ZONE": "UTC", "FLUXER_INSTANCE_URL": "https://fluxer.invalid",
                               "ADMIN_USER_IDS": ADMIN_DEFAULT, "DATA_DIR": str(tmp_path)})
@@ -523,17 +530,19 @@ def test_purge_once_exits_1_when_the_purge_fails(tmp_path):
 
 
 class _PurgeProbe:
-    """Stands in for purge_loop: records that it started and whether it was cancelled."""
+    """Stands in for purge_loop: records that it started, whether it was cancelled, and the keywords it was given."""
 
     def __init__(self) -> None:
         self.started = asyncio.Event()
         self.cancelled = False
+        self.kwargs: dict[str, Any] = {}
 
 
 def _probe_purge_loop(monkeypatch: pytest.MonkeyPatch) -> _PurgeProbe:
     probe = _PurgeProbe()
 
-    async def fake_purge_loop(db, status_path, interval, clock=None):
+    async def fake_purge_loop(db, status_path, interval, clock=None, **kwargs):
+        probe.kwargs = kwargs
         probe.started.set()
         try:
             await asyncio.Event().wait()
@@ -571,6 +580,27 @@ async def test_purge_task_is_cancelled_when_the_gateway_fails_fatally(aiohttp_se
         db.close()
     assert probe.started.is_set()
     assert probe.cancelled
+
+
+async def test_run_hands_the_session_scrubber_and_the_retention_to_the_purge_loop(aiohttp_server, tmp_path,
+                                                                                  monkeypatch):
+    probe = _probe_purge_loop(monkeypatch)
+
+    async def gateway_script(ws, index, state):
+        await send(ws, 10, {"heartbeat_interval": 30000})
+        await expect(ws, 2)
+        await ws.close(code=4004)
+
+    config, db = await _in_process_panel(aiohttp_server, tmp_path, gateway_script)
+    config = dataclasses.replace(config, session_retention_seconds=120)   # distinct from the 7-day default
+    try:
+        with pytest.raises(FatalGatewayError):
+            await run(config, db)
+    finally:
+        db.close()
+    scrub = probe.kwargs["scrub"]
+    assert isinstance(scrub.__self__, SessionPost) and scrub.__name__ == "scrub"
+    assert probe.kwargs["retention"] == 120
 
 
 class _PollerProbe:

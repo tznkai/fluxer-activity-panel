@@ -185,6 +185,19 @@ def due_to_end(conn: sqlite3.Connection, now: int) -> list[Session]:
     return _rows(conn, "WHERE state = 'upcoming' AND ends_at <= ? ORDER BY ends_at, id", (now,))
 
 
+# A closed session the retention purge may delete, with one parameter: the cutoff. The strict `<` keeps a session
+# closed exactly at the cutoff. A weekly occurrence whose successor is not posted yet is kept, because purging it would
+# end the series. `IS` is NULL-safe, so a session with no series (recurrence NULL) is never kept by that test.
+PURGE_DUE_SQL = ("state <> 'upcoming' AND closed_at < ? "
+                 "AND NOT (recurrence IS 'weekly' AND next_posted = 0)")
+
+
+def closed_before(conn: sqlite3.Connection, cutoff: int) -> list[Session]:
+    """The sessions the purge is due to delete, in id order. The purge scrubs each one before its delete."""
+    rows = conn.execute(f"SELECT {_COLUMNS} FROM sessions WHERE {PURGE_DUE_SQL} ORDER BY id", (cutoff,)).fetchall()
+    return [_load(row) for row in rows]
+
+
 def recurrence_due(conn: sqlite3.Connection, now: int) -> list[Session]:
     """Weekly occurrences whose successor is not posted yet and is due. Any state: a cancelled or ended occurrence
     still spawns its successor."""

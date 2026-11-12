@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 K. Chen
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Retention purge: delete expired sessions, RSVPs, requests and play-now posts; log each attempt in a status file."""
+"""Retention purge: scrub and delete expired sessions, delete old requests and play-now posts; log each attempt in a
+status file."""
 
 from __future__ import annotations
 
@@ -9,23 +10,22 @@ import json
 import logging
 import sqlite3
 import time
-from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 
+from fluxer_panel import sessions
 from fluxer_panel.db import Database
 from fluxer_panel.fsutil import atomic_write
 from fluxer_panel.logs import log_event
+from fluxer_panel.sessions import Session
 
 log = logging.getLogger(__name__)
 DAY = 86400
 SESSION_RETENTION = 7 * DAY
 REQUEST_RETENTION = 30 * DAY
-STATUS_SCHEMA_VERSION = 1
-
-_EXPIRED_SESSIONS = """(
-    state <> 'upcoming' AND closed_at < :cutoff
-)"""  # a session is kept for SESSION_RETENTION after it closed (ended or cancelled); upcoming ones never expire
+STATUS_SCHEMA_VERSION = 2
+Scrub = Callable[[Session], Awaitable[None]]   # raises on failure; the caller logs and continues
 
 
 @dataclass(frozen=True)
@@ -34,24 +34,50 @@ class PurgeResult:
     rsvps: int
     requests: int
     play_now: int
+    sessions_deferred: int = 0
 
 
-def _purge_tx(conn: sqlite3.Connection, now: int) -> PurgeResult:
-    cutoff = {"cutoff": now - SESSION_RETENTION}
-    rsvps = conn.execute(
-        f"SELECT count(*) FROM rsvps WHERE session_id IN (SELECT id FROM sessions WHERE {_EXPIRED_SESSIONS})",
-        cutoff).fetchone()[0]
-    sessions = conn.execute(f"DELETE FROM sessions WHERE {_EXPIRED_SESSIONS}", cutoff).rowcount
+_NOTHING = PurgeResult(sessions=0, rsvps=0, requests=0, play_now=0)
+
+
+def _purge_tx(conn: sqlite3.Connection, now: int, *, session_ids: Sequence[int], cutoff: int) -> PurgeResult:
+    """One transaction. The session delete re-checks each row against the due rule, so a row that changed since it
+    was read is kept, and its RSVPs with it. The ids are bound as parameters; nothing is formatted into the SQL."""
+    sessions_deleted = rsvps = 0
+    if session_ids:
+        marks = ", ".join(["?"] * len(session_ids))
+        due = f"id IN ({marks}) AND {sessions.PURGE_DUE_SQL}"
+        params = (*session_ids, cutoff)
+        # counted before the delete, so the count is of the RSVPs whose session the delete removes
+        rsvps = conn.execute(f"SELECT count(*) FROM rsvps WHERE session_id IN (SELECT id FROM sessions WHERE {due})",
+                             params).fetchone()[0]
+        sessions_deleted = conn.execute(f"DELETE FROM sessions WHERE {due}", params).rowcount
     requests = conn.execute("DELETE FROM requests WHERE created_at < :cutoff",
                             {"cutoff": now - REQUEST_RETENTION}).rowcount
     play_now = conn.execute("DELETE FROM play_now WHERE created_at < :cutoff",
                             {"cutoff": now - REQUEST_RETENTION}).rowcount
-    return PurgeResult(sessions=sessions, rsvps=rsvps, requests=requests, play_now=play_now)
+    return PurgeResult(sessions=sessions_deleted, rsvps=rsvps, requests=requests, play_now=play_now)
 
 
-async def purge(db: Database, now: int) -> PurgeResult:
-    """One transaction; strict comparisons keep a row exactly at the cutoff. RSVPs go by ON DELETE CASCADE."""
-    return await db.run(lambda conn: _purge_tx(conn, now))
+async def purge(db: Database, now: int, *, scrub: Scrub | None, retention: int) -> PurgeResult:
+    """Scrub each due session, then delete the due rows. The scrub runs before the delete, so each edit is sent while
+    its row exists. A failed scrub is logged and the row is still deleted. With no scrubber (the offline `purge`
+    subcommand has no REST), due sessions stay and are counted as deferred. Strict comparisons keep a row exactly at
+    the cutoff. RSVPs go by ON DELETE CASCADE."""
+    cutoff = now - retention
+    due = await db.run(lambda conn: sessions.closed_before(conn, cutoff))
+    if scrub is None:
+        deferred, session_ids = len(due), []
+    else:
+        for session in due:
+            try:
+                await scrub(session)
+            except Exception as exc:  # noqa: BLE001 - a failed scrub is logged; the delete still runs
+                log_event(log, "session_scrub_failed", level=logging.WARNING, session_id=session.id,
+                          status=getattr(exc, "status", None), reason=type(exc).__name__)
+        deferred, session_ids = 0, [session.id for session in due]
+    result = await db.run(lambda conn: _purge_tx(conn, now, session_ids=session_ids, cutoff=cutoff))
+    return replace(result, sessions_deferred=deferred)
 
 
 def _previous_success(path: Path) -> int | None:
@@ -64,21 +90,26 @@ def _previous_success(path: Path) -> int | None:
 
 
 def write_status(path: Path, *, now: int, result: PurgeResult | None) -> None:
+    shown = result if result is not None else _NOTHING
     data = {
         "last_success_at": now if result is not None else _previous_success(path),
         "last_attempt_at": now,
         "ok": result is not None,
-        "deleted": asdict(result) if result is not None else {"sessions": 0, "rsvps": 0, "requests": 0, "play_now": 0},
+        # listed key by key, so the deferred count is not reported as a deletion
+        "deleted": {"sessions": shown.sessions, "rsvps": shown.rsvps, "requests": shown.requests,
+                    "play_now": shown.play_now},
+        "sessions_deferred": shown.sessions_deferred,
         "schema_version": STATUS_SCHEMA_VERSION,
     }
     atomic_write(path, (json.dumps(data, indent=1) + "\n").encode("utf-8"))
 
 
-async def run_purge(db: Database, status_path: Path, now: int) -> PurgeResult | None:
+async def run_purge(db: Database, status_path: Path, now: int, *, scrub: Scrub | None = None,
+                    retention: int = SESSION_RETENTION) -> PurgeResult | None:
     """Purge, checkpoint, record status. Never raises (except CancelledError): the bot keeps running."""
     started = time.monotonic()
     try:
-        result = await purge(db, now)
+        result = await purge(db, now, scrub=scrub, retention=retention)
         await db.checkpoint()
     except asyncio.CancelledError:
         raise
@@ -97,12 +128,12 @@ async def run_purge(db: Database, status_path: Path, now: int) -> PurgeResult | 
     return result
 
 
-async def purge_loop(db: Database, status_path: Path, interval: float,
-                     clock: Callable[[], float] = time.time) -> None:
+async def purge_loop(db: Database, status_path: Path, interval: float, *, scrub: Scrub | None = None,
+                     retention: int = SESSION_RETENTION, clock: Callable[[], float] = time.time) -> None:
     """Purge now, then every `interval` seconds, until cancelled. An iteration that fails is logged and the loop goes on."""
     while True:
         try:
-            await run_purge(db, status_path, int(clock()))
+            await run_purge(db, status_path, int(clock()), scrub=scrub, retention=retention)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - nothing watches this task: it must never end on its own
