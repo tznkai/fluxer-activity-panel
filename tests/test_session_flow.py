@@ -537,6 +537,44 @@ async def test_a_second_step_for_the_same_user_waits_on_the_same_lock_object(bui
     assert world.flow._user_locks == {}
 
 
+async def test_a_third_step_waits_behind_the_second_on_the_same_lock_object(build: Any) -> None:
+    """A holds, B waits, A exits and B enters, then C arrives while B holds. C must queue on B's lock object. If the
+    entry were dropped when A exited, C would get a fresh lock and enter beside B."""
+    world = await build()
+    flow = world.flow
+    a_in, b_in, c_in = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    release_a, release_b, release_c = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def step(entered: asyncio.Event, release: asyncio.Event) -> None:
+        async with flow._lock(PROPOSER):
+            entered.set()
+            await release.wait()
+
+    a = asyncio.create_task(step(a_in, release_a))
+    await a_in.wait()
+    b = asyncio.create_task(step(b_in, release_b))
+    await wait_until(lambda: PROPOSER in flow._user_locks and flow._user_locks[PROPOSER].users == 2,
+                     waiting_for="the second step to queue behind the first")
+    entry = flow._user_locks[PROPOSER]
+
+    release_a.set()
+    await asyncio.wait_for(b_in.wait(), timeout=1)
+    assert entry.users == 1
+
+    c = asyncio.create_task(step(c_in, release_c))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not c_in.is_set(), "a third step entered while the second still held the lock"
+    assert flow._user_locks.get(PROPOSER) is entry
+    assert entry.users == 2
+
+    release_b.set()
+    await asyncio.wait_for(c_in.wait(), timeout=1)
+    release_c.set()
+    await asyncio.wait_for(asyncio.gather(a, b, c), timeout=1)
+    assert flow._user_locks == {}
+
+
 # An expiry sweep never waits for a step in flight: it skips that user and the next sweep ends the draft ----------
 
 async def test_an_expiry_sweep_skips_a_user_whose_step_is_in_flight_then_ends_the_draft_later(build: Any) -> None:
@@ -706,15 +744,33 @@ async def test_a_repeat_of_the_current_keycap_sends_no_new_confirmation(build: A
 
 # A check posts once: a second ✅ finds the draft gone ----------------------------------------------------------
 
-async def test_a_double_check_posts_once(build: Any) -> None:
+async def test_two_overlapping_checks_post_once_and_leave_no_lock_entry(build: Any) -> None:
+    """The second check arrives while the first is held inside its card read. An Event holds that read, so the overlap
+    is fixed by the test and not by timing. The draft is taken before the read, so the second check finds it gone."""
     world = await build()
     confirm = await confirm_slot(world, 1)
     channel = dm_channel_of(world)
+    check = dm_reaction(PROPOSER, channel, confirm, rsvp.GOING_EMOJI)
+    reached, gate = asyncio.Event(), asyncio.Event()
+    read_card = world.flow._read_card
 
-    await world.flow.on_dm_reaction(dm_reaction(PROPOSER, channel, confirm, rsvp.GOING_EMOJI))
-    await world.flow.on_dm_reaction(dm_reaction(PROPOSER, channel, confirm, rsvp.GOING_EMOJI))
+    async def held_read(*args: Any, **kwargs: Any) -> Any:
+        reached.set()
+        await gate.wait()
+        return await read_card(*args, **kwargs)
+
+    world.flow._read_card = held_read
+    first = asyncio.create_task(world.flow.on_dm_reaction(check))
+    await asyncio.wait_for(reached.wait(), timeout=1)
+    second = asyncio.create_task(world.flow.on_dm_reaction(check))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    gate.set()
+    await asyncio.wait_for(asyncio.gather(first, second), timeout=1)
 
     assert len(requests(world, "POST", PLAY_NOW_POSTS)) == 1
+    assert world.flow.has_draft(PROPOSER) is False
+    assert world.flow._user_locks == {}
 
 
 # Pipeline: a gateway-shaped reaction through Presses, into the real Interactions and SessionFlow ----------------
