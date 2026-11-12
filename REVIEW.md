@@ -109,7 +109,8 @@ Paths are relative to this directory.
 ## Purge deletion
 
 - `src/fluxer_panel/sessions.py:191` `PURGE_DUE_SQL = ("state <> 'upcoming' AND closed_at < ?` — the expiry rule, shared by the due list and the delete's re-check. A session expires when it has been ended or cancelled (`closed_at`) for more than the session retention (7 days by default).
-- `src/fluxer_panel/sessions.py:191` `state <> 'upcoming' AND closed_at < ?` — an upcoming session (`closed_at` NULL) never matches, so it is never purged, however old its end. The same rule keeps a weekly occurrence whose successor is not posted yet.
+- `src/fluxer_panel/sessions.py:191` `state <> 'upcoming' AND closed_at < ?` — an upcoming session (`closed_at` NULL) never matches, so it is never purged, however old its end.
+- `src/fluxer_panel/sessions.py:192` `AND NOT (recurrence IS 'weekly' AND next_posted = 0)` — keeps a weekly occurrence whose successor is not posted yet, so its purge cannot end the series. `IS` is NULL-safe, so a non-recurring session (recurrence NULL) is not kept by this test and is still purged.
 - `src/fluxer_panel/purge.py:43` `def _purge_tx(` — one transaction: count the RSVPs of the due sessions, delete the due sessions, delete the old requests and play-now posts. The session delete re-checks the due rule, so a row that changed since it was read is kept.
 - `src/fluxer_panel/purge.py:54` `DELETE FROM sessions` — deletes the due sessions. Their RSVPs go with them by cascade.
 - `src/fluxer_panel/purge.py:55` `DELETE FROM requests` — deletes requests older than 30 days, whatever their status.
