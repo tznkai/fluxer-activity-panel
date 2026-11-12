@@ -89,6 +89,19 @@ Cards and sources:
 - `PRESS_CARD_WINDOW_SECONDS` (default `10`): the window over which presses on one card are counted.
 - `PRESS_CARD_BURST` (default `10`): how many presses on one card are allowed within `PRESS_CARD_WINDOW_SECONDS`.
 
+Sessions (see Sessions under Cards):
+
+- `SESSION_TIME_ZONE` (required): an IANA time zone name, such as `America/New_York` or `UTC`. Typed and offered
+  session times are in this zone. Startup exits with code 2 without it, and so does `purge`.
+- `SESSION_SLOTS_WEEKDAY` (default `16:00,19:00`): 1 to 6 distinct 24-hour `HH:MM` times offered on Monday to Friday.
+- `SESSION_SLOTS_WEEKEND` (default `10:00,14:00,19:00`): the same, for Saturday and Sunday.
+- `SESSION_LENGTH_SECONDS` (default `7200`): how long a session lasts.
+- `SESSION_RETENTION_SECONDS` (default `604800`): how long an ended or cancelled session is kept before the purge
+  scrubs its message and deletes it. Only sessions use it.
+- `DM_BACKOFF_SECONDS` (default `3600`): after a direct message to a user fails, the bot sends that user no ordinary
+  direct message for this long. Promotion, cancel, move and series-stopped messages bypass the backoff, and admin
+  messages never use it.
+
 Hand-run tools only (`tools/live/`, see `CLAUDE.md`): `LIVE_GUILD_ID`, `LIVE_CHANNEL_ID`,
 `LIVE_USER_ID`, `LIVE_ROLE_ID`, `LIVE_HIGH_ROLE_ID`, `LIVE_PTERO_SERVERS`, `LIVE_PROBES`,
 `LIVE_VOICE_CHANNEL_ID` and `LIVE_OTHER_GUILD_ID`. The
@@ -101,7 +114,8 @@ bot never reads them. `.env.example` lists them all.
   It needs the same configuration as the bot (`FLUXER_TOKEN`, the instance URL and
   `ADMIN_USER_IDS` are all required), but it never connects to Fluxer. It exits 0 when the
   purge succeeded, 1 when it failed (the log has `purge_failed`), 2 on a configuration error
-  and 3 when the database is refused.
+  and 3 when the database is refused. Due sessions are left in place and counted as `sessions_deferred`,
+  because this subcommand has no network to scrub their messages.
 
 ## Retention purge
 
@@ -109,11 +123,17 @@ bot never reads them. `.env.example` lists them all.
 `PURGE_INTERVAL_SECONDS` (default 3600). A purge that fails is logged and recorded in the
 status file, and the bot keeps running.
 
-The purge deletes:
+A session is due when it was ended or cancelled more than `SESSION_RETENTION_SECONDS` ago (default 7 days).
+Upcoming sessions are never purged. For each due session, `run` first edits its message to its closed form
+without the location (the scrub). Then it deletes the session and its RSVPs. The delete happens even when the edit
+failed; a failed scrub is logged as `session_scrub_failed` with the session id. A weekly session is kept while its
+next occurrence is not posted yet, so purging one occurrence cannot end its series.
 
-- a session that does not recur and ended more than 7 days ago. Its RSVPs go with it.
-- a recurring session whose series ended (`recurrence_until`) more than 7 days ago. A series
-  with no end date is never purged.
+The `purge` subcommand has no network, so it does not scrub. It leaves due sessions in place and reports them as
+`sessions_deferred` in the status file. The running bot scrubs and deletes them at its next purge.
+
+The purge also deletes:
+
 - a request created more than 30 days ago, whatever its status.
 - a play-now post created more than 30 days ago, whatever its state.
 
@@ -131,7 +151,8 @@ so a monitor running as another user can read it. It holds only timestamps and c
  "last_attempt_at": 1767225600,
  "ok": true,
  "deleted": {"sessions": 0, "rsvps": 0, "requests": 0, "play_now": 0},
- "schema_version": 1
+ "sessions_deferred": 2,
+ "schema_version": 2
 }
 ```
 
@@ -142,6 +163,9 @@ so a monitor running as another user can read it. It holds only timestamps and c
   `sessions`, `rsvps`, `requests` and `play_now` (the play-now posts deleted).
   A checkpoint failure after the commit is reported as `ok: false` with zero `deleted`, but the rows may already be
   gone. The next run checkpoints again.
+- `sessions_deferred`: the number of due sessions that the `purge` subcommand left in place, because it cannot scrub
+  them. Deferred sessions are not counted in `deleted`. A `run` purge always reports 0 here. The running bot deletes
+  the deferred sessions at its next purge. `schema_version` is 2 for this layout.
 
 Alert when `last_success_at` is `null` or older than twice `PURGE_INTERVAL_SECONDS`. A missing
 file means the bot has never run a purge.
@@ -457,6 +481,22 @@ Running two panels against one database is unsupported.
 Exit 1 with a `fatal_error` event means something else failed while opening the database,
 such as the data directory could not be created (for example, its parent is a regular file).
 That is not a refusal and does not quarantine anything.
+
+## Release notes
+
+### v0.3.0
+
+- `SESSION_TIME_ZONE` is now required. Startup exits with code 2 without it, so set it (for example
+  `America/New_York` or `UTC`) before you upgrade. The other session settings have defaults.
+- Back up the database before upgrading. The bot also writes a `.pre-v8` copy beside the database before it applies
+  the migration.
+- The schema moves to 8. v0.2.0 refuses a v8 database (exit 3, reason `schema_newer`) and leaves the file unchanged,
+  so a downgrade means restoring the backup.
+- Cards gain a 📅 reaction, which is seeded on the next reconcile on cards and home copies that have a session
+  channel.
+- Every card message is edited once after the upgrade, to carry the new footer and field rules.
+- The `purge` subcommand defers sessions (`sessions_deferred`, status file schema 2) and leaves them in place. The
+  running bot scrubs and deletes them.
 
 ## How this was developed
 

@@ -3,7 +3,7 @@
 
 # Fluxer Activity Panel
 
-Last verified: 2026-11-10
+Last verified: 2026-11-12
 
 Standalone project with two packages under `src/`: `fluxer_client` (a panel-agnostic Fluxer REST and
 gateway client) and `fluxer_panel` (the activity panel bot built on it). `README.md` has the
@@ -21,6 +21,11 @@ user-facing description, the purge status file format and the "Exit 3" recovery 
   `roles.py`.
 - `src/fluxer_panel/`: `__main__.py` (`run|purge` entry point), `config.py`, `db.py` (single SQLite connection),
   `migrations/` (numbered SQL, see Database), `purge.py`, `admin.py`, `bot.py`, `logs.py`, `fsutil.py`.
+  Sessions: `sessions.py` (the session, presence and RSVP store), `rsvp.py` (the pure RSVP engine), `session_time.py`
+  (the pure typed-time parser and slots), `session_flow.py` (the 📅 DM flow; in-memory drafts), `session_post.py`
+  (every REST call on a session message; the games-channel guard), `session_commands.py` (`!session`),
+  `session_jobs.py` (end, recurrence, heads-up, draft expiry), `dm_router.py` (the DM entry point; the non-admin path)
+  and `dm_backoff.py` (the per-user DM-failure backoff).
   Cards: `cards.py` (store and dataclasses), `card_fields.py` (field validators), `card_commands.py` (`!card`
   subcommands), `resolver.py` (status from manager and probe results), `render.py` (embed, outside text and the
   summary board's payload), `text.py` (user-facing strings), `poller.py` (the single card poller, which also keeps
@@ -29,7 +34,7 @@ user-facing description, the purge status file format and the "Exit 3" recovery 
   Reactions: `presses.py` (filters, rate limits and removals for presses; the only module that knows presses are
   reactions), `interactions.py` (the press handler), `seeding.py` (adds and removes the bot's own reactions),
   `pacer.py` (the per-channel reaction budget), `games.py` (the games community lookup and the bot's identity),
-  `notify.py` (DMs to the admins and to one user), `interaction_settings.py` (the global switch, the per-card off
+  `notify.py` (DMs to the admins and to one user; `dm_user` applies the DM backoff unless `bypass`), `interaction_settings.py` (the global switch, the per-card off
   switch and the degraded channels) and `follow_roles.py` (the only module that changes a role: the bell (U+1F514) follow toggle
   and each card's follow role).
   `wake.py` (wake presses, and closing a request on ready or expiry), `wake_requests.py` (the request store),
@@ -109,8 +114,9 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   the token goes only in the `Authorization` header or the gateway identify/resume frames.
 - Admin: `admin.authorize` is the single check: DM only (no guild id), non-bot author, author id a valid snowflake, author id in
   `ADMIN_USER_IDS`. Every admin command goes through `handle`, which calls `authorize` first. Denials log `admin_denied`.
-  The bot skips its own messages only. Every other message goes to `handle`, which ignores anything that is not a
-  command. A command from a bot or from a guild channel reaches `authorize`, is refused and logged as `admin_denied`
+  The bot skips its own messages only. Every other message goes to `DmRouter.route` (`dm_router.py`), which sends guild
+  messages, bot or non-snowflake authors and admin heads to `handle`. `handle` ignores anything that is not a command.
+  Other DMs take the non-admin path (see Sessions rules). A command from a bot or from a guild channel reaches `authorize`, is refused and logged as `admin_denied`
   (ids only), and gets no reply, so nothing is posted in a guild channel.
 - Only `follow_roles.py` calls the role methods (`add_member_role`, `remove_member_role`, `create_role`,
   `set_role_mentionable`), enforced by `tests/test_role_callers.py`. Each call is preceded by the allowlist check
@@ -132,6 +138,10 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   `PLAY_NOW_EXPIRY_SECONDS`, `PLAY_NOW_COOLDOWN_SECONDS`, `BOARD_REPOST_MIN_INTERVAL_SECONDS`,
   `PRESS_USER_WINDOW_SECONDS`, `PRESS_CARD_WINDOW_SECONDS` and `PRESS_CARD_BURST` are positive integers with defaults
   7200, 3600, 1800, 300, 10, 10 and 10.
+- Session config: `SESSION_TIME_ZONE` is required (an IANA name). Without it a config error exits 2, for `run` and
+  `purge` alike. `SESSION_SLOTS_WEEKDAY` and `SESSION_SLOTS_WEEKEND` take 1 to 6 distinct `HH:MM` times. The
+  `SESSION_LENGTH_SECONDS`, `SESSION_RETENTION_SECONDS` and `DM_BACKOFF_SECONDS` positive integers have defaults.
+  `README.md` lists every variable.
 
 ## Cards and sources rules
 
@@ -175,8 +185,8 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   the admins once: the pause changes a row only while it is active. The DM takes `text.SUBSCRIPTION_PAUSED_ALERT`
   (403) or `text.SUBSCRIPTION_CHANNEL_GONE_ALERT` (404), with the card slug and channel id as its only inputs. A 404
   on an edit reposts the copy. `!card subscribe` on a paused channel resumes it, which clears a 403 pause;
-  `!card unsubscribe` clears a channel-gone pause. `!card archive` deletes every copy first and the card's message
-  last. A 404 counts as deleted. A 403 on a copy or on the card's own message leaves that message in place, the
+  `!card unsubscribe` clears a channel-gone pause. `!card archive` first cancels the card's upcoming sessions, under the card lock (their messages are edited and
+  their attendees DMed). It then deletes every copy first and the card's message last. A 404 counts as deleted. A 403 on a copy or on the card's own message leaves that message in place, the
   archive goes on, and the reply names each channel left: `text.CARD_ARCHIVED_SOME_LEFT` with one
   `text.ARCHIVE_LEFT_LINE` per channel. `text.CARD_ARCHIVED` is used only when nothing is left. Any other failure
   stops the archive while the card stays live, and the copies it already deleted are forgotten so the poller posts
@@ -202,6 +212,26 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   with a board stored, and no new board is posted in that tick (a stored board is still edited); the next tick
   posts it. The poller logs the board's ids and exception types only: never a title, a status or a link.
 
+## Sessions rules
+
+- Sessions are never posted to the games channel. `session_post.send_session` and `edit_session` raise
+  `GamesChannelRefused` before any REST call. The recurrence posts through `send_session` to the session's own
+  channel. `tests/test_games_channel_sessions.py` runs a full scenario and checks it.
+- Session messages come only from `render.session_message`, and their `allowed_mentions` is `{"parse": []}`. The
+  sender passes that field on unchanged.
+- RSVP reactions (✅ going, ❔ maybe, ❌ no) on a session message are state. `presses.on_reaction` hands them to
+  `Interactions.rsvp_changed` before the kill switch and the rate limit. They are never removed and never unseeded.
+- The RSVP engine (`rsvp.apply`) decides every RSVP row. `sessions.write_rsvps` is the only code that rewrites `rsvps`
+  after a session exists. `sessions.add` writes the proposer's first going row when the session is created, and
+  `sessions.add_presence` replaces the proposer's implicit presence row when they react.
+- The only non-admin command path is `dm_router` and `!session` (`session_commands.py`). `NonAdminLimiter.admit`
+  allows 5 DM commands, replies or 📅 reactions per 60 seconds per non-admin user. Admins are exempt. A `!session`
+  change needs the proposer or `admin.authorize`. A guild message goes to `admin.handle` and never reaches the
+  session path.
+- DM backoff (`dm_backoff.py`, in memory): a user whose DM failed gets no ordinary DM for `DM_BACKOFF_SECONDS`.
+  Promotion, cancel, move and series-stopped DMs pass `bypass=True`. Admin DMs (`notify.dm_admins`) never use the
+  backoff. A 📅 start is refused while the proposer is in backoff.
+
 ## Reactions rules
 
 - `presses.py` is the only code that knows presses are reactions.
@@ -210,7 +240,9 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
 - Seeding (`seeding.py`; the poller's `_seed_posted` and `_seed_surface`): the poller seeds a card's message or a copy
   after posting it, never after an edit, and on reconcile it checks each stored card message and copy. It adds only the
   emoji that are missing and never removes one. Wanted: the wake emoji (U+25B6 U+FE0F) always; the follow emoji (bell,
-  U+1F514) when the card has a follow role; the play-now emoji (U+1F64B) when the surface has a play-now target. A card
+  U+1F514) when the card has a follow role; the play-now emoji (U+1F64B) when the surface has a play-now target. The calendar (U+1F4C5) is wanted when the
+  surface has a session channel: a card or a home copy, never a far copy or a play-now post
+  (`seeding.has_session_channel`). A card
   message is always at home, and a copy is at home when its community is the games channel's. A card message's play-now
   target is its own verified play-now channel or `PLAY_NOW_CHANNEL_ID`; a home copy always has one, and a copy elsewhere
   has one when the card does. A copy elsewhere carries the bell and the raised hand too, but a press there makes no
@@ -220,7 +252,7 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   card call not under the lock. A failure is logged as `seed_failed` with the card id and the exception type, and the
   next surface is still seeded.
 - `!card interactions on|off [slug]` (the kill switch, `interaction_settings`): off removes all reactions of the wake,
-  follow and play-now emoji (`Seeder.unseed`: the bot's seeds and any users' left over) from every card message and
+  follow, play-now and calendar emoji (`Seeder.unseed`: the bot's seeds and any users' left over) from every card message and
   active copy in scope; on re-seeds them. It runs with
   no card lock held. Unseeding is the only place the bot removes its own seeded reactions.
 - Press logs: a `press` log carries `event_type`, `card_id`, `action` and `surface`, and never a `user_id`. `user_id` is
@@ -274,6 +306,11 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   partial unique index `requests_open_once` keeps one open row per card and requester. New tables: `wake_request_dm`
   (the admin DMs about a request), `card_follow_role` (`role_id` unique: a role follows one card), `card_play_now_channel`,
   `play_now`, `interactions` (one row, the global switch), `card_interactions_off` and `reaction_degraded`.
+- Session tables (migration 0008): `sessions` is rebuilt, since phase 1 created it with `group_role_id` and no state
+  columns. Its `state` is `upcoming`, `ended` or `cancelled`, and `closed_at` is set exactly when it is not upcoming.
+  It also has `recurrence`, `series_id`, `next_posted` and `moved`. `rsvp_reaction` holds the presence rows (one
+  implicit row for the proposer), and `rsvps` is rebuilt as the computed state (`waitlist_pos` for a waiting user).
+  Both `rsvps` and `rsvp_reaction` cascade with their session.
 - Schema: every table is `STRICT`. Ids are `TEXT` with CHECKs that they are digits only and at most 25 long; names are
   not stored, except a verified voice or text channel's display name (`card_voice.channel_name`,
   `card_text_channel.channel_name`). The snowflake bound is 25 in code and schema; Fluxer documents at most 19, so do
