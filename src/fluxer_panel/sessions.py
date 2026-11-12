@@ -10,10 +10,10 @@ expects, so a second command or a late event cannot undo a change that already h
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
-from fluxer_panel import rsvp
+from fluxer_panel import render, rsvp
 
 if TYPE_CHECKING:
     from fluxer_panel.cards import Card
@@ -372,3 +372,17 @@ def effective_location(session: Session, card: Card) -> str | None:
     if session.location_text is not None:
         return session.location_text
     return card.location.text if card.location is not None else None
+
+
+def next_session_views(conn: sqlite3.Connection, card: Card, now: int
+                       ) -> tuple[render.NextSession | None, render.NextSession | None]:
+    """The card's next session as the card shows it, read in one go: the near view, with the jump link to the session's
+    message, and the far view, the same without the link (a copy outside the games community). Both are None when the card
+    has no session that has not ended yet. Only whether a location is set is passed on, never its text."""
+    session = next_for_card(conn, card.id, now)
+    if session is None:
+        return None, None
+    near = render.NextSession(starts_at=session.starts_at, going=counts_of(conn, session.id).going,
+                              jump=(session.guild_id, session.channel_id, session.message_id),
+                              has_location=effective_location(session, card) is not None)
+    return near, replace(near, jump=None)

@@ -22,7 +22,7 @@ import aiohttp
 
 from fluxer_client.events import MessageDelete
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
-from fluxer_panel import board, cards, notify, render, subscriptions, text, wake_requests
+from fluxer_panel import board, cards, notify, render, sessions, subscriptions, text, wake_requests
 from fluxer_panel.card_commands import TEXT_CHANNEL_TYPE, VOICE_CHANNEL_TYPE, CardLocks, channel_name
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
@@ -60,10 +60,12 @@ _STALE_BOARD_CAP = 10
 @dataclass(frozen=True)
 class _Evaluated:
     """One card's outcome for this tick. `embed` is None when the evaluation failed: such a card is not published, and
-    the board lists it with the dash, as a card with no status."""
+    the board lists it with the dash, as a card with no status. `far_embed` is the same card with the next session's
+    link left out, for a copy outside the games community."""
     card: cards.Card
     status: CardStatus | None
     embed: dict[str, Any] | None
+    far_embed: dict[str, Any] | None = None
 
 
 class Poller:
@@ -286,9 +288,9 @@ class Poller:
 
     async def _publish_guarded(self, result: _Evaluated, sem: asyncio.Semaphore) -> None:
         async with sem:
-            assert result.embed is not None
+            assert result.embed is not None and result.far_embed is not None
             try:
-                await self._publish(result.card.id, result.embed)
+                await self._publish(result.card.id, result.embed, result.far_embed)
             except Exception as exc:  # noqa: BLE001 - one card's failure must not stop the other cards
                 log_event(log, "card_poll_failed", level=logging.WARNING, card_id=result.card.id,
                           reason=type(exc).__name__)
@@ -321,9 +323,14 @@ class Poller:
         if res.alert_now:
             await self._alert(card)
         next_text = next_action_text(action, now_dt) if action is not None else None
+        near, far = await self._db.run(lambda c: sessions.next_session_views(c, card, now))
+        requested = self._requested.get(card.id, 0)
         embed = render.render_embed(card, res.status, next_text, instance_url=self._config.instance_url,
-                                    requested=self._requested.get(card.id, 0))
-        return _Evaluated(card, res.status, embed)
+                                    requested=requested, next_session=near)
+        # Without a next session the far rendering is the same embed, so no second one is built.
+        far_embed = embed if near is None else render.render_embed(
+            card, res.status, next_text, instance_url=self._config.instance_url, requested=requested, next_session=far)
+        return _Evaluated(card, res.status, embed, far_embed)
 
     async def _refresh_names(self, card: cards.Card) -> cards.Card:
         """Re-reads the name of each verified channel link (every voice slot and every text channel slot), at most once
@@ -570,17 +577,20 @@ class Poller:
         # Conditional, as for cards: a message deleted during the edit is not written back.
         await self._db.run(lambda c: board.set_hash_if(c, channel_id, message_id, rendered))
 
-    async def _publish(self, card_id: int, embed: dict[str, Any]) -> None:
+    async def _publish(self, card_id: int, embed: dict[str, Any], far_embed: dict[str, Any]) -> None:
         """Brings the card's own message up to date, then each active copy, all under the card's lock. A failure of the
-        card's own message is logged and the copies still run, and a failure in one copy never stops the others."""
+        card's own message is logged and the copies still run, and a failure in one copy never stops the others. The card's
+        message and a home copy get `embed`; a far copy gets `far_embed`."""
         rendered = render.rendered_hash(embed)
         payload = render.card_message(embed)
+        far_rendered = render.rendered_hash(far_embed)
+        far_payload = render.card_message(far_embed)
         fresh: cards.Card | None = None
         try:
             async with self._locks.get(card_id):
                 fresh = await self._db.run(lambda c: cards.get_by_id(c, card_id))
                 if fresh is not None and fresh.state == "live":
-                    await self._publish_live(fresh, rendered, payload)
+                    await self._publish_live(fresh, rendered, payload, far_rendered, far_payload)
         except asyncio.CancelledError:
             self._to_seed.pop(card_id, None)
             raise
@@ -591,7 +601,8 @@ class Poller:
             raise
         await self._seed_posted(card_id, fresh)
 
-    async def _publish_live(self, fresh: cards.Card, rendered: str, payload: dict[str, Any]) -> None:
+    async def _publish_live(self, fresh: cards.Card, rendered: str, payload: dict[str, Any], far_rendered: str,
+                            far_payload: dict[str, Any]) -> None:
         """Under the card's lock: the card's own message, then its copies. A failure of the card's own message is logged
         and the copies still run."""
         channel_id = self._config.games_channel_id
@@ -607,7 +618,7 @@ class Poller:
             except Exception as exc:  # noqa: BLE001 - logged here, and the copies below still run
                 log_event(log, "card_poll_failed", level=logging.WARNING, card_id=fresh.id,
                           reason=type(exc).__name__)
-        await self._publish_subscriptions(fresh.id, fresh.slug, rendered, payload)
+        await self._publish_subscriptions(fresh.id, fresh.slug, rendered, payload, far_rendered, far_payload)
 
     async def _seed_posted(self, card_id: int, fresh: cards.Card | None) -> None:
         """Seeds the reactions of the surfaces this publish posted. It runs after the card's lock is released, so a 429
@@ -646,15 +657,23 @@ class Poller:
             return True
         return guild_id is not None and guild_id == await self._games_guild.get()
 
-    async def _publish_subscriptions(self, card_id: int, slug: str, rendered: str, payload: dict[str, Any]) -> None:
-        """Brings each active copy up to date, in the order the channels were added. A copy that fails is logged by ids
-        and exception type and retried on the next tick. A 403 on a copy's post or edit pauses it, and so does a 404 on
-        its post, which means the channel is gone. Each pause tells the admins once. A 404 on an edit reposts the copy."""
-        for sub in await self._db.run(lambda c: subscriptions.list_active(c, card_id)):
+    async def _publish_subscriptions(self, card_id: int, slug: str, rendered: str, payload: dict[str, Any],
+                                     far_rendered: str, far_payload: dict[str, Any]) -> None:
+        """Brings each active copy up to date, in the order the channels were added. A home copy (in the games channel's
+        community) gets the linked rendering and a far copy the unlinked one. A copy that fails is logged by ids and
+        exception type and retried on the next tick. A 403 on a copy's post or edit pauses it, and so does a 404 on its
+        post, which means the channel is gone. Each pause tells the admins once. A 404 on an edit reposts the copy."""
+        subs = await self._db.run(lambda c: subscriptions.list_active(c, card_id))
+        if not subs:
+            return
+        games_guild = await self._games_guild.get()
+        for sub in subs:
+            home = games_guild is not None and sub.guild_id == games_guild
+            copy_rendered, copy_payload = (rendered, payload) if home else (far_rendered, far_payload)
             try:
                 await self._sync(card_id, post_channel=sub.channel_id, edit_channel=sub.channel_id,
-                                 message_id=sub.message_id, stored_hash=sub.content_hash, rendered=rendered,
-                                 payload=payload, subscription=True, guild_id=sub.guild_id)
+                                 message_id=sub.message_id, stored_hash=sub.content_hash, rendered=copy_rendered,
+                                 payload=copy_payload, subscription=True, guild_id=sub.guild_id)
             except FluxerHTTPError as exc:
                 if exc.status == 403:
                     await self._pause_subscription(card_id, slug, sub.channel_id, text.SUBSCRIPTION_PAUSED_ALERT)

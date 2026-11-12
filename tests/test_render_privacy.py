@@ -118,14 +118,17 @@ async def test_every_rendering_with_the_sentinel_data_is_free_of_ids_and_names(d
     assert card is not None
     asleep = CardStatus(StatusKind.ASLEEP)
     ready = CardStatus(StatusKind.READY, counts=PlayerCounts(1, 4))
-    embed = render.render_embed(card, asleep, NEXT, instance_url=URL, requested=open_counts[card_id])
+    # The card carries its next session, in the near form and in the far form, so the sentinel check covers both.
+    session_line = render.NextSession(starts_at=1_800_000_000, going=2, jump=(GUILD, GAMES, "5010"), has_location=True)
+    embed = render.render_embed(card, asleep, NEXT, instance_url=URL, requested=open_counts[card_id],
+                                next_session=session_line)
     rendered = {
         "render_embed": embed,
         "card_message": render.card_message(embed),
         "board_message": render.board_message([(card, asleep), (card, ready), (card, None)],
                                               games_channel_id=GAMES, games_guild_id=GUILD, instance_url=URL,
                                               requested=open_counts),
-        "outside_text": render.outside_text(card, asleep, NEXT),
+        "outside_text": render.outside_text(card, asleep, NEXT, next_session=session_line),
         "play_now_message": render.play_now_message(card, role_id=ROLE, playing=3, ended=False, instance_url=URL),
         "session_message": render.session_message(
             card, Session(id=42, card_id=card.id, guild_id=GUILD, channel_id=GAMES, message_id="5010",

@@ -1190,3 +1190,30 @@ async def test_archive_keeps_the_stored_follow_role(world: World) -> None:
 
     assert (await world.card("mc")).state == "archived"
     assert await world.db.run(lambda c: cards.get_follow_role(c, card.id)) == cards.FollowRole("1001", "3001")
+
+
+# AC11.1: a session's location never reaches the outside preview of `!card show`. The session line shows the placeholder.
+
+SESSION_LOCATION = "SENTINEL-SESSION-LOC-42"
+FAR_FUTURE = 4_102_444_800   # 2100-01-01 00:00 UTC, so the session is still upcoming whatever the clock is
+
+
+async def test_show_outside_preview_gives_the_session_line_the_placeholder_and_never_the_session_location(
+        world: World) -> None:
+    await make_mc(world)
+
+    def seed(conn: Any) -> None:
+        card = cards.get_by_slug(conn, "mc")
+        assert card is not None
+        sessions.add(conn, card_id=card.id, guild_id="2001", channel_id="3301", message_id="5601",
+                     starts_at=FAR_FUTURE, ends_at=FAR_FUTURE + 3600, proposer_id="1002", now=1,
+                     location_text=SESSION_LOCATION)
+
+    await world.db.run(seed)
+    world.clear_requests()
+    await world.run("!card show mc")
+
+    _, outside_message = world.payloads()
+    expected = render.escape(text.OUTSIDE_NEXT_SESSION.format(ts=FAR_FUTURE, going=1) + " · " + text.OUTSIDE_LOCATION)
+    assert expected in outside_message["content"]
+    assert SESSION_LOCATION not in str(world.payloads())

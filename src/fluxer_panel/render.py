@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from fluxer_client.ids import require_snowflake
@@ -148,10 +149,31 @@ def status_text(status: CardStatus, requested: int) -> str:
     return label
 
 
+@dataclass(frozen=True)
+class NextSession:
+    """What a card shows of its next session. `jump` is (guild_id, channel_id, message_id) of the session's message; None
+    renders the line without its link, as a far copy does. `has_location` says only whether a location is set: the text
+    never reaches a rendering."""
+    starts_at: int
+    going: int
+    jump: tuple[str, str, str] | None
+    has_location: bool
+
+
+def _next_session_value(session: NextSession, instance_url: str | None) -> str:
+    """The Next session field's value: the time, its relative time and the going count, then a jump link when the view has
+    one and the instance URL is known. The label is our own wording."""
+    value = text.NEXT_SESSION.format(ts=session.starts_at, going=session.going)
+    if session.jump is not None and instance_url is not None:
+        value += " · " + jump_link(text.NEXT_SESSION_OPEN, instance_url, *session.jump)
+    return value
+
+
 def render_embed(card: Card, status: CardStatus | None, next_text: str | None, *,
-                 instance_url: str | None, requested: int = 0) -> dict[str, Any]:
+                 instance_url: str | None, requested: int = 0, next_session: NextSession | None = None) -> dict[str, Any]:
     """The inside-Fluxer embed. `next_text` is inserted as is: it is our own wording, not card text. `requested` is
-    the card's count of open wake requests."""
+    the card's count of open wake requests. `next_session` adds the Next session field; every card carries the DM hint
+    footer."""
     embed: dict[str, Any] = {
         "title": fit(escape(card.title), LIMITS["title"]),
         "color": COLOURS[status.kind] if status is not None else NEUTRAL,
@@ -168,6 +190,8 @@ def render_embed(card: Card, status: CardStatus | None, next_text: str | None, *
         add(text.FIELD_STATUS, status_text(status, requested))
     if next_text is not None:
         add(text.FIELD_NEXT, next_text)
+    if next_session is not None:
+        add(text.FIELD_NEXT_SESSION, _next_session_value(next_session, instance_url))
     if card.how_to_join is not None:
         add(text.FIELD_JOIN, fit(escape(card.how_to_join), LIMITS["join"]))
     if card.first_time is not None:
@@ -196,6 +220,7 @@ def render_embed(card: Card, status: CardStatus | None, next_text: str | None, *
                 add(name, fit(escape(value), LIMITS["detail"]))
 
     embed["fields"] = fields
+    embed["footer"] = {"text": text.CARD_DM_HINT}
     _fit_budget(embed, fields)
     return embed
 
@@ -344,12 +369,23 @@ def outside_location(has_location: bool) -> str | None:
     return text.OUTSIDE_LOCATION if has_location else None
 
 
-def outside_text(card: Card, status: CardStatus | None, next_text: str | None) -> str:
+def _outside_next_session(session: NextSession) -> str:
+    """The outside session line: the time and the going count, then the placeholder when a location is set. Never a link,
+    and never the location text (`outside_location` takes a bool)."""
+    line = text.OUTSIDE_NEXT_SESSION.format(ts=session.starts_at, going=session.going)
+    where = outside_location(session.has_location)
+    return line if where is None else line + " · " + where
+
+
+def outside_text(card: Card, status: CardStatus | None, next_text: str | None,
+                 next_session: NextSession | None = None) -> str:
     lines = [neutralise(card.title)]
     if status is not None:
         lines.append(status_label(status))
     if next_text is not None:
         lines.append(next_text)
+    if next_session is not None:
+        lines.append(_outside_next_session(next_session))
     if card.how_to_join is not None:
         lines.append(neutralise(card.how_to_join))
     # The slots in the embed's order: voice, text channel, address.

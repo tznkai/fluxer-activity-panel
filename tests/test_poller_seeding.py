@@ -436,15 +436,16 @@ async def test_a_cancelled_publish_drops_its_seed_jobs_and_a_later_publish_seeds
     async def cancel(self: Poller, *args: Any, **kwargs: Any) -> None:
         raise asyncio.CancelledError()
 
+    assert evaluated.far_embed is not None
     monkeypatch.setattr(Poller, "_publish_subscriptions", cancel)
     with pytest.raises(asyncio.CancelledError):
-        await poller._publish(card_id, evaluated.embed)
+        await poller._publish(card_id, evaluated.embed, evaluated.far_embed)
 
     # `_post` ran and queued the card's seed job before the cancel, so the cancel branch must drop it.
     assert card_id not in poller._to_seed
     assert puts(world.state, GAMES, await card_message(db, card_id)) == []
 
     monkeypatch.undo()
-    await poller._publish(card_id, evaluated.embed)
+    await poller._publish(card_id, evaluated.embed, evaluated.far_embed)
 
     assert puts(world.state, GAMES, await card_message(db, card_id)) == []

@@ -336,3 +336,9 @@ SESSION_MOVED_DM_NO_LINK = "The {card} session moved to <t:{ts}:F> (<t:{ts}:R>).
 # The timed jobs. The series note goes to the proposer; the heads-up goes to each admin, with the card's escaped title.
 SESSION_SERIES_STOPPED = "Your weekly {card} session stopped repeating: the card already has 10 upcoming sessions."
 SESSION_HEADSUP = "{card} session at <t:{ts}:F>, {n} going, server is asleep."
+# The card's next session: the field, its value, the link's label, the outside line and the footer under every card.
+FIELD_NEXT_SESSION = "Next session"
+NEXT_SESSION = "<t:{ts}:F> (<t:{ts}:R>) · {going} going"
+NEXT_SESSION_OPEN = "Open"
+OUTSIDE_NEXT_SESSION = "Next session: <t:{ts}:F> · {going} going"
+CARD_DM_HINT = "Pressing a reaction sends you a DM. Allow DMs from this server's members to get the reply."

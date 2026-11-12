@@ -1995,3 +1995,85 @@ async def test_a_tick_runs_the_session_jobs(world: World, db: Database) -> None:
     await poller.tick()
     ended = await db.run(lambda c: sessions.get(c, session_id))
     assert ended is not None and ended.state == "ended"
+
+
+# The next session on a card and its copies (AC3.5-AC3.7). The games channel is in GUILD, so a copy in GUILD is a home
+# copy, and a copy in another community is a far copy that gets the line without its jump link.
+
+SESSION_CHANNEL_NEXT = "3301"   # the session's channel, not the games channel
+SESSION_MESSAGE = "5501"        # the session's own message
+FAR_GUILD = "9001"              # a community other than the games channel's
+FAR_COPY = "3302"               # a copy's channel in that community
+NEXT_LINK = f"[Open](https://fluxer.invalid/channels/{GUILD}/{SESSION_CHANNEL_NEXT}/{SESSION_MESSAGE})"
+
+
+async def subscribe_in(db: Database, card_id: int, channel: str, guild: str) -> None:
+    await db.run(lambda c: subscriptions.add(c, card_id, guild, channel))
+
+
+async def add_session_with_next_line(db: Database, card_id: int, *, going_extra: list[str] = ()) -> int:
+    def tx(conn: Any) -> int:
+        session_id = sessions.add(conn, card_id=card_id, guild_id=GUILD, channel_id=SESSION_CHANNEL_NEXT,
+                                  message_id=SESSION_MESSAGE, starts_at=5000, ends_at=8000, proposer_id=AUTHOR, now=0)
+        session = sessions.get(conn, session_id)
+        assert session is not None
+        for user_id in going_extra:
+            sessions.add_presence(conn, session, user_id, "going", 1)
+        sessions.recompute(conn, session, None, 1)
+        return session_id
+
+    return await db.run(tx)
+
+
+def next_session_value(embed: dict[str, Any]) -> str | None:
+    return {field["name"]: field["value"] for field in embed["fields"]}.get(text.FIELD_NEXT_SESSION)
+
+
+async def test_the_card_and_a_home_copy_link_the_next_session_and_a_far_copy_does_not(
+        world: World, poller: Poller, db: Database):
+    world.fluxer.channels[GAMES] = {"id": GAMES, "guild_id": GUILD, "type": 0}
+    world.clock.now = 1000
+    card_id = await seed(db, "alpha", title="Alpha")
+    await add_session_with_next_line(db, card_id)
+    await subscribe(db, card_id, SUB)                       # a copy in the games community: a home copy
+    await subscribe_in(db, card_id, FAR_COPY, FAR_GUILD)    # a copy in another community: a far copy
+
+    await poller.tick()
+
+    [main] = posts(world.fluxer)
+    home_value = next_session_value(main.payload["embeds"][0])
+    assert home_value is not None and home_value.endswith(NEXT_LINK)
+    [home] = copy_posts(world.fluxer, SUB)
+    assert next_session_value(home.payload["embeds"][0]) == home_value
+    [far] = copy_posts(world.fluxer, FAR_COPY)
+    far_value = next_session_value(far.payload["embeds"][0])
+    assert far_value is not None and far_value == home_value.replace(f" · {NEXT_LINK}", "")
+    assert "](" not in far_value
+    assert_card_writes_safe(world.fluxer)
+
+
+async def test_an_rsvp_that_changes_the_count_shows_on_the_next_tick_and_a_cancel_removes_the_line(
+        world: World, poller: Poller, db: Database):
+    world.clock.now = 1000
+    card_id = await seed(db, "alpha", title="Alpha")
+    session_id = await add_session_with_next_line(db, card_id)
+    await poller.tick()
+    assert next_session_value(posts(world.fluxer)[0].payload["embeds"][0]).startswith("<t:5000:F> (<t:5000:R>) · 1 going")
+
+    def going(conn: Any) -> None:
+        session = sessions.get(conn, session_id)
+        assert session is not None
+        sessions.add_presence(conn, session, "6601", "going", 2)
+        sessions.recompute(conn, session, None, 2)
+
+    await db.run(going)
+    await poller.tick()
+    card_patches = [r for r in world.fluxer.requests if r.method == "PATCH" and r.path == POSTED]
+    assert len(card_patches) == 1
+    assert next_session_value(card_patches[-1].payload["embeds"][0]) == f"<t:5000:F> (<t:5000:R>) · 2 going · {NEXT_LINK}"
+
+    await db.run(lambda c: sessions.cancel_if(c, session_id, 3))
+    await poller.tick()
+    card_patches = [r for r in world.fluxer.requests if r.method == "PATCH" and r.path == POSTED]
+    assert next_session_value(card_patches[-1].payload["embeds"][0]) is None
+    assert_card_writes_safe(world.fluxer)

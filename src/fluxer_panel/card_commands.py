@@ -18,7 +18,7 @@ import aiohttp
 from fluxer_client.events import MessageCreate
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
 from fluxer_client.roles import RoleCache
-from fluxer_panel import card_fields, cards, follow_roles, interaction_settings, render, subscriptions, text
+from fluxer_panel import card_fields, cards, follow_roles, interaction_settings, render, sessions, subscriptions, text
 from fluxer_panel.cards import SHOW_ITEMS, CardFieldError, ChannelLink
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
@@ -435,13 +435,17 @@ async def _show(event: MessageCreate, ctx: CardContext, rest: str) -> _Result:
     if card is None:
         await _say(ctx, event, text.NO_SUCH_CARD)
         return _Result()
-    embed = render.render_embed(card, None, None, instance_url=ctx.config.instance_url)
+    # The embed preview shows the next session as a card does, with its link. The outside preview shows it without one,
+    # the way a far copy does, and never the location text.
+    near, far = await ctx.db.run(lambda c: sessions.next_session_views(c, card, int(time.time())))
+    embed = render.render_embed(card, None, None, instance_url=ctx.config.instance_url, next_session=near)
     await ctx.rest.send_message(event.channel_id, content=text.SHOW_NOTE, embeds=[embed],
                                 allowed_mentions={"parse": []})
     # The outside text is plain text everywhere else. In this DM it is escaped, so it shows as typed, and then
     # fitted so the label, newline and body stay within the message limit.
     label = text.SHOW_OUTSIDE_LABEL
-    body = render.fit(render.escape(render.outside_text(card, None, None)), PREVIEW_LIMIT - render.units(label) - 1)
+    body = render.fit(render.escape(render.outside_text(card, None, None, far)),
+                      PREVIEW_LIMIT - render.units(label) - 1)
     await _say(ctx, event, label + "\n" + body)
     # Only a card with subscriptions gets this message, so a card without them shows exactly what it always did.
     subs = await ctx.db.run(lambda c: subscriptions.list_for_card(c, card.id))
