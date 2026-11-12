@@ -362,6 +362,71 @@ channel ID.
 - So a burst of about 28 calls passed before the first limit, which is above the design's 20 calls per 10 seconds.
   This was a burst probe, not a sustained rate, so the sustained limit is not measured here.
 
+## Live session checks
+
+- Plan only, not yet run. The operator runs each check by hand, in the private test guild with a second test account,
+  and records the result on the `Result` lines. Nothing from the real instance is recorded in this file.
+- Use placeholders only: `<card>` is a card's slug, `<n>` a session number, and `<t:…>` a timestamp. Emoji are
+  written as Unicode code points, as in the sections above.
+
+### Keycaps in a DM
+
+- Steps: press the calendar (U+1F4C5) on a live card. Read the DM prompt.
+- Expected: the prompt lists up to six times, one per keycap. The keycaps U+0031 U+FE0F U+20E3 to U+0036 U+FE0F U+20E3
+  appear on the DM message and can be clicked. Clicking one shows the confirmation for that time.
+- Note: record whether the client sends the reaction name with or without U+FE0F (the keycap's variation selector).
+- Result (web): not yet run.
+- Result (mobile): not yet run.
+
+### Timestamp markup in a DM
+
+- Steps: complete a proposal. Read the prompt, the confirmation and the session message in the games channel's
+  session channel.
+- Expected: `<t:…:F>` and `<t:…:R>` render as local times in all three places, on the proposal's chosen time.
+- Result (web): not yet run.
+- Result (mobile): not yet run.
+
+### Two-account RSVPs with a waitlist promotion
+
+- Steps: set the card's seats to 1. Account A proposes a session and confirms it. Account B reacts ✅ (U+2705) to the
+  session message. Account A reacts ❌ (U+274C), which leaves the seat free.
+- Expected: after B's ✅, B is waiting. After A's ❌, B is promoted to going. B gets exactly one direct message about
+  the promotion. The counts on the session message update at each step.
+- Result (web): not yet run.
+- Result (mobile): not yet run.
+
+### Recurrence
+
+- Steps: propose a session about one hour ahead. Run `!session repeat <n> weekly`, with the proposer account.
+- Expected: about 25 hours later, the next occurrence is posted as a new message. It is for the same weekday and time, a
+  week after the first, with only the proposer going.
+- Note: this check spans a day. Leave the bot running, and read the result the next day.
+- Result (web): not yet run.
+- Result (mobile): not yet run.
+
+### Cancel
+
+- Steps: with one going user and one waiting user, run `!session cancel <n>` as the proposer.
+- Expected: each going or waiting user gets one direct message. The session message is edited to its cancelled form.
+- Result (web): not yet run.
+- Result (mobile): not yet run.
+
+### The asleep heads-up
+
+- Steps: a Pterodactyl card whose server is Asleep. Propose a session 30 minutes out, with one going user.
+- Expected: each admin gets one direct message. It says the server is asleep, and it gives the session time as a
+  timestamp.
+- Result (web): not yet run.
+- Result (mobile): not yet run.
+
+### A scrub with a short retention
+
+- Steps: restart the bot with `SESSION_RETENTION_SECONDS=120` and `PURGE_INTERVAL_SECONDS=60`. Use a short session,
+  and let it reach its end time. Then wait for two purge intervals.
+- Expected: the session message loses its location line. The session row is gone from the database.
+- Result (web): not yet run.
+- Result (mobile): not yet run.
+
 ## First cards
 
 Three cards were run against the test community, all three checked on web and mobile:
