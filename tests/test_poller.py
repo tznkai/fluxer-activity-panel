@@ -2269,6 +2269,8 @@ async def test_the_card_and_a_home_copy_link_the_next_session_and_a_far_copy_doe
     far_value = next_session_value(far.payload["embeds"][0])
     assert far_value is not None and far_value == home_value.replace(f" · {NEXT_LINK}", "")
     assert "](" not in far_value
+    for write in (main, home, far):
+        assert write.payload["embeds"][0]["footer"]["text"] == text.CARD_DM_HINT
     assert_card_writes_safe(world.fluxer)
 
 

@@ -603,16 +603,16 @@ def test_card_message_wraps_one_embed_with_no_mentions() -> None:
 async def test_schedule_payload_sentinels_do_not_reach_the_embed() -> None:
     doc = {"data": [
         {"attributes": {
-            "name": "SENTINEL-SCHEDULE-NAME", "is_active": True, "next_run_at": "2026-11-02T13:00:00+00:00",
+            "name": "SENTINEL SCHEDULE NAME", "is_active": True, "next_run_at": "2026-11-02T13:00:00+00:00",
             "relationships": {"tasks": {"data": [
-                {"attributes": {"sequence_id": 1, "action": "command", "payload": "SENTINEL-COMMAND-PAYLOAD"}},
+                {"attributes": {"sequence_id": 1, "action": "command", "payload": "SENTINEL COMMAND PAYLOAD"}},
                 {"attributes": {"sequence_id": 2, "action": "power", "payload": "stop"}},
             ]}},
         }},
         {"attributes": {
             "name": "other", "is_active": True, "next_run_at": "2026-11-02T12:30:00+00:00",
             "relationships": {"tasks": {"data": [
-                {"attributes": {"sequence_id": 1, "action": "power", "payload": "SENTINEL-POWER-PAYLOAD"}},
+                {"attributes": {"sequence_id": 1, "action": "power", "payload": "SENTINEL POWER PAYLOAD"}},
             ]}},
         }},
     ]}
@@ -621,13 +621,15 @@ async def test_schedule_payload_sentinels_do_not_reach_the_embed() -> None:
     assert action.kind == "stop"
     embed = render.render_embed(make_card(), READY_FULL, next_action_text(action, NOW), instance_url=INSTANCE)
     rendered = json.dumps(embed, ensure_ascii=False)
-    for sentinel in ("SENTINEL-SCHEDULE-NAME", "SENTINEL-COMMAND-PAYLOAD", "SENTINEL-POWER-PAYLOAD"):
+    for sentinel in ("SENTINEL SCHEDULE NAME", "SENTINEL COMMAND PAYLOAD", "SENTINEL POWER PAYLOAD"):
+        assert render.escape(sentinel) == sentinel   # a hyphen would be backslashed, so a raw leak could never match
         assert sentinel not in rendered
 
 
 # A Java probe's player sample never reaches the embed.
 async def test_java_player_sample_never_reaches_the_embed() -> None:
-    sentinel = "SENTINEL-PLAYER-a1"
+    sentinel = "SENTINEL PLAYER a1"
+    assert render.escape(sentinel) == sentinel   # a hyphen would be backslashed, so a raw leak could never match
     body = {
         "version": {"name": "1.21.4", "protocol": 769},
         "players": {"online": 3, "max": 10, "sample": [{"name": sentinel, "id": "00000000-0000-0000-0000-000000000001"}]},

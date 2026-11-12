@@ -508,6 +508,19 @@ async def test_a_reply_after_the_expiry_sweep_does_nothing(build: Any) -> None:
     assert len(dm_texts(world)) == before
 
 
+async def test_a_reply_after_the_timeout_but_before_the_expiry_sweep_does_nothing(build: Any) -> None:
+    world = await build()
+    await open_prompt(world)
+    world.clock.now = NOW + FLOW_TIMEOUT_SECONDS
+    before = len(dm_texts(world))
+
+    await world.flow.on_reply(typed(PROPOSER, dm_channel_of(world), "tomorrow 19:30"))
+
+    assert len(dm_texts(world)) == before
+    assert dm_ids(world, "to post it") == []
+    assert requests(world, "POST", PLAY_NOW_POSTS) == []
+
+
 # The per-user locks: an entry lives only while a step holds or awaits it -----------------------------------
 
 async def test_an_idle_user_holds_no_lock_entry_after_a_prompt_or_a_refusal(build: Any) -> None:

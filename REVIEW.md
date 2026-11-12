@@ -242,7 +242,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/render.py:367` `def outside_location(has_location: bool)` — takes a bool, so the location text cannot reach the outside line.
 - `src/fluxer_panel/render.py:263` `fit(escape(channel.channel_name)` — a voice or text channel's name is escaped before it enters the field, so a name cannot form a link or a mention.
 - `src/fluxer_panel/render.py:343` `def _outside_channel(` — a channel name on the outside line is mention-neutralised, and the line shows it only when the link is verified.
-- `tests/test_render.py:703` `SENTINEL_LOCATION not in outside` — the test that the location text never appears in the outside rendering.
+- `tests/test_render.py:705` `SENTINEL_LOCATION not in outside` — the test that the location text never appears in the outside rendering.
 - `src/fluxer_panel/render.py:125` `def channel_link(` — the only place a channel link is built. Both ids pass the snowflake check first.
 - `src/fluxer_panel/render.py:231` `suffix=escape(suffix)` — a slot's suffix is validated card text (`card_fields.suffix`), and it is escaped again before it enters the field name, as a second layer.
 - `src/fluxer_panel/render.py:356` `def outside_address(address: Address, public: bool) -> str:` — the single helper that decides, for every address slot, whether the outside line shows the host or only says the address is in Fluxer. The host is shown only when `public` is true, with or without a suffix.

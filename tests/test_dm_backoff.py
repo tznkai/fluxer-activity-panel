@@ -25,7 +25,7 @@ from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.interactions import Interactions
 from fluxer_panel.logs import FIELDS_ATTR
 from fluxer_panel.pacer import ChannelPacer
-from fluxer_panel.presses import FOLLOW_EMOJI, WAKE_EMOJI, Presses
+from fluxer_panel.presses import FOLLOW_EMOJI, PLAY_NOW_EMOJI, WAKE_EMOJI, Presses
 from fluxer_panel.seeding import Seeder
 from fluxer_panel.session_post import SessionPost
 from fluxer_panel.sources.registry import build_sources
@@ -40,6 +40,7 @@ USER = "1500"
 PRESSER = "6001"
 GUILD = "2001"
 GAMES = "3001"
+PLAY_NOW = "3002"
 CARD_MSG = "5001"
 CARD_ID = 1
 CARD_TITLE = "Mine] (craft"
@@ -214,7 +215,8 @@ class PressWorld:
 @pytest.fixture
 async def press_world(tmp_path: Path, aiohttp_server, session) -> AsyncIterator[PressWorld]:
     state = FakeFluxerState(bot_user_id=BOT_ID)
-    state.channels.update({GAMES: {"id": GAMES, "guild_id": GUILD, "type": 0}})
+    state.channels.update({GAMES: {"id": GAMES, "guild_id": GUILD, "type": 0},
+                           PLAY_NOW: {"id": PLAY_NOW, "guild_id": GUILD, "type": 0}})
     state.roles = {GUILD: [
         {"id": GUILD, "name": "@everyone", "permissions": "0", "position": 0, "mentionable": False},
         {"id": BOT_ROLE, "name": "bot", "permissions": "8", "position": 10, "mentionable": False},
@@ -229,7 +231,7 @@ async def press_world(tmp_path: Path, aiohttp_server, session) -> AsyncIterator[
         await database.run(_seed_card)
         config = Config.from_env({"FLUXER_TOKEN": TOKEN, "SESSION_TIME_ZONE": "UTC",
                                   "FLUXER_INSTANCE_URL": JUMP_URL, "ADMIN_USER_IDS": ADMIN,
-                                  "GAMES_CHANNEL_ID": GAMES})
+                                  "GAMES_CHANNEL_ID": GAMES, "PLAY_NOW_CHANNEL_ID": PLAY_NOW})
         rest = FluxerREST(session, api, TOKEN)
         games = GamesGuild(rest, config)
         pacer = ChannelPacer(max_calls=1000)
@@ -293,6 +295,23 @@ async def test_a_wake_press_during_a_backoff_is_still_recorded_for_the_admins(pr
     admin_after = len([r for r in state.requests if r.path.startswith(f"/api/v1/channels/{admin_channel}/")])
     assert admin_after > admin_before
     assert len(state.requests_to(f"/api/v1/channels/{PRESSER_DM}/messages")) == requester_sends
+
+
+async def test_a_play_now_press_during_a_backoff_still_posts_and_sends_no_dm(press_world) -> None:
+    state = press_world.state
+    state.overrides[PRESSER_SEND] = Override(403, FORBIDDEN)
+    await press_world.presses.on_reaction(press(FOLLOW_EMOJI))   # a failed DM starts the presser's backoff
+    assert press_world.backoff.blocked(PRESSER) is True
+    dms_before = len(state.requests_to(f"/api/v1/channels/{PRESSER_DM}/messages"))
+    opens_before = open_dm_count(state)
+
+    press_world.clock.now += 11   # past the press's user window, still inside the DM backoff
+    await press_world.presses.on_reaction(press(PLAY_NOW_EMOJI))
+
+    posts = [r for r in state.requests if r.method == "POST" and r.path == f"/api/v1/channels/{PLAY_NOW}/messages"]
+    assert len(posts) == 1
+    assert len(state.requests_to(f"/api/v1/channels/{PRESSER_DM}/messages")) == dms_before
+    assert open_dm_count(state) == opens_before
 
 
 async def test_a_promotion_dm_is_attempted_during_a_backoff(tmp_path: Path, aiohttp_server, session) -> None:
