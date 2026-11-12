@@ -162,6 +162,14 @@ class SessionCommands:
             log_event(log, "session_edit_failed", level=logging.WARNING, session_id=session_id,
                       reason=type(exc).__name__)
 
+    async def _edit_while_upcoming(self, session_id: int) -> bool:
+        """Edits the message after a change, then reads the session again. A 404 on the edit means the message is gone,
+        and on_message_gone has then cancelled the session and DMed its attendees. The caller must not announce the
+        change, or send its own DMs, when this returns False."""
+        await self._edit(session_id)
+        after = await self._db.run(lambda conn: sessions.get(conn, session_id))
+        return after is not None and after.state == "upcoming"
+
     async def _list(self, event: MessageCreate) -> None:
         if admin.authorize(event, self._config):
             rows = await self._db.run(lambda conn: [
@@ -212,7 +220,8 @@ class SessionCommands:
         if moved is None:
             return text.SESSION_NOT_UPCOMING, "not_upcoming"
         fresh, card = moved
-        await self._edit(session.id)
+        if not await self._edit_while_upcoming(session.id):
+            return text.SESSION_NOT_UPCOMING, "not_upcoming"
         link = self._link(fresh)
         title = render.escape(card.title)
         if link is not None:
@@ -268,7 +277,8 @@ class SessionCommands:
             changed = await self._db.run(lambda conn: sessions.set_location_if(conn, session.id, location))
         if not changed:
             return text.SESSION_NOT_UPCOMING, "not_upcoming"
-        await self._edit(session.id)
+        if not await self._edit_while_upcoming(session.id):
+            return text.SESSION_NOT_UPCOMING, "not_upcoming"
         return text.SESSION_LOCATION_DONE.format(n=session.id), "done"
 
     async def _seats(self, event: MessageCreate, session: Session, value: str) -> _Reply:
@@ -285,10 +295,9 @@ class SessionCommands:
         if result is None:
             return text.SESSION_NOT_UPCOMING, "not_upcoming"
         fresh, card, outcome = result
-        await self._edit(session.id)
-        # The edit can find the message gone, and that cancels the session. Promotions go out only while it stands.
-        after = await self._db.run(lambda conn: sessions.get(conn, session.id))
-        if after is not None and after.state == "upcoming" and outcome.promoted:
+        if not await self._edit_while_upcoming(session.id):
+            return text.SESSION_NOT_UPCOMING, "not_upcoming"
+        if outcome.promoted:
             await self._session_post.dm_promoted(fresh, card, outcome.promoted)
         self._kick()
         return text.SESSION_SEATS_DONE.format(n=session.id), "done"

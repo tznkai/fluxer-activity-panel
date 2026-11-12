@@ -380,7 +380,28 @@ async def test_a_404_during_a_seats_change_cancels_the_session_and_dms_the_atten
     await say(world, f"!session seats {session_id} 3")
     assert (await read_session(world, session_id)).state == "cancelled"
     assert sent_to(world, GOING) == [text.SESSION_CANCELLED_DM.format(card="Lobby", ts=STARTS)]
-    assert replies(world) == [text.SESSION_SEATS_DONE.format(n=session_id)]
+    assert replies(world) == [text.SESSION_NOT_UPCOMING]
+
+
+async def test_a_404_during_a_move_cancels_once_and_sends_no_moved_dm(world: SimpleNamespace) -> None:
+    session_id = await session_with(world, seats=2, rows=[(GOING, "going"), (WAITING, "going")])
+    world.state.overrides[f"PATCH {PATCH}"] = Override(404, b'{"code":"UNKNOWN_MESSAGE","message":"x"}')
+    await say(world, f"!session move {session_id} {MOVE_TIME}")
+    assert (await read_session(world, session_id)).state == "cancelled"
+    # The move is stored before the edit, so the cancel DM carries the moved time.
+    cancel = [text.SESSION_CANCELLED_DM.format(card="Lobby", ts=MOVE_TS)]
+    assert sent_to(world, GOING) == cancel
+    assert sent_to(world, WAITING) == cancel
+    assert replies(world) == [text.SESSION_NOT_UPCOMING]
+
+
+async def test_a_404_during_a_location_change_cancels_and_says_not_upcoming(world: SimpleNamespace) -> None:
+    session_id = await session_with(world, rows=[(GOING, "going")])
+    world.state.overrides[f"PATCH {PATCH}"] = Override(404, b'{"code":"UNKNOWN_MESSAGE","message":"x"}')
+    await say(world, f"!session location {session_id} Hall C")
+    assert (await read_session(world, session_id)).state == "cancelled"
+    assert sent_to(world, GOING) == [text.SESSION_CANCELLED_DM.format(card="Lobby", ts=STARTS)]
+    assert replies(world) == [text.SESSION_NOT_UPCOMING]
 
 
 async def test_on_message_gone_takes_no_card_lock(world: SimpleNamespace) -> None:
@@ -406,6 +427,65 @@ async def test_cancel_card_sessions_locked_runs_with_the_card_lock_held(world: S
     assert count == 1
     assert (await read_session(world, session_id)).state == "cancelled"
     assert sent_to(world, GOING) == [text.SESSION_CANCELLED_DM.format(card="Lobby", ts=STARTS)]
+
+
+# Races: the session ends or is cancelled after a command's pre-lock check and before the command takes the card lock.
+# The transaction's own state guard refuses the change, so the command replies not-upcoming and writes nothing.
+
+RACE_COMMANDS = {
+    "cancel": lambda session_id: f"!session cancel {session_id}",
+    "move": lambda session_id: f"!session move {session_id} {MOVE_TIME}",
+    "repeat": lambda session_id: f"!session repeat {session_id} weekly",
+    "location": lambda session_id: f"!session location {session_id} Hall C",
+    "seats": lambda session_id: f"!session seats {session_id} 4",
+}
+RACE_ENDINGS = {"ended": sessions.end_if, "cancelled": sessions.cancel_if}
+
+
+def _signal_when_blocked(lock: asyncio.Lock) -> asyncio.Event:
+    """Sets the event when something starts to acquire the lock: the command has then passed its pre-lock checks and is
+    about to wait on the lock the caller holds. Install it after the caller has acquired, so the caller's own acquire is
+    not counted."""
+    entered = asyncio.Event()
+    acquire = lock.acquire
+
+    async def signalling_acquire() -> bool:
+        entered.set()
+        return await acquire()
+
+    lock.acquire = signalling_acquire  # type: ignore[method-assign]
+    return entered
+
+
+async def _stored_fields(world: SimpleNamespace, session_id: int) -> tuple[object, ...]:
+    session = await read_session(world, session_id)
+    return (session.state, session.starts_at, session.ends_at, session.seats, session.location_text,
+            session.recurrence)
+
+
+@pytest.mark.parametrize("ending", sorted(RACE_ENDINGS))
+@pytest.mark.parametrize("command", sorted(RACE_COMMANDS))
+async def test_a_change_that_loses_a_race_with_the_session_ending_is_refused_and_writes_nothing(
+        world: SimpleNamespace, command: str, ending: str) -> None:
+    session_id = await session_with(world, rows=[(GOING, "going")])
+    card_id = (await read_session(world, session_id)).card_id
+    lock = world.locks.get(card_id)
+    await lock.acquire()
+    entered = _signal_when_blocked(lock)
+    task = asyncio.create_task(say(world, RACE_COMMANDS[command](session_id)))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)   # the command is now waiting on the card lock
+        end = RACE_ENDINGS[ending]
+        await world.db.run(lambda conn: end(conn, session_id, NOW))
+        before = await _stored_fields(world, session_id)
+    finally:
+        lock.release()
+    await asyncio.wait_for(task, 5)
+    assert replies(world) == [text.SESSION_NOT_UPCOMING]
+    # The only request is the reply: no edit, no DM, no DM channel.
+    assert [(r.method, r.path) for r in world.state.requests if r.method != "GET"] == [("POST", REPLIES)]
+    assert await _stored_fields(world, session_id) == before
+    assert world.kicks == []
 
 
 # Logs: session_command never carries a user id.
