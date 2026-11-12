@@ -380,8 +380,8 @@ channel ID.
 
 ### Timestamp markup in a DM
 
-- Steps: complete a proposal. Read the prompt, the confirmation and the session message in the games channel's
-  session channel.
+- Steps: complete a proposal. Read the prompt, the confirmation and the session message in the card's session
+  channel.
 - Expected: `<t:…:F>` and `<t:…:R>` render as local times in all three places, on the proposal's chosen time.
 - Result (web): not yet run.
 - Result (mobile): not yet run.
@@ -407,7 +407,8 @@ channel ID.
 ### Cancel
 
 - Steps: with one going user and one waiting user, run `!session cancel <n>` as the proposer.
-- Expected: each going or waiting user gets one direct message. The session message is edited to its cancelled form.
+- Expected: each going or waiting user other than the proposer gets one direct message. The proposer gets none, since
+  they made the change. The session message is edited to its cancelled form.
 - Result (web): not yet run.
 - Result (mobile): not yet run.
 
@@ -421,8 +422,11 @@ channel ID.
 
 ### A scrub with a short retention
 
-- Steps: restart the bot with `SESSION_RETENTION_SECONDS=120` and `PURGE_INTERVAL_SECONDS=60`. Use a short session,
-  and let it reach its end time. Then wait for two purge intervals.
+- Steps: restart the bot with `SESSION_RETENTION_SECONDS=120`, `PURGE_INTERVAL_SECONDS=60` and `SESSION_LENGTH_SECONDS=120`.
+  Set a location on the card (`!card set <slug> location <text>`) or on the session (`!session location <n> <text>`)
+  before the session ends, so there is a location to lose. Propose a session, and let it reach its end time. Then wait
+  at least three purge intervals (more than 180 seconds) after the session's end. The cutoff is strict and falls
+  120 seconds after the end, and the first purge after it can come up to one interval later.
 - Expected: the session message loses its location line. The session row is gone from the database.
 - Result (web): not yet run.
 - Result (mobile): not yet run.

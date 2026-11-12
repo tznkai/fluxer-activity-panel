@@ -20,7 +20,8 @@ URL = "https://fluxer.invalid"
 GUILD = "1001"
 CHANNEL = "2001"
 STARTS = 1_800_000_000
-LOCATION_SENTINEL = "SESSION-LOCATION-SENTINEL-31"
+# No markdown control character, so `render.escape` leaves it as it is and the raw absence checks below are real.
+LOCATION_SENTINEL = "SESSION LOCATION SENTINEL 31"
 WHEN = {"name": "When", "value": f"<t:{STARTS}:F> · <t:{STARTS}:R>", "inline": False}
 
 
@@ -143,6 +144,13 @@ def test_allowed_mentions_are_empty_and_no_mention_form_survives_a_hostile_title
 
 
 # AC3.3: cancelled, ended and scrubbed forms.
+
+def test_the_sentinel_location_reaches_an_upcoming_payload_so_the_absence_checks_can_fail() -> None:
+    assert render.escape(LOCATION_SENTINEL) == LOCATION_SENTINEL, "the sentinel must survive render.escape"
+    payload = rendered(effective_location=LOCATION_SENTINEL)
+    assert fields_of(embed_of(payload))[text.SESSION_FIELD_LOCATION] == LOCATION_SENTINEL
+    assert LOCATION_SENTINEL in json.dumps(payload)
+
 
 def test_a_cancelled_session_says_cancelled_and_has_no_location() -> None:
     payload = rendered(sess=session(state="cancelled", closed_at=2), effective_location=LOCATION_SENTINEL)

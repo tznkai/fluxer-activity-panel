@@ -27,6 +27,7 @@ from fluxer_panel.db import Database
 from fluxer_panel.dm_backoff import DmBackoff
 from fluxer_panel.logs import setup_logging
 from fluxer_panel.pacer import ChannelPacer
+from fluxer_panel.rsvp import Counts
 from fluxer_panel.session_commands import SessionCommands
 from fluxer_panel.session_post import SessionPost
 from fluxer_panel.sources.registry import build_sources
@@ -1194,7 +1195,8 @@ async def test_archive_keeps_the_stored_follow_role(world: World) -> None:
 
 # AC11.1: a session's location never reaches the outside preview of `!card show`. The session line shows the placeholder.
 
-SESSION_LOCATION = "SENTINEL-SESSION-LOC-42"
+# No markdown control character, so `render.escape` leaves it as it is and the raw absence check is real.
+SESSION_LOCATION = "SENTINEL SESSION LOC 42"
 FAR_FUTURE = 4_102_444_800   # 2100-01-01 00:00 UTC, so the session is still upcoming whatever the clock is
 
 
@@ -1202,14 +1204,23 @@ async def test_show_outside_preview_gives_the_session_line_the_placeholder_and_n
         world: World) -> None:
     await make_mc(world)
 
-    def seed(conn: Any) -> None:
+    assert render.escape(SESSION_LOCATION) == SESSION_LOCATION, "the sentinel must survive render.escape"
+
+    def seed(conn: Any) -> int:
         card = cards.get_by_slug(conn, "mc")
         assert card is not None
-        sessions.add(conn, card_id=card.id, guild_id="2001", channel_id="3301", message_id="5601",
-                     starts_at=FAR_FUTURE, ends_at=FAR_FUTURE + 3600, proposer_id="1002", now=1,
-                     location_text=SESSION_LOCATION)
+        return sessions.add(conn, card_id=card.id, guild_id="2001", channel_id="3301", message_id="5601",
+                            starts_at=FAR_FUTURE, ends_at=FAR_FUTURE + 3600, proposer_id="1002", now=1,
+                            location_text=SESSION_LOCATION)
 
-    await world.db.run(seed)
+    session_id = await world.db.run(seed)
+    # Positive control: the session message renders the location, so the absence check below can fail.
+    stored = await world.db.run(lambda conn: sessions.get(conn, session_id))
+    card = await world.card("mc")
+    assert stored is not None and card is not None
+    control = render.session_message(card, stored, Counts(0, 0, 0), effective_location=SESSION_LOCATION,
+                                     effective_seats=None, instance_url="https://fluxer.invalid", scrubbed=False)
+    assert SESSION_LOCATION in json.dumps(control)
     world.clear_requests()
     await world.run("!card show mc")
 

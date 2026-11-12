@@ -18,7 +18,7 @@ import aiohttp
 import pytest
 
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
-from fluxer_panel import cards, sessions
+from fluxer_panel import cards, render, sessions
 from fluxer_panel import purge as purge_module
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
@@ -46,7 +46,8 @@ CHANNEL = "2101"
 MSG = "5101"
 GAMES = "3100"
 STARTS = 1_800_000_000
-LOCATION = "PURGE-SCRUB-LOCATION-SENTINEL"
+# No markdown control character, so `render.escape` leaves it as it is and the raw absence check is real.
+LOCATION = "PURGE SCRUB LOCATION SENTINEL"
 PATCH = f"/api/v1/channels/{CHANNEL}/messages/{MSG}"
 
 
@@ -465,7 +466,12 @@ async def test_the_scrub_edit_reaches_rest_while_the_row_exists_and_carries_no_l
         assert sessions.end_if(conn, session_id, CUT - 1)
         return session_id
 
+    assert render.escape(LOCATION) == LOCATION, "the sentinel must survive render.escape"
     session_id = await db.run(seed)
+    # Positive control: the ended, unscrubbed form carries the location, so the absence check after the scrub can fail.
+    await rest_world.post.edit_session(session_id)
+    [control] = [r for r in rest_world.state.requests if r.method == "PATCH"]
+    assert LOCATION in json.dumps(control.payload)
     row_present_at_edit: list[bool] = []
     original_edit = rest_world.rest.edit_message
 
@@ -478,7 +484,9 @@ async def test_the_scrub_edit_reaches_rest_while_the_row_exists_and_carries_no_l
     await _run(db, status, NOW, scrub=rest_world.post.scrub)
 
     assert row_present_at_edit == [True]
-    [patch] = [r for r in rest_world.state.requests if r.method == "PATCH"]
+    patches = [r for r in rest_world.state.requests if r.method == "PATCH"]
+    assert len(patches) == 2
+    patch = patches[-1]
     assert patch.path == PATCH
     fields = patch.payload["embeds"][0]["fields"]
     assert "Location" not in [f["name"] for f in fields]

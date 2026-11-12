@@ -242,7 +242,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/render.py:367` `def outside_location(has_location: bool)` — takes a bool, so the location text cannot reach the outside line.
 - `src/fluxer_panel/render.py:263` `fit(escape(channel.channel_name)` — a voice or text channel's name is escaped before it enters the field, so a name cannot form a link or a mention.
 - `src/fluxer_panel/render.py:343` `def _outside_channel(` — a channel name on the outside line is mention-neutralised, and the line shows it only when the link is verified.
-- `tests/test_render.py:698` `SENTINEL_LOCATION not in outside` — the test that the location text never appears in the outside rendering.
+- `tests/test_render.py:703` `SENTINEL_LOCATION not in outside` — the test that the location text never appears in the outside rendering.
 - `src/fluxer_panel/render.py:125` `def channel_link(` — the only place a channel link is built. Both ids pass the snowflake check first.
 - `src/fluxer_panel/render.py:231` `suffix=escape(suffix)` — a slot's suffix is validated card text (`card_fields.suffix`), and it is escaped again before it enters the field name, as a second layer.
 - `src/fluxer_panel/render.py:356` `def outside_address(address: Address, public: bool) -> str:` — the single helper that decides, for every address slot, whether the outside line shows the host or only says the address is in Fluxer. The host is shown only when `public` is true, with or without a suffix.
@@ -360,7 +360,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 
 - `src/fluxer_panel/dm_backoff.py:19` `def blocked(self, user_id: str) -> bool:` — the backoff is in memory. A user whose DM failed gets no further DM for the backoff window (`DM_BACKOFF_SECONDS`).
 - `src/fluxer_panel/notify.py:34` `and not bypass and backoff.blocked(user_id):` — the skip. It is logged as `user_dm_skipped` with reason `backoff`, and no request is made.
-- `src/fluxer_panel/notify.py:28` `bypass: bool = False)` — the promotion, cancel, move and series-stopped DMs pass `bypass`, so they go out even while the user is in backoff.
+- `src/fluxer_panel/notify.py:28` `bypass: bool = False)` — the promotion, cancel, move and series-stopped DMs, and the wake request close DMs (ready, gave up and cleared), pass `bypass`, so they go out even while the user is in backoff.
 - `src/fluxer_panel/notify.py:18` `async def dm_admins(` — admin DMs never take the backoff path, so an admin is always told.
 - `src/fluxer_panel/session_flow.py:161` `if self._backoff.blocked(user):` — a 📅 start is refused while the proposer is in backoff, before any DM is sent.
 
@@ -374,7 +374,7 @@ This section compares the phase 4 brief and plan with the design and with what p
 - **Failed scrubs:** a failed scrub edit is mostly a 404 (`UNKNOWN_CHANNEL` or `UNKNOWN_MESSAGE`), not a 403. A failure is logged, and the delete still runs.
 - **Open-ended series:** the brief's rule that an open-ended series is never purged is replaced by a per-occurrence purge. A weekly occurrence whose successor is not posted yet is kept, so its purge cannot end the series.
 - **Outcome section:** the reactions design has no "Outcome" section. Only the cards design does.
-- **Reaction names:** `▶` (U+25B6) is wake and `🙋` (U+1F64B) is play-now. The 📅 seed is a third emoji and collides with neither.
+- **Reaction names:** `▶` (U+25B6) is wake and `🙋` (U+1F64B) is play-now. The 📅 seed is a fourth seeded emoji, after wake, bell and raised hand, and collides with neither.
 - **Card status:** status is computed in memory from the stored fields and the probe results. It is never stored, so there is no status column to migrate.
 - **Location limit:** the limit is 200 characters, from `card_fields.TEXT_LIMITS["location"]`.
 - **The `moved` column:** migration 0008 adds `moved`, which records a time change, so the "Time changed" line survives later edits to the same session.

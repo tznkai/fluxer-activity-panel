@@ -32,7 +32,8 @@ INSTANCE = "https://fluxer.invalid"
 CAP_INSTANCE = instance_url_of_length(INSTANCE_URL_MAX)   # the longest instance URL the config accepts
 CAP_EMOJI_INSTANCE = instance_url_of_units(INSTANCE_URL_MAX)   # the same cap at 128 units, with astral characters
 NOW = datetime(2026, 11, 2, 12, 0, tzinfo=UTC)
-SENTINEL_LOCATION = "SENTINEL-LOCATION-77"
+# No markdown control character, so `render.escape` leaves it as it is and the raw absence check is real.
+SENTINEL_LOCATION = "SENTINEL LOCATION 77"
 ALL_DETAILS = ("map", "version", "game_mode")
 READY_FULL = CardStatus(
     StatusKind.READY,
@@ -693,7 +694,11 @@ def test_outside_location_is_the_fixed_text_or_none() -> None:
 
 
 def test_location_text_never_appears_outside() -> None:
+    assert render.escape(SENTINEL_LOCATION) == SENTINEL_LOCATION, "the sentinel must survive render.escape"
     card = make_card(location=Location(SENTINEL_LOCATION))
+    # Positive control: the card's own embed shows the location, so the absence check below can fail.
+    embed = render.render_embed(card, None, None, instance_url="https://fluxer.invalid")
+    assert fields_of(embed)[text.FIELD_LOCATION] == SENTINEL_LOCATION
     outside = render.outside_text(card, None, None)
     assert SENTINEL_LOCATION not in outside
     assert text.OUTSIDE_LOCATION in outside

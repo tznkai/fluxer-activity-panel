@@ -23,7 +23,8 @@ JUMP = ("2001", "3200", "5101")                       # (guild, channel, message
 JUMP_URL = f"{INSTANCE}/channels/2001/3200/5101"
 ON = NextSession(starts_at=START, going=3, jump=JUMP, has_location=False)
 READY = CardStatus(StatusKind.READY)
-SENTINEL_LOCATION = "SENTINEL-LOCATION-42"
+# No markdown control character, so `render.escape` leaves it as it is and the raw absence check is real.
+SENTINEL_LOCATION = "SENTINEL LOCATION 42"
 
 
 def value_of(embed: dict) -> str:
@@ -88,7 +89,11 @@ def test_the_worst_card_with_a_next_session_and_the_footer_stays_within_the_embe
 
 
 def test_the_outside_text_has_the_session_line_after_the_next_line_with_only_the_placeholder() -> None:
+    assert render.escape(SENTINEL_LOCATION) == SENTINEL_LOCATION, "the sentinel must survive render.escape"
     card = make_card(location=Location(SENTINEL_LOCATION))
+    # Positive control: the card's own embed shows the location, so the absence check below can fail.
+    embed = render.render_embed(card, None, None, instance_url=INSTANCE)
+    assert fields_of(embed)[text.FIELD_LOCATION] == SENTINEL_LOCATION
     session = NextSession(starts_at=START, going=3, jump=JUMP, has_location=True)
     outside = render.outside_text(card, None, "Restarts in 30 min", next_session=session)
     line = text.OUTSIDE_NEXT_SESSION.format(ts=START, going=3) + " · " + text.OUTSIDE_LOCATION

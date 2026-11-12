@@ -229,7 +229,8 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   change needs the proposer or `admin.authorize`. A guild message goes to `admin.handle` and never reaches the
   session path.
 - DM backoff (`dm_backoff.py`, in memory): a user whose DM failed gets no ordinary DM for `DM_BACKOFF_SECONDS`.
-  Promotion, cancel, move and series-stopped DMs pass `bypass=True`. Admin DMs (`notify.dm_admins`) never use the
+  Promotion, cancel, move and series-stopped DMs, and the wake request close DMs (ready, gave up and cleared), pass
+  `bypass=True`. Admin DMs (`notify.dm_admins`) never use the
   backoff. A 📅 start is refused while the proposer is in backoff.
 
 ## Reactions rules
@@ -330,7 +331,9 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   RSVP rows go with their session by `ON DELETE CASCADE`.
 - A request expires when `created_at` is more than 30 days ago, whatever its status.
 - A play-now post expires when `created_at` is more than 30 days ago, in either state.
-- Cutoffs are strict: a row exactly at a cutoff is kept. One transaction per run, then a WAL checkpoint.
+- Cutoffs are strict: a row exactly at a cutoff is kept. The due sessions are read first, in their own transaction. Each
+  due session is then scrubbed, outside any transaction. Every delete runs in one transaction that re-checks the due
+  rule (`sessions.PURGE_DUE_SQL`), and a WAL checkpoint follows.
 - `run` purges at startup and then every `PURGE_INTERVAL_SECONDS`. A failed purge logs `purge_failed`, is recorded
   in the status file, and the bot keeps running.
 - The status file (`PURGE_STATUS_PATH`, default `DATA_DIR/purge-status.json`) is written atomically, mode 0644, and
@@ -351,8 +354,8 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   Run them in a real terminal, not a non-interactive prompt.
 - Scripts: `reactions.py`, `edit.py`, `reaction_remove.py`, `roles.py`, `dm.py`. Removal is exercised only in a guild channel;
   DM removal is untested (see `docs/fluxer-notes.md`).
-- Reaction scripts, run by hand against the private guild: `seed_reactions.py` (the three seeded reactions, their echo and
-  the stored names), `role_ping.py` (a test role's `mention_roles`, the role's mentionable flag and the above-the-bot 403,
+- Reaction scripts, run by hand against the private guild: `seed_reactions.py` (the wake, bell and raised-hand seeds,
+  their echo and the stored names; it does not cover the calendar), `role_ping.py` (a test role's `mention_roles`, the role's mentionable flag and the above-the-bot 403,
   which needs `LIVE_HIGH_ROLE_ID`; it never deletes a role), `board_last.py` (`last_message_id` and `messages?limit=1` after
   deletes; it deletes only its own test messages) and `reaction_bulk.py` (reactor paging, bulk removal and a rate probe).
 - Card and Panel scripts, run by hand. Each prints only redacted labels:

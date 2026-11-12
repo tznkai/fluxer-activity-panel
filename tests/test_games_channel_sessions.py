@@ -8,6 +8,7 @@ CardLocks. The test moves the clock, and the pacer never sleeps."""
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -20,7 +21,7 @@ import pytest
 from fluxer_client import events
 from fluxer_client.roles import RoleCache
 from fluxer_client.rest import FluxerREST
-from fluxer_panel import board, cards, sessions, text
+from fluxer_panel import board, cards, render, sessions, text
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
@@ -49,7 +50,9 @@ VOTER = "6002"           # the second account: waits, then is promoted
 GUILD = "2001"           # the games community
 PLAY_NOW = "3200"        # PLAY_NOW_CHANNEL_ID: a second channel in GUILD
 INSTANCE = "https://fluxer.invalid"
-SENTINEL_LOC = "SENTINEL-LOC-7a1f"
+# A sentinel with no markdown control character: `render.escape` leaves it unchanged, so a raw absence check below is
+# real. A hyphenated sentinel would be escaped on render (SENTINEL\-LOC) and its raw form could never appear.
+SENTINEL_LOC = "SENTINEL LOC 7a1f"
 SENTINEL_TYPED = "SENTINEL-TYPED"
 PLAY_NOW_MESSAGES = f"/api/v1/channels/{PLAY_NOW}/messages"
 NOW = datetime(2026, 11, 11, 8, 0, tzinfo=UTC).timestamp()   # a Wednesday, 08:00 UTC
@@ -211,6 +214,11 @@ async def test_a_full_session_scenario_never_touches_the_games_channel_and_logs_
     assert first is not None
     first_id = first.id
     first_path = f"/api/v1/channels/{first.channel_id}/messages/{first.message_id}"
+    # Positive control: the session message as first posted carries the location, so the absence checks below can fail.
+    assert render.escape(SENTINEL_LOC) == SENTINEL_LOC, "the sentinel must survive render.escape"
+    first_posts = [r for r in s.state.requests
+                   if r.method == "POST" and r.path == f"/api/v1/channels/{first.channel_id}/messages"]
+    assert first_posts and SENTINEL_LOC in json.dumps(first_posts[0].payload)
 
     # 3. RSVP: the voter takes the check and waits for the one seat; the proposer says no and the voter is promoted.
     await s.interactions.rsvp_changed(first_id, VOTER, "going", True)
@@ -236,11 +244,15 @@ async def test_a_full_session_scenario_never_touches_the_games_channel_and_logs_
 
     # 6. The moved session ends at its end time: its message is edited, and nothing is posted.
     posts_before_end = session_posts(s)
+    patches_before_end = len(requests(s, "PATCH", first_path))
     s.clock.now = moved.ends_at
     await s.jobs.run()
     ended = await s.db.run(lambda c: sessions.get(c, first_id))
     assert ended is not None and ended.state == "ended"
-    assert requests(s, "PATCH", first_path)
+    ended_patches = requests(s, "PATCH", first_path)
+    assert len(ended_patches) == patches_before_end + 1, "the end should edit the session message once"
+    ended_fields = [(f["name"], f["value"]) for f in ended_patches[-1].payload["embeds"][0]["fields"]]
+    assert (text.SESSION_FIELD_STATUS, text.SESSION_ENDED) in ended_fields
     assert session_posts(s) == posts_before_end
 
     # 7. A day after the start, the weekly series posts its successor in the session's own channel.
@@ -262,7 +274,8 @@ async def test_a_full_session_scenario_never_touches_the_games_channel_and_logs_
     assert result is not None and result.sessions == 1
     assert await s.db.run(lambda c: sessions.get(c, first_id)) is None
     scrub_patch = requests(s, "PATCH", first_path)[-1]
-    assert SENTINEL_LOC not in str(scrub_patch.payload)
+    assert "Location" not in [f["name"] for f in scrub_patch.payload["embeds"][0]["fields"]]
+    assert SENTINEL_LOC not in json.dumps(scrub_patch.payload)
 
     # 9. The board check runs again.
     await s.poller.tick()

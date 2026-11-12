@@ -35,7 +35,9 @@ from tests.fakes import FakeFluxerState, make_rest_app
 REQUESTER = "424242"        # a person with an open wake request
 FOLLOWER = "535353"         # a person holding the card's follow role
 PRESSER = "646464"          # the person who raised a play-now post
-NAME = "SENTINEL-NAME-9d2c"  # a display name, in the fake's member records
+# a display name, in the fake's member records. No markdown control character, so `render.escape` leaves it unchanged
+# and the raw search in `leaks` can find it.
+NAME = "SENTINEL NAME 9d2c"
 SENTINELS = (REQUESTER, FOLLOWER, PRESSER, NAME)
 
 RENDERERS = ("board_message", "card_message", "outside_text", "play_now_message", "render_embed", "session_message")

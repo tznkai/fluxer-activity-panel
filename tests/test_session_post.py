@@ -17,7 +17,7 @@ import aiohttp
 import pytest
 
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
-from fluxer_panel import cards, rsvp, sessions
+from fluxer_panel import cards, render, rsvp, sessions
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.dm_backoff import DmBackoff
@@ -37,7 +37,8 @@ MSG = "5101"
 GAMES = "3100"
 GAMES_MSG = "5102"
 STARTS = 1_800_000_000
-LOCATION_SENTINEL = "SESSION-POST-LOCATION-SENTINEL"
+# No markdown control character, so `render.escape` leaves it as it is and the raw absence check is real.
+LOCATION_SENTINEL = "SESSION POST LOCATION SENTINEL"
 PATCH = f"/api/v1/channels/{CHANNEL}/messages/{MSG}"
 PAYLOAD = {"embeds": [{"title": "Lobby", "fields": []}], "allowed_mentions": {"parse": []}}
 
@@ -150,15 +151,21 @@ async def test_a_failed_seed_logs_and_stops_without_raising(world: SimpleNamespa
 # The purge's scrub: one PATCH, no location, and a REST failure reaches the caller.
 
 async def test_scrub_sends_one_patch_with_no_location_field(world: SimpleNamespace) -> None:
+    assert render.escape(LOCATION_SENTINEL) == LOCATION_SENTINEL, "the sentinel must survive render.escape"
     session_id = await seed(world, location=LOCATION_SENTINEL)
+    # Positive control: the upcoming form carries the location, so the absence check after the scrub can fail.
+    await world.post.edit_session(session_id)
+    [control] = writes(world, "PATCH")
+    assert LOCATION_SENTINEL in json.dumps(control.payload)
     await world.db.run(lambda conn: sessions.end_if(conn, session_id, 2))
     session = await world.db.run(lambda conn: sessions.get(conn, session_id))
     assert session is not None
     await world.post.scrub(session)
-    [patch] = writes(world, "PATCH")
-    names = [f["name"] for f in patch.payload["embeds"][0]["fields"]]
+    patches = writes(world, "PATCH")
+    assert len(patches) == 2
+    names = [f["name"] for f in patches[-1].payload["embeds"][0]["fields"]]
     assert "Location" not in names
-    assert LOCATION_SENTINEL not in json.dumps(patch.payload)
+    assert LOCATION_SENTINEL not in json.dumps(patches[-1].payload)
 
 
 async def test_scrub_raises_the_rest_error_to_the_caller(world: SimpleNamespace) -> None:

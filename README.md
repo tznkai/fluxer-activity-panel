@@ -99,8 +99,8 @@ Sessions (see Sessions under Cards):
 - `SESSION_RETENTION_SECONDS` (default `604800`): how long an ended or cancelled session is kept before the purge
   scrubs its message and deletes it. Only sessions use it.
 - `DM_BACKOFF_SECONDS` (default `3600`): after a direct message to a user fails, the bot sends that user no ordinary
-  direct message for this long. Promotion, cancel, move and series-stopped messages bypass the backoff, and admin
-  messages never use it.
+  direct message for this long. Promotion, cancel, move and series-stopped messages, and the wake request close
+  messages (ready, gave up and cleared), bypass the backoff. Admin messages never use it.
 
 Hand-run tools only (`tools/live/`, see `CLAUDE.md`): `LIVE_GUILD_ID`, `LIVE_CHANNEL_ID`,
 `LIVE_USER_ID`, `LIVE_ROLE_ID`, `LIVE_HIGH_ROLE_ID`, `LIVE_PTERO_SERVERS`, `LIVE_PROBES`,
