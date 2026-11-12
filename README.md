@@ -334,7 +334,8 @@ a reply to `!session`.
 ```
 
 Cancel and move DM each going and waiting attendee, except the person who made the change. Cancelling leaves a weekly
-series in place, so `!session repeat <session> off` stops it. `!card archive` cancels the card's upcoming sessions the
+series in place; run `!session repeat <session> off` before cancelling, or on the next occurrence, to stop it.
+`!card archive` cancels the card's upcoming sessions the
 same way and stops their series. When a session's message is deleted, the session is cancelled and its attendees are
 told.
 
