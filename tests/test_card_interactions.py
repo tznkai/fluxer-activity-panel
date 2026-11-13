@@ -18,10 +18,11 @@ import pytest
 
 from fluxer_client import events
 from fluxer_client.rest import encode_emoji
-from fluxer_panel import cards, interaction_settings, sessions, subscriptions, text
+from fluxer_panel import cards, interaction_settings, polls, sessions, subscriptions, text
 from fluxer_panel.db import Database
 from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.pacer import ChannelPacer
+from fluxer_panel.poll_post import POLL_RUNOFF_EMOJI, POLL_SCHEDULE_EMOJI
 from fluxer_panel.presses import (
     FOLLOW_EMOJI, PLAY_NOW_EMOJI, POLL_EMOJI, SESSION_EMOJI, WAKE_EMOJI, Action, Press, Presses, Surface)
 from fluxer_panel.seeding import Seeder
@@ -36,6 +37,7 @@ OTHER_CHANNEL = "2301"            # a text channel in OTHER_GUILD, a community t
 CARD_MSG = "5101"
 COPY_MSG = "5102"
 OTHER_COPY_MSG = "5302"
+POLL_MSG = "5501"                 # a closed poll's message in COPY_CHANNEL, with its calendar and repeat reactions
 AB_MSG = "5201"                   # a second live card's message in the games channel
 SESSION_MSG = "5401"              # a session message in COPY_CHANNEL: its RSVP reactions are never the kill switch's
 STARTS = 1_800_000_000
@@ -401,3 +403,30 @@ async def test_no_card_lock_is_held_while_reactions_are_removed_or_added(world: 
     await world.run("!card interactions on")
     assert len(held) == 4
     assert not any(held)
+
+
+# AC8.2: a closed poll keeps its calendar and repeat reactions --------------------------------------------------
+
+async def test_off_leaves_a_closed_poll_message_and_its_calendar_and_repeat_reactions_alone(world: World) -> None:
+    card = await live_card(world, "mc", CARD_MSG)
+
+    def closed_winner(conn: Any) -> None:
+        poll_id = polls.create(
+            conn, card_id=card.id, guild_id=GUILD, channel_id=COPY_CHANNEL, message_id=POLL_MSG, starter_id=PRESSER,
+            kind="approval", parent_poll_id=None, now=STARTS - 10_000, closes_at=STARTS - 5_000, ballot_size=6,
+            options=[(STARTS, "offered")], recipients=[PRESSER])
+        assert poll_id is not None
+        winner = polls.options(conn, poll_id)[0].id
+        assert polls.close_if_open(conn, poll_id, now=STARTS - 5_000, outcome="winner", winner_option_id=winner)
+
+    await world.db.run(closed_winner)
+    world.state.messages[(COPY_CHANNEL, POLL_MSG)] = {"embeds": []}
+    for emoji in (POLL_SCHEDULE_EMOJI, POLL_RUNOFF_EMOJI):
+        world.state.reactions.setdefault((COPY_CHANNEL, POLL_MSG), {})[emoji] = [BOT_ID]
+    world.clear_requests()
+
+    await world.run("!card interactions off")
+
+    assert sent(world, "DELETE") == [reaction_path(GAMES, CARD_MSG, emoji) for emoji in EMOJI]
+    assert [r for r in world.state.requests if f"/messages/{POLL_MSG}" in r.raw_path] == []
+    assert set(world.state.reactions[(COPY_CHANNEL, POLL_MSG)]) == {POLL_SCHEDULE_EMOJI, POLL_RUNOFF_EMOJI}

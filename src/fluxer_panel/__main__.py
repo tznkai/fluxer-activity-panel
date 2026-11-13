@@ -116,6 +116,8 @@ async def run(config: Config, db: Database) -> None:
             # The poll close path (one place every close goes through) and the `!poll` commands, which share the card
             # locks and the poll post with the flow.
             poll_closer = PollCloser(db=db, locks=card_ctx.locks, poll_post=poll_post)
+            poll_post.set_on_gone(poll_closer.on_message_gone)   # a deleted poll message closes the poll as removed
+            card_ctx.poll_closer = poll_closer                    # `!card archive` closes the open poll
             poll_commands = PollCommands(db=db, rest=rest, config=config, locks=card_ctx.locks, poll_post=poll_post,
                                          poll_flow=poll_flow, closer=poll_closer, kick=poller.kick)
             # The timed session jobs (ends, the weekly series, the heads-up) run on each tick, and their next due time

@@ -19,13 +19,16 @@ import pytest
 
 from fluxer_client.events import MessageCreate
 from fluxer_client.rest import FluxerREST
-from fluxer_panel import admin, cards, render, sessions, text
+from fluxer_panel import admin, cards, polls, render, sessions, text
 from fluxer_panel.card_commands import LIST_CHUNK, CardContext, chunks, help_fields_reply
 from fluxer_panel.cards import ChannelLink
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.dm_backoff import DmBackoff
-from fluxer_panel.logs import setup_logging
+from fluxer_panel.games import BotIdentity
+from fluxer_panel.logs import FIELDS_ATTR, setup_logging
+from fluxer_panel.poll_close import PollCloser
+from fluxer_panel.poll_post import PollPost
 from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.rsvp import Counts
 from fluxer_panel.session_commands import SessionCommands
@@ -1228,3 +1231,129 @@ async def test_show_outside_preview_gives_the_session_line_the_placeholder_and_n
     expected = render.escape(text.OUTSIDE_NEXT_SESSION.format(ts=FAR_FUTURE, going=1) + " · " + text.OUTSIDE_LOCATION)
     assert expected in outside_message["content"]
     assert SESSION_LOCATION not in str(world.payloads())
+
+
+# AC8.1 and AC8.3: archive closes the card's open poll with no winner ------------------------------------------
+
+POLL_CHANNEL, POLL_MESSAGE = "2003", "5301"
+POLL_PATH = f"/api/v1/channels/{POLL_CHANNEL}/messages/{POLL_MESSAGE}"
+POLL_BOT = "1900"
+POLL_NOW = 1_800_000_000
+POLL_VOTERS = ("1101", "1102")
+POLL_STARTS = (POLL_NOW + 7200, POLL_NOW + 10800)
+
+
+async def never(_seconds: float) -> None:
+    """The debounce sleep: never returns, so only the close's own flush edits anything."""
+    await asyncio.Event().wait()
+
+
+@pytest.fixture
+async def poll_post(world: World):
+    """The poll posts and the closer wired as __main__ wires them: the poll's 404 hook goes to the closer."""
+    post = PollPost(db=world.db, rest=world.rest, config=world.config, pacer=ChannelPacer(),
+                    identity=BotIdentity(user_id=POLL_BOT), edit_delay=0, sleep=never)
+    closer = PollCloser(db=world.db, locks=world.ctx.locks, poll_post=post, clock=lambda: float(POLL_NOW))
+    post.set_on_gone(closer.on_message_gone)
+    world.ctx.poll_closer = closer
+    try:
+        yield post
+    finally:
+        await post.aclose(timeout=0.05)
+
+
+async def _card_with_open_poll(world: World, post: PollPost) -> int:
+    """The live card "mc" with an open approval poll: two voters have ballot DMs and one has already voted, so
+    without the archive's override the poll would have a winner."""
+    await _live_card_with_message(world)
+    card = await world.card("mc")
+    assert card is not None
+    world.state.messages[(POLL_CHANNEL, POLL_MESSAGE)] = {"embeds": []}
+
+    def create(conn: Any) -> int:
+        poll_id = polls.create(conn, card_id=card.id, guild_id=SESSION_GUILD, channel_id=POLL_CHANNEL,
+                               message_id=POLL_MESSAGE, starter_id="1001", kind="approval", parent_poll_id=None,
+                               now=POLL_NOW, closes_at=POLL_NOW + 86400, ballot_size=6,
+                               options=[(start, "offered") for start in POLL_STARTS], recipients=list(POLL_VOTERS))
+        assert poll_id is not None
+        return poll_id
+
+    poll_id = await world.db.run(create)
+    for user in POLL_VOTERS:
+        assert await post.send_ballot(poll_id, user)
+    first = await world.db.run(lambda c: polls.options(c, poll_id))
+    assert await world.db.run(lambda c: polls.replace_picks_if_open(c, poll_id, POLL_VOTERS[0],
+                                                                    [first[0].id], ranked=False))
+    world.clear_requests()
+    return poll_id
+
+
+async def _stored_poll(world: World, poll_id: int) -> polls.Poll:
+    poll = await world.db.run(lambda c: polls.get(c, poll_id))
+    assert poll is not None
+    return poll
+
+
+async def test_archive_closes_the_open_poll_with_no_winner_and_edits_its_messages(world, poll_post) -> None:
+    poll_id = await _card_with_open_poll(world, poll_post)
+
+    await asyncio.wait_for(world.run("!card archive mc"), 5)
+
+    poll = await _stored_poll(world, poll_id)
+    assert (poll.state, poll.outcome, poll.winner_option_id) == ("closed", "none", None)
+    assert [r for r in world.state.requests if r.method == "PATCH" and r.path == POLL_PATH]
+    for user in POLL_VOTERS:
+        ballot = await world.db.run(lambda c, u=user: polls.ballot(c, poll_id, u))
+        assert ballot is not None and ballot.dm_message_id is not None
+        dm = world.state.dm_channels[user]
+        assert text.POLL_BALLOT_CLOSED.split("{")[0] in world.state.messages[(dm, ballot.dm_message_id)]["content"]
+    assert not [r for r in world.state.requests if r.method == "PUT" and "/reactions/" in r.raw_path]
+    assert world.last_reply() == text.CARD_ARCHIVED
+    assert (await world.card("mc")).state == "archived"
+
+
+async def test_archive_completes_when_the_poll_message_edit_fails(world, poll_post) -> None:
+    poll_id = await _card_with_open_poll(world, poll_post)
+    world.state.overrides[f"PATCH {POLL_PATH}"] = Override(500, b'{"code": "X", "message": "no"}')
+
+    await asyncio.wait_for(world.run("!card archive mc"), 5)
+
+    assert (await _stored_poll(world, poll_id)).outcome == "none"
+    assert (await world.card("mc")).state == "archived"
+    assert world.last_reply() == text.CARD_ARCHIVED
+
+
+async def test_archive_completes_and_logs_when_closing_the_poll_raises(world, poll_post, caplog, monkeypatch) -> None:
+    poll_id = await _card_with_open_poll(world, poll_post)
+    closer = world.ctx.poll_closer
+    assert closer is not None
+
+    async def broken_close(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("the close failed")
+
+    monkeypatch.setattr(closer, "close_locked", broken_close)
+    caplog.set_level(logging.WARNING)
+    await asyncio.wait_for(world.run("!card archive mc"), 5)
+
+    assert (await world.card("mc")).state == "archived"
+    assert world.last_reply() == text.CARD_ARCHIVED
+    assert (await _stored_poll(world, poll_id)).state == "open"
+    records = [r for r in caplog.records if r.getMessage() == "poll_archive_failed"]
+    assert len(records) == 1
+    card = await world.card("mc")
+    assert card is not None
+    assert getattr(records[0], FIELDS_ATTR) == {"card_id": card.id, "reason": "RuntimeError"}
+
+
+async def test_a_404_on_the_poll_message_during_the_archive_flush_does_not_deadlock(world, poll_post) -> None:
+    """Hang guard: the close runs under the archive's card lock and its flush then answers 404. The hook must see the
+    poll already closed and return, without taking the card lock again."""
+    poll_id = await _card_with_open_poll(world, poll_post)
+    world.state.overrides[f"PATCH {POLL_PATH}"] = Override(404, b'{"code": "X", "message": "gone"}')
+
+    await asyncio.wait_for(world.run("!card archive mc"), 5)
+
+    poll = await _stored_poll(world, poll_id)
+    assert (poll.state, poll.outcome) == ("closed", "none")
+    assert (await world.card("mc")).state == "archived"
+    assert world.last_reply() == text.CARD_ARCHIVED

@@ -89,6 +89,15 @@ class PollCloser:
             await self._after(closed)
         return closed
 
+    async def on_message_gone(self, poll_id: int) -> None:
+        """The poll message answered 404 to an edit. An open poll closes as removed; a closed one is left. The read is
+        made without the card lock: when the 404 comes from an archive's own flush, the archive holds the lock and has
+        already closed the poll, so this returns before it would take the lock again."""
+        poll = await self._db.run(lambda c: polls.get(c, poll_id))
+        if poll is None or poll.state != "open":
+            return
+        await self.close(poll_id, outcome_override="removed")
+
     async def _after(self, closed: Closed) -> None:
         """The edits and seeding after a committed close. The poll and its ballots are flushed at once, so the poll
         shows as closed without waiting for the debounce; the seeding runs only for a winner."""

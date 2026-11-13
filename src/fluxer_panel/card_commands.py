@@ -18,7 +18,8 @@ import aiohttp
 from fluxer_client.events import MessageCreate
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
 from fluxer_client.roles import RoleCache
-from fluxer_panel import card_fields, cards, follow_roles, interaction_settings, render, sessions, subscriptions, text
+from fluxer_panel import (
+    card_fields, cards, follow_roles, interaction_settings, polls, render, sessions, subscriptions, text)
 from fluxer_panel.cards import SHOW_ITEMS, CardFieldError, ChannelLink
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
@@ -31,6 +32,7 @@ from fluxer_panel.sources.registry import PROBES, Sources, known_manager_kinds, 
 if TYPE_CHECKING:
     # wake.py imports CardLocks from this module, so the wake requests are named for type checking only.
     # session_commands imports CardLocks and chunks from this module too, so it is named for type checking only.
+    from fluxer_panel.poll_close import PollCloser
     from fluxer_panel.session_commands import SessionCommands
     from fluxer_panel.wake import WakeRequests
 
@@ -95,6 +97,7 @@ class CardContext:
     identity: BotIdentity | None = None
     wake: WakeRequests | None = None
     session_commands: SessionCommands | None = None
+    poll_closer: PollCloser | None = None     # `!card archive` closes the card's open poll through it
 
 
 @dataclass(frozen=True)
@@ -576,6 +579,8 @@ async def _archive(event: MessageCreate, ctx: CardContext, rest: str) -> _Result
         # That is accepted, because an admin who meant to archive does not want those sessions either.
         if ctx.session_commands is not None:
             await ctx.session_commands.cancel_card_sessions_locked(card_id, event.author_id)
+        # The open poll closes with no winner, under the same lock, before the messages are deleted.
+        await _close_open_poll_locked(ctx, card_id)
         # The copies go first and the card's own message last. A copy the bot is refused (403) stays where it is and is
         # named in the reply. Any other failure stops the archive while the card's message is still there.
         copies = await ctx.db.run(lambda c: subscriptions.list_for_card(c, card_id))
@@ -615,6 +620,20 @@ async def _archive(event: MessageCreate, ctx: CardContext, rest: str) -> _Result
         reply = text.CARD_ARCHIVED
     await _say(ctx, event, reply)
     return _Result(card_id)
+
+
+async def _close_open_poll_locked(ctx: CardContext, card_id: int) -> None:
+    """Closes the card's open poll with no winner. The caller holds the card lock. A failure is logged and the archive
+    goes on: the card's messages are still deleted, and the poll stays open only if the close itself failed."""
+    if ctx.poll_closer is None:
+        return
+    poll = await ctx.db.run(lambda c: polls.open_for_card(c, card_id))
+    if poll is None:
+        return
+    try:
+        await ctx.poll_closer.close_locked(poll.id, outcome_override="none")
+    except Exception as exc:  # noqa: BLE001 - a poll that cannot close must not stop the archive
+        log_event(log, "poll_archive_failed", level=logging.WARNING, card_id=card_id, reason=type(exc).__name__)
 
 
 class _Delete(enum.Enum):

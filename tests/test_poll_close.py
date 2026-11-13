@@ -28,7 +28,7 @@ from fluxer_panel.logs import FIELDS_ATTR
 from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.poll_close import Closed, PollCloser
 from fluxer_panel.poll_post import POLL_RUNOFF_EMOJI, POLL_SCHEDULE_EMOJI, PollPost
-from tests.fakes import FakeFluxerState, make_rest_app
+from tests.fakes import FakeFluxerState, Override, make_rest_app
 
 TOKEN = "SENTINEL-TOKEN-poll-close"
 BOT = "1900"
@@ -347,3 +347,40 @@ async def test_a_close_logs_the_poll_card_and_outcome_and_no_user_or_text(world,
     assert len(records) == 1
     fields = getattr(records[0], FIELDS_ATTR)
     assert fields == {"poll_id": poll_id, "card_id": world.card_id, "outcome": "winner"}
+
+
+# AC8.3: a 404 on the poll message closes the poll as removed --------------------------------------------------
+
+async def test_a_404_on_the_poll_message_during_a_vote_refresh_closes_the_poll_as_removed(world) -> None:
+    poll_id = await store(world, starts=[ONE, TWO])
+    await send_ballots(world, poll_id)
+    world.post.set_on_gone(world.closer.on_message_gone)     # as __main__ wires it
+    world.state.overrides[f"PATCH {POLL_PATH}"] = Override(404, b'{"code": "X", "message": "gone"}')
+    await vote(world, poll_id, VOTERS[0], [await option_of(world, poll_id, TWO)])
+    mark = len(world.state.requests)
+
+    world.post.changed(poll_id)                               # a vote's refresh, flushed now
+    await asyncio.wait_for(world.post.flush(poll_id), 5)
+
+    poll = await stored(world, poll_id)
+    assert poll.state == "closed" and poll.outcome == "removed" and poll.winner_option_id is None
+    after = world.state.requests[mark:]
+    assert [r.method for r in after if r.path == POLL_PATH] == ["PATCH"], "the refused edit is the last to the poll"
+    assert reactions_on(world, POLL_MSG) == set()
+    removed_text = text.POLL_BALLOT_REMOVED
+    for user in VOTERS:
+        ballot = await world.db.run(lambda c, u=user: polls.ballot(c, poll_id, u))
+        assert ballot is not None and ballot.dm_message_id is not None
+        dm = world.state.dm_channels[user]
+        assert world.state.messages[(dm, ballot.dm_message_id)]["content"] == removed_text
+
+
+async def test_a_404_on_a_poll_that_is_already_closed_changes_nothing(world) -> None:
+    poll_id = await store(world, starts=[ONE, TWO], users=VOTERS[:1])
+    assert await world.closer.close(poll_id) is not None      # no votes: closed with no winner
+    mark = len(world.state.requests)
+
+    await world.closer.on_message_gone(poll_id)
+
+    assert len(world.state.requests) == mark
+    assert (await stored(world, poll_id)).outcome == "none"

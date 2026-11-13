@@ -819,7 +819,7 @@ def _record_constructions(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[tup
     """Wraps the reaction components' constructors in the composition root. Each construction is recorded with the keyword
     arguments it was given and the instance the real class made, so a test can see what each component was handed."""
     made: dict[str, list[tuple[dict[str, Any], Any]]] = {}
-    for name in ("CardContext", "Seeder", "Presses", "Interactions", "Bot"):
+    for name in ("CardContext", "Seeder", "Presses", "Interactions", "Bot", "PollCloser", "PollPost"):
         made[name] = []
         monkeypatch.setattr(panel_main, name, _recording(getattr(panel_main, name), made[name]))
     return made
@@ -836,6 +836,26 @@ async def test_the_bot_gets_the_presses_and_the_pollers_games_message_hook(aioht
         [(_presses_kwargs, presses)] = made["Presses"]
         assert bot_kwargs.get("presses") is presses
         assert bot_kwargs.get("on_games_message") == probe.poller.on_games_message
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(task, BOUND)
+        db.close()
+
+
+async def test_archive_and_the_poll_message_hook_are_given_the_same_poll_closer(
+        aiohttp_server, tmp_path, monkeypatch):
+    probe = _probe_poller(monkeypatch)
+    made = _record_constructions(monkeypatch)
+    config, db = await _in_process_panel(aiohttp_server, tmp_path, _ready_gateway_script)
+    task = asyncio.create_task(run(config, db))
+    try:
+        await asyncio.wait_for(probe.started.wait(), BOUND)
+        [(_ctx_kwargs, card_ctx)] = made["CardContext"]
+        [(_closer_kwargs, closer)] = made["PollCloser"]
+        [(_post_kwargs, post)] = made["PollPost"]
+        assert card_ctx.poll_closer is closer           # `!card archive` closes through the same path
+        assert post._on_gone == closer.on_message_gone  # a poll message answering 404 closes the poll as removed
     finally:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
