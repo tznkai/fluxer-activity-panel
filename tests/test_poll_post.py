@@ -172,6 +172,20 @@ async def test_a_poll_stored_in_the_games_channel_gets_no_flush_or_reaction_requ
     assert world.state.requests == []
 
 
+async def test_remove_reaction_refuses_a_poll_in_the_games_channel_before_any_request(world: SimpleNamespace) -> None:
+    poll_id = await seed(world, channel=GAMES)
+    await world.post.remove_reaction(poll_id, POLL_SCHEDULE_EMOJI, U1)
+    assert world.state.requests == []
+
+
+async def test_remove_reaction_removes_only_the_named_users_reaction(world: SimpleNamespace) -> None:
+    poll_id = await seed(world)
+    await world.post.remove_reaction(poll_id, POLL_SCHEDULE_EMOJI, U1)
+    [delete] = requests(world, "DELETE")
+    assert delete.path.endswith(f"/{U1}")
+    assert delete.path.rsplit("/", 2)[-2] == POLL_SCHEDULE_EMOJI
+
+
 # AC9.2: every poll message and ballot carries empty mentions ------------------------------------------
 
 async def test_every_poll_send_and_edit_sends_empty_allowed_mentions(world: SimpleNamespace) -> None:

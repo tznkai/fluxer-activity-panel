@@ -336,11 +336,12 @@ class PollView:
 
 
 def provisional_view(*, card_id: int, card_title: str, guild_id: str, channel_id: str, starter_id: str, now: int,
-                     closes_at: int, ballot_size: int, starts: Sequence[int], recipients: int) -> PollView:
+                     closes_at: int, ballot_size: int, starts: Sequence[int], recipients: int,
+                     kind: str = "approval", parent_poll_id: int | None = None) -> PollView:
     """The view of a poll that is not stored yet: the first poll message is rendered from it before the row exists.
     The poll id is 0, the options are lettered from their order in `starts`, and there are no votes or DMs."""
     poll = Poll(id=0, card_id=card_id, guild_id=guild_id, channel_id=channel_id, message_id="", starter_id=starter_id,
-                kind="approval", parent_poll_id=None, state="open", created_at=now, closes_at=closes_at, closed_at=None,
+                kind=kind, parent_poll_id=parent_poll_id, state="open", created_at=now, closes_at=closes_at, closed_at=None,
                 ballot_size=ballot_size, pending_ballot_size=None, sorted_at=None, outcome=None,
                 winner_option_id=None, session_id=None)
     options = tuple(PollOption(id=position, poll_id=0, position=position, starts_at=starts_at, origin="offered")

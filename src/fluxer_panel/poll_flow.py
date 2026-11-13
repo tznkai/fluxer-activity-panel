@@ -8,17 +8,20 @@ after it. Each refusal is logged as `poll_flow` with `outcome="refused"` and a r
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Callable, Sequence
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
 
 from fluxer_client.events import MessageCreate
 from fluxer_client.ids import is_snowflake
 from fluxer_client.rest import FluxerREST
-from fluxer_panel import cards, notify, poll_letters, poll_members, poll_reply, polls, render, session_flow, text
+from fluxer_panel import (
+    admin, cards, notify, poll_count, poll_letters, poll_members, poll_reply, polls, render, session_flow, text)
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.cards import Card
 from fluxer_panel.config import Config
@@ -28,7 +31,7 @@ from fluxer_panel.games import GamesGuild
 from fluxer_panel.interactions import card_target, target_channel_id
 from fluxer_panel.logs import log_event
 from fluxer_panel.poll_post import PollPost
-from fluxer_panel.presses import Press
+from fluxer_panel.presses import RUNOFF_EMOJI, SESSION_EMOJI, Press
 
 log = logging.getLogger(__name__)
 
@@ -90,10 +93,18 @@ def _vote_tx(conn, *, poll_id: int, user_id: str, content: str, now: datetime, t
     return _Voted(tuple(poll_letters.letter(positions[option_id]) for option_id in ids), added)
 
 
+@dataclass
+class _PollLock:
+    """One poll's lock, and how many coroutines hold or wait for it. The entry goes when the count returns to 0."""
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    users: int = 0
+
+
 class PollFlow:
     def __init__(self, *, db: Database, rest: FluxerREST, config: Config, locks: CardLocks, poll_post: PollPost,
                  backoff: DmBackoff, games_guild: GamesGuild, clock: Callable[[], float] = time.time,
-                 kick: Callable[[], None] = lambda: None) -> None:
+                 kick: Callable[[], None] = lambda: None,
+                 session_flow: session_flow.SessionFlow | None = None) -> None:
         self._db = db
         self._rest = rest
         self._config = config
@@ -103,12 +114,14 @@ class PollFlow:
         self._games_guild = games_guild
         self._clock = clock
         self._kick = kick
+        self._session_flow = session_flow   # the session publish for 📅; without it 📅 on a poll does nothing
+        self._poll_locks: dict[int, _PollLock] = {}
 
     # The 🗳️ press ----------------------------------------------------------------------------------------------
 
     async def start(self, press: Press) -> None:
         """A 🗳️ press: posts a poll message in the card's session channel and DMs a ballot to each recipient, or refuses
-        with a DM. The poll is stored under the card's lock; the ballots are sent after the lock is released."""
+        with a DM. The checks that depend on the press (the surface and the backoff) are here; the rest is `_open_poll`."""
         user = press.user_id
         card = await self._db.run(lambda c: cards.get_by_id(c, press.card_id))
         if card is None or card.state != "live":
@@ -118,67 +131,80 @@ class PollFlow:
             return self._refused(card.id, "elsewhere")
         if self._backoff.blocked(user):
             return self._refused(card.id, "backoff")
+        now = int(self._clock())
+        starts = session_flow.offered_slot_times(self._config, now)
+        await self._open_poll(card.id, starter_id=user, presser_id=user, kind="approval", parent_poll_id=None,
+                              options=[(starts_at, "offered") for starts_at in starts])
+
+    async def _open_poll(self, card_id: int, *, starter_id: str, presser_id: str, kind: str,
+                         parent_poll_id: int | None, options: Sequence[tuple[int, str]]) -> int | None:
+        """Posts the poll message and stores the poll with its options and one ballot per recipient, under the card's
+        lock. The ballots, the notes and the poller's kick come after it. Every refusal is DMed to the presser and
+        logged. Returns the new poll's id, or None when nothing started. The caller has checked the press."""
+        card = await self._db.run(lambda c: cards.get_by_id(c, card_id))
+        if card is None or card.state != "live":
+            return self._refused(card_id, "card")
         target, reason = await card_target(self._rest, self._config, card, failed_event="poll_target_failed")
         if target is None:
-            await self._dm(user, text.POLL_NO_CHANNEL)
+            await self._dm(presser_id, text.POLL_NO_CHANNEL)
             return self._refused(card.id, reason or "no_channel")
         channel_id, guild_id = target
         existing = await self._db.run(lambda c: polls.open_for_card(c, card.id))
         if existing is not None:
-            await self._already_open(user, existing)
+            await self._already_open(presser_id, existing)
             return self._refused(card.id, "open")
 
         now = int(self._clock())
-        starts = session_flow.offered_slot_times(self._config, now)
-        found = await self._recipients(card, user)
+        found = await self._recipients(card, starter_id)
         if found is None:
-            await self._dm(user, text.POLL_TRY_LATER)
+            await self._dm(presser_id, text.POLL_TRY_LATER)
             return self._refused(card.id, "members")
         recipients, has_role = found
 
         async with self._locks.get(card.id):
             fresh = await self._db.run(lambda c: cards.get_by_id(c, card.id))
             if fresh is None or fresh.state != "live" or target_channel_id(fresh, self._config) != channel_id:
-                await self._dm(user, text.POLL_POST_FAILED)
+                await self._dm(presser_id, text.POLL_POST_FAILED)
                 return self._refused(card.id, "card_changed")
             again = await self._db.run(lambda c: polls.open_for_card(c, card.id))
             if again is not None:
-                await self._already_open(user, again)
+                await self._already_open(presser_id, again)
                 return self._refused(card.id, "open")
             view = polls.provisional_view(
-                card_id=card.id, card_title=fresh.title, guild_id=guild_id, channel_id=channel_id, starter_id=user,
-                now=now, closes_at=now + self._config.poll_length_seconds, ballot_size=self._config.poll_ballot_size,
-                starts=starts, recipients=len(recipients.user_ids))
+                card_id=card.id, card_title=fresh.title, guild_id=guild_id, channel_id=channel_id,
+                starter_id=starter_id, now=now, closes_at=now + self._config.poll_length_seconds,
+                ballot_size=self._config.poll_ballot_size, starts=[starts_at for starts_at, _ in options],
+                recipients=len(recipients.user_ids), kind=kind, parent_poll_id=parent_poll_id)
             payload = render.render_poll_message(view, instance_url=self._config.instance_url, provisional=True)
             try:
                 sent = await self._poll_post.send_poll(channel_id, payload)
             except Exception as exc:  # noqa: BLE001 - a failed post is told to the presser; the cause is logged by type
                 log_event(log, "poll_post_failed", level=logging.WARNING, card_id=card.id,
                           reason=type(exc).__name__)
-                await self._dm(user, text.POLL_POST_FAILED)
+                await self._dm(presser_id, text.POLL_POST_FAILED)
                 return self._refused(card.id, "post")
             message_id = sent.get("id") if isinstance(sent, dict) else None
             if not is_snowflake(message_id):
                 log_event(log, "poll_post_failed", level=logging.WARNING, card_id=card.id, reason="bad_message_id")
-                await self._dm(user, text.POLL_POST_FAILED)
+                await self._dm(presser_id, text.POLL_POST_FAILED)
                 return self._refused(card.id, "post")
             try:
                 poll_id = await self._db.run(partial(
                     polls.create, card_id=card.id, guild_id=guild_id, channel_id=channel_id, message_id=message_id,
-                    starter_id=user, kind="approval", parent_poll_id=None, now=now,
+                    starter_id=starter_id, kind=kind, parent_poll_id=parent_poll_id, now=now,
                     closes_at=now + self._config.poll_length_seconds, ballot_size=self._config.poll_ballot_size,
-                    options=[(starts_at, "offered") for starts_at in starts], recipients=recipients.user_ids))
+                    options=list(options), recipients=recipients.user_ids))
             except Exception as exc:  # noqa: BLE001 - with no row the message would never close: it is deleted
                 await self._poll_post.delete_unstored(channel_id, message_id)
                 log_event(log, "poll_store_failed", level=logging.WARNING, card_id=card.id,
                           reason=type(exc).__name__)
-                await self._dm(user, text.POLL_POST_FAILED)
+                await self._dm(presser_id, text.POLL_POST_FAILED)
                 return self._refused(card.id, "store")
             if poll_id is None:   # another poll won the race after the check: the provisional message goes
                 await self._poll_post.delete_unstored(channel_id, message_id)
                 stored = await self._db.run(lambda c: polls.open_for_card(c, card.id))
                 if stored is not None:
-                    await self._already_open(user, stored)
+                    await self._already_open(presser_id, stored)
                 return self._refused(card.id, "open")
 
         for uid in recipients.user_ids:
@@ -190,9 +216,130 @@ class PollFlow:
         if not has_role:
             notes.append(text.POLL_NO_ROLE)
         if notes:
-            await self._dm(user, "\n".join(notes))
+            await self._dm(presser_id, "\n".join(notes))
         self._kick()
         log_event(log, "poll_started", poll_id=poll_id, card_id=card.id, count=len(recipients.user_ids))
+        return poll_id
+
+    # The 📅 and 🔁 on a poll message ----------------------------------------------------------------------------
+
+    async def on_poll_reaction(self, poll_id: int, user_id: str, emoji: str, channel_id: str, message_id: str) -> None:
+        """A 📅 or 🔁 added to a poll message. Presses has already checked that the message is this poll's, so the poll's
+        own stored ids are used for every call. The presser's reaction is removed first, whatever happens. Only the
+        starter or an admin acts, and the action runs under the poll's own lock."""
+        name = emoji.replace("️", "")
+        await self._poll_post.remove_reaction(poll_id, name, user_id)
+        poll = await self._db.run(lambda c: polls.get(c, poll_id))
+        if poll is None or poll.state != "closed":
+            return
+        if user_id != poll.starter_id and not admin.is_admin_id(user_id, self._config):
+            log_event(log, "poll_reaction", outcome="not_allowed", poll_id=poll_id)
+            return
+        async with self._poll_lock(poll_id):
+            if name == SESSION_EMOJI:
+                await self._schedule(poll_id, presser=user_id)
+            elif name == RUNOFF_EMOJI:
+                await self._runoff(poll_id, presser=user_id)
+
+    @asynccontextmanager
+    async def _poll_lock(self, poll_id: int) -> AsyncIterator[None]:
+        """Holds the poll's lock for the block. The entry lives only while some coroutine holds or waits for it, so an
+        idle poll has no entry."""
+        entry = self._poll_locks.get(poll_id)
+        if entry is None:
+            entry = self._poll_locks[poll_id] = _PollLock()
+        entry.users += 1
+        try:
+            async with entry.lock:
+                yield
+        finally:
+            entry.users -= 1
+            if entry.users == 0:
+                del self._poll_locks[poll_id]
+
+    async def _schedule(self, poll_id: int, *, presser: str) -> None:
+        """📅: posts the winning time as a session in the card's session channel, with the starter as proposer and each
+        voter for the winner as an implicit maybe. Nothing is created when the poll has no winner, already has a session,
+        or its winning time is under an hour away (refused with a DM to the presser). Runs under the poll's lock."""
+        if self._session_flow is None:
+            return
+        view = await self._db.run(lambda c: polls.view(c, poll_id))
+        if view is None or view.poll.outcome != "winner" or view.poll.session_id is not None:
+            return self._refused_poll(poll_id, "schedule", "not_schedulable")
+        winner = next(option for option in view.options if option.id == view.poll.winner_option_id)
+        if winner.starts_at - self._clock() < poll_count.LEAD_SECONDS:
+            await self._dm(presser, text.POLL_TOO_LATE)
+            return self._refused_poll(poll_id, "schedule", "too_late")
+        voters = sorted({vote.user_id for vote in view.votes if vote.option_id == winner.id}, key=int)
+        published = await self._session_flow.publish(view.poll.card_id, view.poll.starter_id, winner.starts_at,
+                                                     maybe=voters, notify_proposer=False)
+        if published.reply is not None:
+            await self._dm(presser, published.reply)
+            return self._refused_poll(poll_id, "schedule", "publish")
+        linked = await self._db.run(lambda c: polls.set_session_if_unset(c, poll_id, published.session_id))
+        if not linked:   # cannot happen under the poll's lock; logged so that a stray session is visible
+            log_event(log, "poll_schedule", level=logging.WARNING, poll_id=poll_id, outcome="unlinked")
+            return
+        self._poll_post.changed(poll_id)
+        await self._poll_post.unseed_closed(poll_id)
+        content = self._scheduled_text(view.card_title, published)
+        for uid in sorted({*voters, view.poll.starter_id}, key=int):
+            await self._dm(uid, content)
+        log_event(log, "poll_scheduled", poll_id=poll_id, session_id=published.session_id,
+                  count=len(voters))
+
+    async def _runoff(self, poll_id: int, *, presser: str) -> None:
+        """🔁: starts a runoff of the top three usable times with votes, in rank order as options a to c. The runoff keeps
+        the parent's starter, reads the role again, and is opened by the same pipeline as a 🗳️ poll. Refused with a DM
+        when there is already a runoff, or fewer than two usable times have votes. Runs under the poll's lock."""
+        view = await self._db.run(lambda c: polls.view(c, poll_id))
+        if view is None or view.poll.outcome != "winner" or view.poll.is_runoff:
+            return self._refused_poll(poll_id, "runoff", "not_runoffable")
+        existing = await self._db.run(lambda c: polls.child_of(c, poll_id))
+        if existing is not None:
+            await self._dm(presser, self._linked_text(text.POLL_RUNOFF_EXISTS, text.POLL_RUNOFF_EXISTS_NO_LINK, existing))
+            return self._refused_poll(poll_id, "runoff", "exists")
+        now = int(self._clock())
+        by_id = {option.id: option for option in view.options}
+        ranked = poll_count.ranked_with_votes(poll_count.usable(view.options, now=now),
+                                              [(vote.user_id, vote.option_id) for vote in view.votes])
+        top = [by_id[option_id] for option_id, _count in ranked[:3]]
+        if len(top) < 2:
+            await self._dm(presser, text.POLL_RUNOFF_NEEDS_TWO)
+            return self._refused_poll(poll_id, "runoff", "needs_two")
+        runoff_id = await self._open_poll(view.poll.card_id, starter_id=view.poll.starter_id, presser_id=presser,
+                                          kind="runoff", parent_poll_id=poll_id,
+                                          options=[(option.starts_at, "offered") for option in top])
+        if runoff_id is None:
+            return
+        await self._poll_post.unseed_closed(poll_id)
+        if presser != view.poll.starter_id:
+            runoff = await self._db.run(lambda c: polls.get(c, runoff_id))
+            if runoff is not None:
+                await self._dm(presser, self._linked_text(text.POLL_RUNOFF_STARTED, text.POLL_RUNOFF_STARTED_NO_LINK,
+                                                          runoff))
+        log_event(log, "poll_runoff_started", poll_id=poll_id, count=len(top))
+
+    def _scheduled_text(self, card_title: str, published: session_flow.Published) -> str:
+        """The one DM the starter and each voter get: the session's link, or the no-link text."""
+        card = render.escape(card_title)
+        if not self._config.instance_url:
+            return text.POLL_SCHEDULED_DM_NO_LINK.format(card=card)
+        link = render.jump_link(text.SESSION_LINK_LABEL, self._config.instance_url, published.guild_id,
+                                published.channel_id, published.message_id)
+        return text.POLL_SCHEDULED_DM.format(card=card, link=link)
+
+    def _linked_text(self, with_link: str, without_link: str, poll: polls.Poll) -> str:
+        """A text that names a poll by its message link, or the no-link text when the instance URL is not set."""
+        if not self._config.instance_url:
+            return without_link
+        link = render.jump_link(text.POLL_LINK_LABEL, self._config.instance_url, poll.guild_id, poll.channel_id,
+                                poll.message_id)
+        return with_link.format(link=link)
+
+    def _refused_poll(self, poll_id: int, action: str, reason: str) -> None:
+        log_event(log, "poll_" + action, outcome="refused", poll_id=poll_id, reason=reason)
+
 
     # Voting by DM reply -----------------------------------------------------------------------------------------
 

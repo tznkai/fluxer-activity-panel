@@ -208,6 +208,24 @@ class PollPost:
                 if not (isinstance(exc, FluxerHTTPError) and exc.status == 404):
                     log_event(log, "poll_unseed_failed", level=logging.WARNING, poll_id=poll_id, reason=_reason(exc))
 
+    async def remove_reaction(self, poll_id: int, emoji: str, user_id: str) -> None:
+        """Removes one user's reaction from a poll message: the presser's own calendar or repeat reaction. The games channel
+        is refused before any REST call, the channel's pacer runs first, and a failure is logged and not raised. A 404 means
+        the reaction is already gone."""
+        loaded = await self._db.run(lambda conn: _read_poll(conn, poll_id))
+        if loaded is None:
+            return
+        view = loaded[0]
+        if self._refused(view):
+            return
+        await self._pacer.wait(view.poll.channel_id)
+        try:
+            await self._rest.remove_reaction(view.poll.channel_id, view.poll.message_id, emoji, user_id)
+        except Exception as exc:  # noqa: BLE001 - a failed removal is logged; the poll action is not undone by it
+            if not (isinstance(exc, FluxerHTTPError) and exc.status == 404):
+                log_event(log, "poll_reaction_remove_failed", level=logging.WARNING, poll_id=poll_id,
+                          reason=_reason(exc))
+
     async def drain(self) -> None:
         """Wait for every pending task (tests and shutdown)."""
         while self._tasks:

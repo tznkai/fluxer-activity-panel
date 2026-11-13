@@ -112,7 +112,8 @@ async def run(config: Config, db: Database) -> None:
             # 🗳️ press and the DM replies share. Its ballots and edits go through the same poll post at shutdown.
             poll_post = PollPost(db=db, rest=rest, config=config, pacer=pacer, identity=identity, backoff=backoff)
             poll_flow = PollFlow(db=db, rest=rest, config=config, locks=card_ctx.locks, poll_post=poll_post,
-                                 backoff=backoff, games_guild=games_guild, kick=poller.kick)
+                                 backoff=backoff, games_guild=games_guild, kick=poller.kick,
+                                 session_flow=session_flow)
             # The poll close path (one place every close goes through) and the `!poll` commands, which share the card
             # locks and the poll post with the flow.
             poll_closer = PollCloser(db=db, locks=card_ctx.locks, poll_post=poll_post)
