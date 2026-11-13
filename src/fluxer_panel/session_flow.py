@@ -65,6 +65,14 @@ def _local(now: float, zone: ZoneInfo) -> datetime:
     return datetime.fromtimestamp(now, zone)
 
 
+def offered_slot_times(config: Config, now: float) -> list[int]:
+    """Unix times of the slots 📅 offers at `now`, soonest first. Polls offer the same."""
+    zone = config.session_time_zone
+    return [int(when.timestamp()) for when in session_time.offered_slots(
+        now=_local(now, zone), tz=zone, weekday=list(config.session_slots_weekday),
+        weekend=list(config.session_slots_weekend))]
+
+
 def _target_channel_id(card: Card, config: Config) -> str | None:
     """The channel a post goes to, read without any REST call: the card's verified channel, else PLAY_NOW_CHANNEL_ID."""
     own = card.play_now_channel
@@ -173,10 +181,7 @@ class SessionFlow:
             log_event(log, "session_flow", card_id=card.id, outcome="refused", reason=f"cap_{exc.kind}")
             return None
         now = self._clock()
-        zone = self._config.session_time_zone
-        slots = [int(when.timestamp()) for when in session_time.offered_slots(
-            now=_local(now, zone), tz=zone, weekday=list(self._config.session_slots_weekday),
-            weekend=list(self._config.session_slots_weekend))]
+        slots = offered_slot_times(self._config, now)
         self._drafts.pop(user, None)   # the old prompt's keycaps match nothing from now on (a second press replaces)
         lines = [text.SESSION_PROMPT.format(card=render.escape(card.title))]
         lines += [text.SESSION_PROMPT_SLOT.format(key=KEYCAPS[i], ts=ts) for i, ts in enumerate(slots)]

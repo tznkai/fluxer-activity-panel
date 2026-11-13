@@ -353,7 +353,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/dm_router.py:54` `if user_id in self._config.admin_user_ids:` — admins are exempt from the limit.
 - `src/fluxer_panel/dm_router.py:113` `if not self._limiter.admit(event.author_id):` — a `!session` command from a non-admin is rate limited before it is parsed.
 - `src/fluxer_panel/dm_router.py:118` `if admin.parse_head(event.content, self._config.prefix) is not None:` — admin heads (`!admin`, `!card`, `!request`) go to `admin.handle` unchanged, and `authorize` checks them there.
-- `src/fluxer_panel/session_flow.py:226` `if not self._limiter.admit(user):` — a 📅 reaction in a DM uses the same limiter.
+- `src/fluxer_panel/session_flow.py:231` `if not self._limiter.admit(user):` — a 📅 reaction in a DM uses the same limiter.
 - `src/fluxer_panel/session_commands.py:137` `return event.author_id == session.proposer_id or admin.authorize(event, self._config)` — a session change needs the proposer or an admin.
 
 ## DM backoff
@@ -362,7 +362,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/notify.py:34` `and not bypass and backoff.blocked(user_id):` — the skip. It is logged as `user_dm_skipped` with reason `backoff`, and no request is made.
 - `src/fluxer_panel/notify.py:28` `bypass: bool = False)` — the promotion, cancel, move and series-stopped DMs, and the wake request close DMs (ready, expired and cleared), pass `bypass`, so they go out even while the user is in backoff.
 - `src/fluxer_panel/notify.py:18` `async def dm_admins(` — admin DMs never take the backoff path, so an admin is always told.
-- `src/fluxer_panel/session_flow.py:161` `if self._backoff.blocked(user):` — a 📅 start is refused while the proposer is in backoff, before any DM is sent.
+- `src/fluxer_panel/session_flow.py:169` `if self._backoff.blocked(user):` — a 📅 start is refused while the proposer is in backoff, before any DM is sent.
 
 ## What the phase 4 prompt got wrong
 

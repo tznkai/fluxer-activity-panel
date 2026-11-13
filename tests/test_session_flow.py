@@ -34,7 +34,7 @@ from fluxer_panel.logs import FIELDS_ATTR
 from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.presses import SESSION_EMOJI, Action, Press, Presses, Surface
 from fluxer_panel.seeding import Seeder
-from fluxer_panel.session_flow import FLOW_TIMEOUT_SECONDS, SessionFlow
+from fluxer_panel.session_flow import FLOW_TIMEOUT_SECONDS, SessionFlow, offered_slot_times
 from fluxer_panel.session_post import SessionPost
 from tests.fakes import FakeFluxerState, Override, make_rest_app, wait_until
 
@@ -863,6 +863,26 @@ async def test_a_calendar_press_with_the_switch_off_gives_no_dm_and_no_draft(bui
 
     assert world.state.dm_channels == {}
     assert world.flow.has_draft(PROPOSER) is False
+
+
+# AC2.3 (slot half): the times a poll offers are the times the calendar offers ---------------------------------
+
+def test_offered_slot_times_are_six_ascending_times_at_least_an_hour_ahead() -> None:
+    now = int(NOW)
+
+    times = offered_slot_times(config_for(play_now=False), now)
+
+    assert len(times) == 6
+    assert times == sorted(times)
+    assert all(t - now >= 3600 for t in times)
+
+
+async def test_the_calendar_prompt_offers_exactly_offered_slot_times(build: Any) -> None:
+    world = await build()
+
+    _, slots = await open_prompt(world)
+
+    assert slots == offered_slot_times(world.config, int(NOW))
 
 
 def panel_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
