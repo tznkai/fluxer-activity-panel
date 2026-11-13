@@ -11,11 +11,14 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime
 from functools import partial
 
+from fluxer_client.events import MessageCreate
 from fluxer_client.ids import is_snowflake
 from fluxer_client.rest import FluxerREST
-from fluxer_panel import cards, notify, poll_members, polls, render, session_flow, text
+from fluxer_panel import cards, notify, poll_letters, poll_members, poll_reply, polls, render, session_flow, text
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.cards import Card
 from fluxer_panel.config import Config
@@ -37,6 +40,63 @@ def _channel_of(card: Card, config: Config) -> str | None:
     if own is not None and own.verified:
         return own.channel_id
     return config.play_now_channel_id
+
+
+@dataclass(frozen=True)
+class _Voted:
+    letters: tuple[str, ...]      # the voter's picks after the write, in pick order, as letters
+    added: int                    # options this reply added
+
+
+@dataclass(frozen=True)
+class _Refused:
+    reason: str                   # "closed", "not_recipient", "full", or a poll_reply / session_time refusal key
+    index: int | None = None      # the 1-based item of a poll_reply refusal
+
+
+class _Full(Exception):
+    """Raised inside the vote transaction when the poll has no room for a typed time. db.run rolls back every option
+    this reply had already added, and vote() answers POLL_FULL."""
+
+
+_REFUSAL_TEXT = {"closed": text.POLL_REPLY_CLOSED, "not_recipient": text.POLL_NOT_RECIPIENT, "full": text.POLL_FULL}
+
+
+def _vote_tx(conn, *, poll_id: int, user_id: str, content: str, now: datetime, tz) -> _Voted | _Refused:
+    """One reply, parsed and written in the caller's transaction: the options it adds and the replaced picks commit
+    together or not at all. The write is compare-and-set on the poll being open."""
+    poll = polls.get(conn, poll_id)
+    if poll is None or poll.state != "open":
+        return _Refused("closed")
+    if polls.ballot(conn, poll_id, user_id) is None:
+        return _Refused("not_recipient")
+    options = polls.options(conn, poll_id)
+    letters = {poll_letters.letter(o.position): o.id for o in options}
+    reply = poll_reply.parse(content, runoff=poll.is_runoff, now=now, tz=tz, letters=letters)
+    if isinstance(reply, poll_reply.Refusal):
+        return _Refused(reply.reason, reply.index)
+    added = 0
+    if isinstance(reply, poll_reply.Clear):
+        ids: list[int] = []
+    elif isinstance(reply, poll_reply.All):
+        ids = [o.id for o in options[: poll.ballot_size]]
+    else:
+        ids = []
+        for item in reply.items:
+            if isinstance(item, poll_reply.Letter):
+                option_id = item.option_id
+            else:
+                try:
+                    option_id, created = polls.add_option(conn, poll_id, starts_at=item.starts_at, origin="typed")
+                except polls.TooManyOptions:
+                    raise _Full from None
+                added += int(created)
+            if option_id not in ids:
+                ids.append(option_id)
+    if not polls.replace_picks_if_open(conn, poll_id, user_id, ids, ranked=poll.is_runoff):
+        return _Refused("closed")
+    positions = {o.id: o.position for o in polls.options(conn, poll_id)}
+    return _Voted(tuple(poll_letters.letter(positions[option_id]) for option_id in ids), added)
 
 
 class PollFlow:
@@ -143,6 +203,46 @@ class PollFlow:
         self._kick()
         log_event(log, "poll_started", poll_id=poll_id, card_id=card.id, count=len(recipients.user_ids))
 
+    # Voting by DM reply -----------------------------------------------------------------------------------------
+
+    async def has_open_ballot(self, user_id: str) -> bool:
+        return bool(await self._db.run(lambda c: polls.open_ballot_polls(c, user_id)))
+
+    async def on_reply(self, event: MessageCreate) -> None:
+        """A DM reply from a user with an open ballot. One open ballot takes the reply; several cannot be told apart in a
+        DM, so the reply changes nothing and names the open polls."""
+        found = await self._db.run(lambda c: polls.open_ballot_polls(c, event.author_id))
+        if not found:
+            return
+        if len(found) > 1:
+            log_event(log, "poll_vote", outcome="refused", reason="several_open", count=0)
+            await self._answer(event.channel_id, text.POLL_WHICH.format(polls=", ".join(str(p.id) for p in found)))
+            return
+        await self.vote(event.author_id, found[0].id, event.content, reply_channel_id=event.channel_id)
+
+    async def vote(self, user_id: str, poll_id: int, content: str, *, reply_channel_id: str) -> None:
+        """Parse and store one reply, then answer it in the DM it came from and refresh the poll and its ballots.
+        Logs the poll, the outcome and a reason key or a count, never the content or the user."""
+        tz = self._config.session_time_zone
+        now = datetime.fromtimestamp(self._clock(), tz)
+        try:
+            result = await self._db.run(partial(_vote_tx, poll_id=poll_id, user_id=user_id, content=content,
+                                                now=now, tz=tz))
+        except _Full:
+            result = _Refused("full")
+        if isinstance(result, _Refused):
+            outcome = "closed" if result.reason == "closed" else "refused"
+            log_event(log, "poll_vote", outcome=outcome, poll_id=poll_id, reason=result.reason, count=0)
+            await self._answer(reply_channel_id, _refusal_text(result))
+            return
+        log_event(log, "poll_vote", outcome="voted", poll_id=poll_id, count=result.added)
+        await self._answer(reply_channel_id, text.POLL_YOUR_PICKS.format(letters=", ".join(result.letters))
+                           if result.letters else text.POLL_NO_PICKS)
+        self._poll_post.changed(poll_id)
+
+    async def _answer(self, channel_id: str, content: str) -> None:
+        await self._rest.send_message(channel_id, content=content, allowed_mentions={"parse": []})
+
     # Helpers ---------------------------------------------------------------------------------------------------
 
     async def _recipients(self, card: Card, starter: str) -> tuple[poll_members.Recipients, bool] | None:
@@ -184,3 +284,12 @@ class PollFlow:
     @staticmethod
     def _refused(card_id: int, reason: str) -> None:
         log_event(log, "poll_flow", outcome="refused", card_id=card_id, reason=reason)
+
+
+def _refusal_text(refused: _Refused) -> str:
+    """The answer to a refused reply: the item's position and reason, then the format reminder for an item refusal."""
+    if refused.index is None:
+        return _REFUSAL_TEXT[refused.reason]
+    reason_text = text.POLL_REPLY_REFUSED.get(refused.reason) or text.SESSION_TIME_REFUSED[refused.reason]
+    return (text.POLL_REPLY_ITEM.format(index=refused.index, reason=reason_text) + "\n" + text.POLL_FORMAT + " "
+            + text.SESSION_TIME_EXAMPLE)

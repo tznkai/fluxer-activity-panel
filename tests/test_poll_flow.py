@@ -7,7 +7,9 @@ it, and the edits are debounced with no delay. The emoji are written as escapes.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from collections import Counter
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -17,9 +19,10 @@ from typing import Any
 import aiohttp
 import pytest
 
+from fluxer_client import events
 from fluxer_client.roles import RoleCache
 from fluxer_client.rest import FluxerREST
-from fluxer_panel import cards, polls, render, text
+from fluxer_panel import cards, poll_letters, polls, render, text
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
@@ -381,3 +384,302 @@ async def test_a_poll_stored_during_the_post_deletes_the_provisional_message_and
     polls_stored = await world.db.run(lambda c: [p.message_id for p in polls.open_polls(c)])
     assert polls_stored == ["5999"]
     assert dm_contents(world.state, STARTER) == [text.POLL_ALREADY_OPEN.format(link=link_to(world, PLAY, "5999"))]
+
+
+# Voting by typed reply (AC3, AC4) ------------------------------------------------------------------------
+
+def reply_event(world: World, user: str, content: str) -> events.MessageCreate:
+    return events.MessageCreate(message_id="7100", channel_id=world.state.dm_channels[user], guild_id=None,
+                                author_id=user, author_is_bot=False, member_role_ids=None, content=content)
+
+
+async def reply(world: World, user: str, content: str) -> None:
+    await world.flow.on_reply(reply_event(world, user, content))
+    await world.post.drain()
+
+
+async def started(world: World, *holders: str) -> polls.Poll:
+    members(world.state, STARTER, *holders)
+    await world.flow.start(press(world.card_id))
+    await world.post.drain()
+    poll = await open_poll(world)
+    assert poll is not None
+    return poll
+
+
+async def picks_of(world: World, poll_id: int, user: str) -> list[int]:
+    return await world.db.run(lambda c: polls.picks(c, poll_id, user))
+
+
+async def letters_of(world: World, poll_id: int, user: str) -> list[str]:
+    options = await world.db.run(lambda c: polls.options(c, poll_id))
+    by_id = {o.id: poll_letters.letter(o.position) for o in options}
+    return [by_id[option_id] for option_id in await picks_of(world, poll_id, user)]
+
+
+async def option_count(world: World, poll_id: int) -> int:
+    return len(await world.db.run(lambda c: polls.options(c, poll_id)))
+
+
+def last_reply(state: FakeFluxerState, user: str) -> str:
+    return dm_contents(state, user)[-1]
+
+
+async def ballot_of(world: World, poll_id: int, user: str) -> polls.Ballot | None:
+    return await world.db.run(lambda c: polls.ballot(c, poll_id, user))
+
+
+async def ballot_message_text(world: World, poll_id: int, user: str) -> str:
+    ballot = await world.db.run(lambda c: polls.ballot(c, poll_id, user))
+    assert ballot is not None and ballot.dm_channel_id is not None and ballot.dm_message_id is not None
+    return world.state.messages[(ballot.dm_channel_id, ballot.dm_message_id)]["content"]
+
+
+def debounced_flow(world: World, sleep: Callable[[float], Awaitable[None]]) -> tuple[PollFlow, PollPost]:
+    """A flow whose poll post debounces its edits through `sleep`, for the votes only (the start uses world.flow)."""
+    clock = world.clock
+    post = PollPost(db=world.db, rest=world.rest, config=world.config, pacer=ChannelPacer(max_calls=1000),
+                    identity=BotIdentity(user_id=BOT), backoff=DmBackoff(world.config.dm_backoff_seconds, clock=clock),
+                    edit_delay=5, sleep=sleep)
+    flow = PollFlow(db=world.db, rest=world.rest, config=world.config, locks=CardLocks(), poll_post=post,
+                    backoff=DmBackoff(world.config.dm_backoff_seconds, clock=clock),
+                    games_guild=GamesGuild(world.rest, world.config), clock=clock)
+    return flow, post
+
+
+# AC3.1: a reply sets the picks, and the bot says so -----------------------------------------------------
+
+async def test_a_reply_sets_the_picks_to_exactly_the_letters_given_and_says_so(build) -> None:
+    world = await build()
+    poll = await started(world, HOLDER_A)
+
+    await reply(world, STARTER, "a, c")
+
+    assert await letters_of(world, poll.id, STARTER) == ["a", "c"]
+    assert last_reply(world.state, STARTER) == text.POLL_YOUR_PICKS.format(letters="a, c")
+
+
+# AC3.2: a reply replaces the earlier picks; clear and all -------------------------------------------------
+
+async def test_a_reply_replaces_earlier_picks_clear_removes_them_and_all_picks_the_ballot(build) -> None:
+    world = await build(POLL_BALLOT_SIZE="2")
+    poll = await started(world, HOLDER_A)
+    assert await option_count(world, poll.id) > 2
+
+    await reply(world, STARTER, "a, c")
+    await reply(world, STARTER, "b")
+    assert await letters_of(world, poll.id, STARTER) == ["b"]
+
+    await reply(world, STARTER, "clear")
+    assert await letters_of(world, poll.id, STARTER) == []
+    assert last_reply(world.state, STARTER) == text.POLL_NO_PICKS
+
+    await reply(world, STARTER, "all")
+    assert await letters_of(world, poll.id, STARTER) == ["a", "b"]
+    assert last_reply(world.state, STARTER) == text.POLL_YOUR_PICKS.format(letters="a, b")
+
+
+# AC3.3: a typed time that matches no option adds one, and every open ballot shows it -----------------------
+
+async def test_a_typed_time_matching_no_option_adds_one_picks_it_and_shows_on_every_open_ballot(build) -> None:
+    world = await build(POLL_BALLOT_SIZE="20")   # the new option must fit on the ballot to be shown there
+    poll = await started(world, HOLDER_A)
+    offered = offered_slot_times(world.config, NOW)
+    typed_at = int(datetime(2026, 11, 14, 14, 7, tzinfo=timezone.utc).timestamp())
+    assert typed_at not in offered
+
+    await reply(world, STARTER, "a, 2026-11-14 14:07")
+
+    stored = await world.db.run(lambda c: polls.options(c, poll.id))
+    assert len(stored) == len(offered) + 1
+    added = stored[-1]
+    assert (added.starts_at, added.origin, added.position) == (typed_at, "typed", len(offered))
+    letter = poll_letters.letter(added.position)
+    assert await letters_of(world, poll.id, STARTER) == ["a", letter]
+    line = f"{letter}. <t:{typed_at}:F>"
+    assert line in await ballot_message_text(world, poll.id, HOLDER_A)
+    assert line in json.dumps(world.state.messages[(PLAY, poll.message_id)])
+
+
+# AC3.4: a typed time equal to an option picks it and adds nothing ----------------------------------------
+
+async def test_a_typed_time_equal_to_an_option_picks_that_option_and_adds_none(build) -> None:
+    world = await build()
+    poll = await started(world)
+    offered = offered_slot_times(world.config, NOW)
+    same = datetime.fromtimestamp(offered[1], tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+
+    await reply(world, STARTER, same)
+
+    assert await letters_of(world, poll.id, STARTER) == ["b"]
+    assert await option_count(world, poll.id) == len(offered)
+
+
+# AC3.6: an unreadable item changes nothing and names its position -----------------------------------------
+
+@pytest.mark.parametrize("bad, reason", [
+    ("a, sat 2pm", text.SESSION_TIME_REFUSED["format"]),
+    ("a, zz", text.POLL_REPLY_REFUSED["no_option"]),
+    ("a, today 08:30", text.POLL_REPLY_REFUSED["too_soon"]),
+])
+async def test_an_unreadable_item_changes_nothing_and_is_refused_by_position(build, bad: str, reason: str) -> None:
+    world = await build()
+    poll = await started(world, HOLDER_A)
+    await reply(world, STARTER, "a")
+    before = await option_count(world, poll.id)
+
+    await reply(world, STARTER, bad)
+
+    assert await letters_of(world, poll.id, STARTER) == ["a"]
+    assert await option_count(world, poll.id) == before
+    assert last_reply(world.state, STARTER) == (text.POLL_REPLY_ITEM.format(index=2, reason=reason) + "\n"
+                                                + text.POLL_FORMAT + " " + text.SESSION_TIME_EXAMPLE)
+
+
+# AC3.7: a reply to a closed poll is refused as closed ----------------------------------------------------
+
+async def test_a_vote_on_a_closed_poll_is_refused_as_closed_and_changes_nothing(build) -> None:
+    world = await build()
+    poll = await started(world, HOLDER_A)
+    await reply(world, STARTER, "a")
+    await world.db.run(lambda c: polls.close_if_open(c, poll.id, now=int(NOW) + 1, outcome="none",
+                                                     winner_option_id=None))
+
+    await world.flow.vote(STARTER, poll.id, "b", reply_channel_id=world.state.dm_channels[STARTER])
+    await world.post.drain()
+
+    assert await letters_of(world, poll.id, STARTER) == ["a"]
+    assert last_reply(world.state, STARTER) == text.POLL_REPLY_CLOSED
+
+
+async def test_a_vote_by_someone_with_no_ballot_is_refused_and_changes_nothing(build) -> None:
+    world = await build()
+    poll = await started(world, HOLDER_A)
+
+    await world.flow.vote(HOLDER_B, poll.id, "a", reply_channel_id=world.state.dm_channels[STARTER])
+    await world.post.drain()
+
+    assert await picks_of(world, poll.id, HOLDER_B) == []
+    assert await world.db.run(lambda c: polls.ballot(c, poll.id, HOLDER_B)) is None
+    assert last_reply(world.state, STARTER) == text.POLL_NOT_RECIPIENT
+
+
+# AC4.4: several replies in one debounce window give one edit per message --------------------------------
+
+async def test_replies_from_three_voters_in_one_window_give_one_poll_edit_and_one_edit_per_ballot(build) -> None:
+    world = await build()
+    poll = await started(world, HOLDER_A, HOLDER_B)
+    gate = asyncio.Event()
+
+    async def hold(_delay: float) -> None:
+        await gate.wait()
+
+    flow, post = debounced_flow(world, hold)
+    before = len(world.state.requests)
+    await flow.on_reply(reply_event(world, STARTER, "a"))
+    await flow.on_reply(reply_event(world, HOLDER_A, "b"))
+    await flow.on_reply(reply_event(world, HOLDER_B, "a, c"))
+    gate.set()
+    await post.drain()
+
+    patches = Counter(r.path for r in world.state.requests[before:] if r.method == "PATCH")
+    assert patches[f"/api/v1/channels/{PLAY}/messages/{poll.message_id}"] == 1
+    for user in (STARTER, HOLDER_A, HOLDER_B):
+        ballot = await ballot_of(world, poll.id, user)
+        assert ballot is not None and ballot.dm_channel_id is not None and ballot.dm_message_id is not None
+        assert patches[f"/api/v1/channels/{ballot.dm_channel_id}/messages/{ballot.dm_message_id}"] == 1
+    assert max(patches.values()) == 1
+
+
+# AC4.5: positions and letters never change as votes come in ----------------------------------------------
+
+async def test_options_keep_their_positions_and_letters_through_votes_and_a_typed_option(build) -> None:
+    world = await build()
+    poll = await started(world, HOLDER_A)
+    offered = offered_slot_times(world.config, NOW)
+    before = await world.db.run(lambda c: [(o.id, o.position) for o in polls.options(c, poll.id)])
+
+    await reply(world, STARTER, "a, c")
+    await reply(world, HOLDER_A, "b")
+    await reply(world, HOLDER_A, "2026-11-14 14:07, a")
+
+    after = await world.db.run(lambda c: [(o.id, o.position) for o in polls.options(c, poll.id)])
+    assert after[:len(before)] == before
+    starter_ballot = await ballot_message_text(world, poll.id, STARTER)
+    for position, starts in enumerate(offered[: world.config.poll_ballot_size]):
+        assert f"{poll_letters.letter(position)}. <t:{starts}:F>" in starter_ballot
+
+
+# Several open ballots: the reply changes nothing and names the open polls ---------------------------------
+
+def seed_second_card(conn: Any) -> int:
+    card_id = cards.create_card(conn, slug="md", title="Arena", author_id=ADMIN, now=1)
+    cards.set_state(conn, card_id, "live", 1)
+    cards.set_message(conn, card_id, GAMES, "5102", HASH)
+    return card_id
+
+
+async def test_with_two_open_ballots_a_reply_changes_nothing_and_names_the_open_polls(build) -> None:
+    world = await build()
+    first = await started(world, HOLDER_A)
+    second_card = await world.db.run(seed_second_card)
+    await world.flow.start(press(second_card))
+    await world.post.drain()
+    second = await world.db.run(lambda c: polls.open_for_card(c, second_card))
+    assert second is not None
+
+    await reply(world, STARTER, "a")
+
+    assert last_reply(world.state, STARTER) == text.POLL_WHICH.format(polls=f"{first.id}, {second.id}")
+    assert await picks_of(world, first.id, STARTER) == []
+    assert await picks_of(world, second.id, STARTER) == []
+
+
+# Full poll: a typed time is refused, and a reply that adds some options before running out adds none -------
+
+def fill_options(conn: Any, poll_id: int, count: int) -> None:
+    while len(polls.options(conn, poll_id)) < count:
+        polls.add_option(conn, poll_id, starts_at=int(NOW) + 10**6 + len(polls.options(conn, poll_id)) * 60,
+                         origin="typed")
+
+
+async def test_a_full_poll_refuses_a_typed_time_and_adds_nothing(build) -> None:
+    world = await build()
+    poll = await started(world, HOLDER_A)
+    await world.db.run(lambda c: fill_options(c, poll.id, polls.MAX_OPTIONS))
+
+    await reply(world, STARTER, "2026-11-14 14:07")
+
+    assert await option_count(world, poll.id) == polls.MAX_OPTIONS
+    assert last_reply(world.state, STARTER) == text.POLL_FULL
+
+
+async def test_a_reply_that_runs_out_of_room_partway_rolls_back_the_options_it_added(build) -> None:
+    world = await build()
+    poll = await started(world, HOLDER_A)
+    await world.db.run(lambda c: fill_options(c, poll.id, polls.MAX_OPTIONS - 1))
+
+    await reply(world, STARTER, "a, 2026-11-14 14:07, 2026-11-14 14:37")
+
+    assert await option_count(world, poll.id) == polls.MAX_OPTIONS - 1
+    assert await picks_of(world, poll.id, STARTER) == []
+    assert last_reply(world.state, STARTER) == text.POLL_FULL
+
+
+# Logs: the vote's log names the poll and the outcome, never the user or the reply -------------------------
+
+async def test_a_vote_logs_the_poll_and_outcome_but_never_the_user_or_the_reply(build, caplog) -> None:
+    world = await build()
+    poll = await started(world, HOLDER_A)
+    caplog.set_level(logging.DEBUG)
+
+    await reply(world, STARTER, "a, c")
+
+    vote_logs = [r for r in caplog.records if r.getMessage() == "poll_vote"]
+    assert vote_logs, "a vote logs poll_vote"
+    for record in vote_logs:
+        fields = getattr(record, FIELDS_ATTR, {})
+        assert fields.get("poll_id") == poll.id
+        assert fields.get("outcome") == "voted"
+        assert set(fields) <= {"poll_id", "outcome", "reason", "count"}
+        assert STARTER not in fields.values() and "a, c" not in fields.values()
