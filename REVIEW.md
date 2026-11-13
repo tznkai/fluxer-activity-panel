@@ -379,6 +379,30 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/notify.py:18` `async def dm_admins(` — admin DMs never take the backoff path, so an admin is always told.
 - `src/fluxer_panel/session_flow.py:161` `if self._backoff.blocked(user):` — a 📅 start is refused while the proposer is in backoff, before any DM is sent.
 
+## What the polls prompt got wrong
+
+This section compares the polls brief and plan with what was built. Each item was checked against the code.
+
+- **Session time parser:** the brief assumed the parser enforced the one-hour minimum. `session_time.parse` takes the
+  zone, raises `TimeRefused`, and has no minimum. Only the offered slots and the weekly series apply one. Polls check the
+  minimum themselves, for typed replies and before 📅 schedules a winner.
+- **Follow role storage:** the follow role is the `card_follow_role` table, with `role_id` unique, not a column on the
+  card. Polls read it through `cards.get_follow_role`.
+- **Poll to session link:** `polls.session_id` needed `ON DELETE SET NULL`. Without it, purging a session that a poll
+  points at would fail against that reference.
+- **Session post hook:** `SessionPost.set_on_gone` holds one callback, and a second registration replaces the first.
+  Polls do not register on it. A poll message has its own hook, `PollPost.set_on_gone`.
+- **Admin check for reactions:** `admin.authorize` is DM only, so it cannot check a guild reaction. A 📅 or 🔁 on a poll
+  message uses `admin.is_admin_id`, which has the same id rule without the DM rule.
+- **Implicit RSVP rows:** the proposer's going row was the only implicit row. A scheduled poll also gives each voter a
+  maybe row, so the reconcile removes a user's implicit row before it adds their real reaction, for any user who has one.
+  The reconcile's own comment gives the reason: the two rows can share a key.
+- **Runoff close:** a runoff gets a fresh poll length, which could outlast its candidates, and then an earlier candidate
+  would no longer be usable when the runoff closed. Its close is capped at an hour and a margin before its earliest
+  candidate, and a runoff with under 15 minutes left is refused.
+- **Member list:** reading the community's member list to find the follow role's holders is new to this bot. Its response
+  shape is checked only on a live server, in the member list check of the live poll checks.
+
 ## What the phase 4 prompt got wrong
 
 This section compares the phase 4 brief and plan with the design and with what planning and execution found. The design's "Out of date in the prompt" list is the source for the first six items. The others come from planning and from the checks, and each one was checked against the code.

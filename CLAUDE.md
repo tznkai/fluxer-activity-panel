@@ -3,7 +3,7 @@
 
 # Fluxer Activity Panel
 
-Last verified: 2026-11-12
+Last verified: 2026-11-13
 
 Standalone project with two packages under `src/`: `fluxer_client` (a panel-agnostic Fluxer REST and
 gateway client) and `fluxer_panel` (the activity panel bot built on it). `README.md` has the
@@ -26,6 +26,12 @@ user-facing description, the purge status file format and the "Exit 3" recovery 
   (every REST call on a session message; the games-channel guard), `session_commands.py` (`!session`),
   `session_jobs.py` (end, recurrence, heads-up, draft expiry), `dm_router.py` (the DM entry point; the non-admin path)
   and `dm_backoff.py` (the per-user DM-failure backoff).
+  Polls: `polls.py` (the store for polls, options, ballots and votes, and the view a renderer reads), `poll_letters.py`
+  (option letters from positions), `poll_reply.py` (the pure ballot-reply parser), `poll_count.py` (the pure approval and
+  instant-runoff counts), `poll_members.py` (the follow-role holders from the member list, and the recipient cap),
+  `poll_post.py` (every REST call on a poll message and a ballot DM, with debounced edits), `poll_flow.py` (🗳️ starts a
+  poll, 📅 and 🔁 on a closed poll, ballot replies, runoffs), `poll_close.py` (the one close path), `poll_commands.py`
+  (`!poll`) and `poll_jobs.py` (the due closes and the halfway reminders).
   Cards: `cards.py` (store and dataclasses), `card_fields.py` (field validators), `card_commands.py` (`!card`
   subcommands), `resolver.py` (status from manager and probe results), `render.py` (embed, outside text and the
   summary board's payload), `text.py` (user-facing strings), `poller.py` (the single card poller, which also keeps
@@ -112,8 +118,9 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   is not covered. It also calls `logging.captureWarnings(True)`.
 - Token handling: the token is `repr=False` in `Config`, config errors name the variable and never its value, and
   the token goes only in the `Authorization` header or the gateway identify/resume frames.
-- Admin: `admin.authorize` is the single check: DM only (no guild id), non-bot author, author id a valid snowflake, author id in
+- Admin: `admin.authorize` is the single check for DM commands: DM only (no guild id), non-bot author, author id a valid snowflake, author id in
   `ADMIN_USER_IDS`. Every admin command goes through `handle`, which calls `authorize` first. Denials log `admin_denied`.
+  `admin.is_admin_id` (the same id rule, with no DM requirement) is the only other check, used for 📅 and 🔁 on a poll message.
   The bot skips its own messages only. Every other message goes to `DmRouter.route` (`dm_router.py`), which sends guild
   messages, bot or non-snowflake authors and admin heads to `handle`. `handle` ignores anything that is not a command.
   Other DMs take the non-admin path (see Sessions rules). A command from a bot or from a guild channel reaches `authorize`, is refused and logged as `admin_denied`
@@ -142,6 +149,10 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   `purge` alike. `SESSION_SLOTS_WEEKDAY` and `SESSION_SLOTS_WEEKEND` take 1 to 6 distinct `HH:MM` times. The
   `SESSION_LENGTH_SECONDS`, `SESSION_RETENTION_SECONDS` and `DM_BACKOFF_SECONDS` positive integers have defaults.
   `README.md` lists every variable.
+
+- Poll config: `POLL_LENGTH_SECONDS` and `POLL_MAX_LENGTH_SECONDS` are positive integers, and the maximum must be at least
+  the length (exit 2 otherwise). `POLL_BALLOT_SIZE` is 1 to 20, `POLL_MAX_RECIPIENTS` is a positive integer, and
+  `POLL_REMINDER` is `on` or `off`. `README.md` lists every variable.
 
 ## Cards and sources rules
 
@@ -221,12 +232,15 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   sender passes that field on unchanged.
 - RSVP reactions (✅ going, ❔ maybe, ❌ no) on a session message are state. `presses.on_reaction` hands them to
   `Interactions.rsvp_changed` before the kill switch and the rate limit. They are never removed and never unseeded.
+- 📅 and 🔁 on a poll message are routed by message id to `Interactions.poll_reaction` in `presses.on_reaction`, before
+  the kill switch and the rate limit, as RSVPs are. Only an add counts. `PollFlow.on_poll_reaction` removes the
+  presser's reaction first, then acts only for the poll's starter or an admin (`admin.is_admin_id`).
 - The RSVP engine (`rsvp.apply`) decides every RSVP row. `sessions.write_rsvps` is the only code that rewrites `rsvps`
   after a session exists. `sessions.add` writes the proposer's first going row when the session is created, and
-  `sessions.add_presence` replaces the proposer's implicit presence row when they react.
-- The only non-admin command path is `dm_router` and `!session` (`session_commands.py`). `NonAdminLimiter.admit`
-  allows 5 DM commands, replies or 📅 reactions per 60 seconds per non-admin user. Admins are exempt. A `!session`
-  change needs the proposer or `admin.authorize`. A guild message goes to `admin.handle` and never reaches the
+  `sessions.add_presence` replaces the implicit presence row of any user who reacts. Any user may hold an implicit row: the proposer's going, and each maybe that `sessions.add(..., maybe=...)` writes for a scheduled poll's voters. The reconcile drops the implicit row of every user with a reaction before it adds that user's real row.
+- The non-admin paths are `dm_router` with `!session` (`session_commands.py`), `!poll`, and ballot replies. `NonAdminLimiter.admit`
+  allows 5 DM commands, draft or ballot replies, or 📅 DM reactions per 60 seconds per non-admin user. Admins are exempt. A `!session`
+  change needs the session's proposer, a `!poll` sort, shown, extend or close needs the poll's starter, and either may be done by `admin.authorize`. A guild message goes to `admin.handle` and never reaches the
   session path.
 - DM backoff (`dm_backoff.py`, in memory): a user whose DM failed gets no ordinary DM for `DM_BACKOFF_SECONDS`.
   Promotion, cancel, move and series-stopped DMs, and the wake request close DMs (ready, expired and cleared), pass
@@ -243,6 +257,39 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   cached statuses; that heads-up stays pending and goes out on the next tick whose card pass finishes. Each job lists
   without a lock and acts under the card's lock. Known limitation: a weekly occurrence
   is stored at most once, but a lost send response can post a second visible message, which has no row.
+
+## Polls rules
+
+- Poll content is never posted to the games channel: `PollPost.send_poll`, `flush` and the closed-poll reactions
+  (`seed_closed`, `unseed_closed`, `remove_reaction`) refuse it before any REST call. `tests/test_games_channel_polls.py`
+  runs a full scenario and checks it.
+- `poll_post.py` makes every REST call on the poll message (send, edit, delete, reactions) and sends each ballot DM
+  through `notify.dm_user`. Every poll send and edit uses `allowed_mentions={"parse": []}`. Other poll DMs (reminders,
+  scheduling links, refusals) go through `notify.dm_user`. `!poll` replies and vote answers go to the reply channel.
+- Poll state is in the database. A change to a poll is one compare-and-set statement, guarded on the poll still being
+  open or on the value it expects, in one transaction. A vote is parsed and written in the same transaction
+  (`_vote_tx`).
+- `poll_reply`, `poll_count` and `poll_letters` are pure (no database, REST or logging).
+- A poll posts to the channel from `interactions.target_channel_id`, the rule sessions share: the card's verified
+  play-now channel, else `PLAY_NOW_CHANNEL_ID`. `PollPost` requires the bot `identity`, because unseeding removes the
+  bot's own reactions.
+- Letters come from positions; only `!poll sort` moves positions; votes point at option ids. A poll has at most 702
+  options (`polls.MAX_OPTIONS`), and a typed time that would exceed that refuses the whole reply (`POLL_FULL`).
+- The member list is read once per poll start and once per runoff, in ids only. A failed read refuses the start
+  (`poll_members.MembersUnavailable`).
+- A card has at most one open poll (the `polls_open_once` index).
+- A runoff closes at min(now + `POLL_LENGTH_SECONDS`, earliest candidate time - 1 h - 10 min). With under 15 minutes
+  left, 🔁 is refused (`POLL_RUNOFF_TOO_SOON`) and the presser is told to use 📅. A runoff keeps the parent's starter,
+  and its candidates are the top three usable times that have votes; fewer than two is refused. The README's `### Polls`
+  states the same rule.
+- Poll logs carry `poll_id`, `card_id`, counts and reason keys only, never typed text, names or user ids.
+- The card lock covers the post and insert of a poll, the close transaction and the `!poll` changes; DMs and edits run
+  after it. `PollCloser.close_locked` is only for a caller that holds the card lock (archive). The 404 hook
+  (`PollPost.set_on_gone`) runs after the poll's lock is released and ignores a poll that is not open.
+- Ballot DMs and reminders obey `DmBackoff`. A reminder is marked before its DM goes out, so it is never sent twice, and
+  a recipient in backoff is skipped without being marked. `polls.mark_reminded_if` also requires the poll to be open, so a
+  close that commits first stops the reminder. Close-time changes are edits, not new DMs.
+- A voter's maybe on a scheduled session is an implicit RSVP row, replaced by any real reaction.
 
 ## Reactions rules
 
@@ -263,9 +310,12 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   `Seeder.seed` asks again before each add. It runs after the card's lock is released, so a reaction send is the one
   card call not under the lock. A failure is logged as `seed_failed` with the card id and the exception type, and the
   next surface is still seeded.
+- The ballot box (🗳️, U+1F5F3 U+FE0F) is wanted after the calendar, on the same surfaces (`seeding.has_session_channel`).
+  A poll message gets only 📅 and 🔁, from `PollPost.seed_closed`: both on a closed approval poll with a winner, and 📅
+  alone on a closed runoff.
 - `!card interactions on|off [slug]` (the kill switch, `interaction_settings`): off removes all reactions of the wake,
-  follow, play-now and calendar emoji (`Seeder.unseed`: the bot's seeds and any users' left over) from every card message and
-  active copy in scope; on re-seeds them. It runs with
+  follow, play-now, calendar and ballot-box emoji (`Seeder.unseed`: the bot's seeds and any users' left over) from every card message and
+  active copy in scope; on re-seeds them. It never touches a poll message, and it closes no poll. It runs with
   no card lock held. Unseeding is the only place the bot removes its own seeded reactions.
 - Press logs: a `press` log carries `event_type`, `card_id`, `action` and `surface`, and never a `user_id`. `user_id` is
   logged only on `press_absorbed`. Me Too on a play-now post is a state change, so it is never rate limited or removed.
@@ -327,6 +377,13 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   not stored, except a verified voice or text channel's display name (`card_voice.channel_name`,
   `card_text_channel.channel_name`). The snowflake bound is 25 in code and schema; Fluxer documents at most 19, so do
   not tighten without a new migration.
+- Poll tables (migration 0009, schema 9): `polls` (`kind` is `approval` or `runoff`, `state` is `open` or `closed`,
+  `outcome` is `winner`, `none` or `removed`; `parent_poll_id` links a runoff; `session_id` is `ON DELETE SET NULL`),
+  `poll_options` (positions and `starts_at` unique per poll; `origin` is `offered` or `typed`), `poll_ballots` (one per
+  recipient, with `answered`, `reminded` and the DM ids), and `poll_votes` (one row per pick, with `rank` for a runoff).
+  The indexes are `polls_open_once` (one open poll per card), `polls_message`, `polls_state_closes`, `polls_parent`,
+  `poll_votes_rank`, `poll_votes_option` and `poll_ballots_user`. Every table is `STRICT`, and the ids are checked as
+  digits, as elsewhere.
 - Migrations: `src/fluxer_panel/migrations/NNNN_name.sql`, numbered and contiguous from `0001`. Never edit a migration
   after release; add a new file instead. Do not put `BEGIN`, `COMMIT` or `PRAGMA user_version` in a file: the runner adds them.
 - `secure_delete = ON` is set, so purged rows do not survive in free pages. `.pre-v<N>` backups are not covered by that
@@ -342,6 +399,9 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   RSVP rows go with their session by `ON DELETE CASCADE`.
 - A request expires when `created_at` is more than 30 days ago, whatever its status.
 - A play-now post expires when `created_at` is more than 30 days ago, in either state.
+- A closed poll is deleted when it was closed more than `SESSION_RETENTION_SECONDS` ago, in the same transaction as the
+  sessions. Its options, ballots and votes go by cascade, with no REST call, so the `purge` subcommand deletes them too.
+  The count is `deleted.polls` in the status file.
 - Cutoffs are strict: a row exactly at a cutoff is kept. The due sessions are read first, in their own transaction. Each
   due session is then scrubbed, outside any transaction. Every delete runs in one transaction that re-checks the due
   rule (`sessions.PURGE_DUE_SQL`), and a WAL checkpoint follows.
