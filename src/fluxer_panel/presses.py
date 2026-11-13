@@ -38,6 +38,7 @@ WAKE_EMOJI = "\u25b6\ufe0f"        # the play emoji, as the bot sends it and Flu
 FOLLOW_EMOJI = "\U0001F514"        # the bell
 PLAY_NOW_EMOJI = "\U0001F64B"      # the person raising a hand
 SESSION_EMOJI = "\U0001F4C5"       # the calendar: proposes a session
+POLL_EMOJI = "\U0001F5F3\ufe0f"    # the ballot box: starts a time poll
 
 SurfaceKind = Literal["card", "copy", "play_now", "session"]
 
@@ -47,10 +48,11 @@ class Action(Enum):
     FOLLOW = "follow"
     PLAY_NOW = "play_now"
     SESSION = "session"
+    POLL = "poll"
 
 
 _BY_NAME = {"\u25b6": Action.WAKE, "\U0001F514": Action.FOLLOW, "\U0001F64B": Action.PLAY_NOW,
-            "\U0001F4C5": Action.SESSION}
+            "\U0001F4C5": Action.SESSION, "\U0001F5F3": Action.POLL}
 
 
 def action_for(emoji: events.Emoji) -> Action | None:

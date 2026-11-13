@@ -23,7 +23,7 @@ from fluxer_panel.db import Database
 from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.presses import (
-    FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, WAKE_EMOJI, Action, Press, Presses, Surface)
+    FOLLOW_EMOJI, PLAY_NOW_EMOJI, POLL_EMOJI, SESSION_EMOJI, WAKE_EMOJI, Action, Press, Presses, Surface)
 from fluxer_panel.seeding import Seeder
 from tests.fakes import FakeFluxerState, make_rest_app
 from tests.test_card_commands import World, build
@@ -43,7 +43,7 @@ PRESSER = "3001"
 BOT_ID = "9001"
 ROLE = "7001"
 HASH = "c" * 64
-EMOJI = (WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI)
+EMOJI = (WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, POLL_EMOJI)
 
 
 def reaction_path(channel: str, message: str, emoji: str) -> str:
@@ -202,6 +202,7 @@ async def test_on_gives_the_play_now_emoji_to_a_copy_outside_the_games_community
     assert sent(world, "PUT") == [reaction_path(GAMES, CARD_MSG, WAKE_EMOJI) + "/@me",
                                   reaction_path(GAMES, CARD_MSG, PLAY_NOW_EMOJI) + "/@me",
                                   reaction_path(GAMES, CARD_MSG, SESSION_EMOJI) + "/@me",
+                                  reaction_path(GAMES, CARD_MSG, POLL_EMOJI) + "/@me",
                                   reaction_path(OTHER_CHANNEL, OTHER_COPY_MSG, WAKE_EMOJI) + "/@me",
                                   reaction_path(OTHER_CHANNEL, OTHER_COPY_MSG, PLAY_NOW_EMOJI) + "/@me"]
 

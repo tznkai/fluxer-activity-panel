@@ -23,7 +23,7 @@ from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.logs import FIELDS_ATTR
 from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.poller import Poller
-from fluxer_panel.presses import FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, WAKE_EMOJI
+from fluxer_panel.presses import FOLLOW_EMOJI, PLAY_NOW_EMOJI, POLL_EMOJI, SESSION_EMOJI, WAKE_EMOJI
 from fluxer_panel.seeding import Seeder
 from fluxer_panel.sources.registry import Sources
 from tests.fakes import FakeFluxerState, Override, make_rest_app
@@ -178,14 +178,14 @@ async def test_a_card_published_with_the_command_gets_wake_bell_and_play_now(wor
 
     card = await world.card("mc")
     assert card is not None and card.message_id is not None
-    assert puts(world.state, GAMES, card.message_id) == [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI]
+    assert puts(world.state, GAMES, card.message_id) == [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, POLL_EMOJI]
 
 
 async def test_without_a_follow_role_a_new_card_gets_no_bell(world: World, db: Database) -> None:
     card_id = await live_card(db, "mc", follow=False)
     await make_poller(world, Clock()).tick()
 
-    assert puts(world.state, GAMES, await card_message(db, card_id)) == [WAKE_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI]
+    assert puts(world.state, GAMES, await card_message(db, card_id)) == [WAKE_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, POLL_EMOJI]
 
 
 async def test_without_a_play_now_target_a_new_card_gets_the_wake_emoji_only(db: Database, session: Any,
@@ -204,7 +204,7 @@ async def test_a_home_copy_gets_wake_bell_and_play_now(world: World, db: Databas
 
     copy = await db.run(lambda c: subscriptions.list_for_card(c, card_id))
     assert copy[0].message_id is not None
-    assert puts(world.state, HOME_COPY, copy[0].message_id) == [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI]
+    assert puts(world.state, HOME_COPY, copy[0].message_id) == [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, POLL_EMOJI]
 
 
 async def test_a_copy_in_another_community_gets_wake_bell_and_play_now(world: World, db: Database) -> None:
@@ -229,8 +229,8 @@ async def test_reconcile_adds_only_the_missing_emoji(world: World, db: Database)
 
     await make_poller(world, Clock()).reconcile()
 
-    assert puts(world.state, GAMES, message_id) == [FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI]
-    assert reacted(world.state, GAMES, message_id) == {WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI}
+    assert puts(world.state, GAMES, message_id) == [FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, POLL_EMOJI]
+    assert reacted(world.state, GAMES, message_id) == {WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, POLL_EMOJI}
 
 
 # The kill switch -------------------------------------------------------------------------------------------
@@ -272,7 +272,7 @@ async def test_seeding_keeps_each_channel_within_twenty_reaction_calls_per_ten_s
     await make_poller(world, clock, seeder=seeder).tick()
 
     times = [t for channel, t in pacer.calls if channel == GAMES]
-    assert len(times) == 28                       # seven cards, four emoji each (the calendar too)
+    assert len(times) == 35                       # seven cards, five emoji each (the calendar and the poll too)
     for t in times:
         assert sum(1 for x in times if t - 10 < x <= t) <= 20
     assert times[20] >= times[0] + 10
@@ -323,7 +323,7 @@ async def test_the_card_posted_before_a_failed_copy_pass_is_still_seeded(world: 
     monkeypatch.setattr(Poller, "_publish_subscriptions", fail)
     await make_poller(world, Clock()).tick()
 
-    assert puts(world.state, GAMES, await card_message(db, card_id)) == [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI]
+    assert puts(world.state, GAMES, await card_message(db, card_id)) == [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, POLL_EMOJI]
     assert [r.getMessage() for r in caplog.records].count("card_poll_failed") == 1
 
 
@@ -372,7 +372,7 @@ async def test_a_home_copy_reposted_after_a_404_edit_keeps_its_community_and_get
 
     copy = (await db.run(lambda c: subscriptions.list_for_card(c, card_id)))[0]
     assert copy.message_id is not None and copy.message_id != old
-    assert puts(world.state, HOME_COPY, copy.message_id) == [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI]
+    assert puts(world.state, HOME_COPY, copy.message_id) == [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, POLL_EMOJI]
 
 
 # AC5.6: reconcile seeds a copy the way it seeds a card ---------------------------------------------------------
@@ -396,8 +396,8 @@ async def test_reconcile_of_a_home_copy_that_has_the_wake_emoji_adds_only_bell_a
 
     await make_poller(world, Clock()).reconcile()
 
-    assert puts(world.state, HOME_COPY, message_id) == [FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI]
-    assert reacted(world.state, HOME_COPY, message_id) == {WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI}
+    assert puts(world.state, HOME_COPY, message_id) == [FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, POLL_EMOJI]
+    assert reacted(world.state, HOME_COPY, message_id) == {WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, POLL_EMOJI}
 
 
 async def test_reconcile_of_a_copy_in_another_community_that_has_the_wake_emoji_adds_only_bell_and_play_now(

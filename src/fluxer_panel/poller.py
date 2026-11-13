@@ -677,7 +677,7 @@ class Poller:
             home = await self._is_home(kind, guild_id)
             play_now = has_play_now_target(card, self._config, surface_kind=kind, home=home)
             session = has_session_channel(card, self._config, surface_kind=kind, home=home)
-            wanted = wanted_emoji(card, play_now_target=play_now, session_target=session)
+            wanted = wanted_emoji(card, play_now_target=play_now, session_target=session, poll_target=session)
             await self._seeder.seed(channel_id, message_id, wanted, message, card_id=card.id)
         except asyncio.CancelledError:
             raise

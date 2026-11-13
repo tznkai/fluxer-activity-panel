@@ -19,7 +19,7 @@ from fluxer_panel.cards import ChannelLink, FollowRole
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.logs import FIELDS_ATTR
-from fluxer_panel.presses import FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, WAKE_EMOJI
+from fluxer_panel.presses import FOLLOW_EMOJI, PLAY_NOW_EMOJI, POLL_EMOJI, SESSION_EMOJI, WAKE_EMOJI
 from fluxer_panel.seeding import Seeder, has_play_now_target, has_session_channel, wanted_emoji
 from tests.fakes import FakeFluxerState, Override, make_rest_app
 
@@ -95,8 +95,9 @@ WAKE_SEGMENT = "%E2%96%B6%EF%B8%8F"
 FOLLOW_SEGMENT = "%F0%9F%94%94"
 PLAY_NOW_SEGMENT = "%F0%9F%99%8B"
 SESSION_SEGMENT = "%F0%9F%93%85"   # U+1F4C5, the calendar
+POLL_SEGMENT = "%F0%9F%97%B3%EF%B8%8F"   # U+1F5F3 U+FE0F, the poll
 SEGMENTS = {WAKE_EMOJI: WAKE_SEGMENT, FOLLOW_EMOJI: FOLLOW_SEGMENT, PLAY_NOW_EMOJI: PLAY_NOW_SEGMENT,
-            SESSION_EMOJI: SESSION_SEGMENT}
+            SESSION_EMOJI: SESSION_SEGMENT, POLL_EMOJI: POLL_SEGMENT}
 
 
 # wanted_emoji: the three rules
@@ -175,6 +176,18 @@ def test_the_calendar_is_wanted_only_with_a_session_target() -> None:
         WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI]
     assert wanted_emoji(card, play_now_target=True) == [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI]
     assert wanted_emoji(make_card(), play_now_target=False, session_target=True) == [WAKE_EMOJI, SESSION_EMOJI]
+
+
+# wanted_emoji: the poll rule
+
+def test_the_poll_is_wanted_last_and_only_with_a_poll_target() -> None:
+    card = make_card(follow_role=ROLE)
+
+    assert wanted_emoji(card, play_now_target=True, session_target=True, poll_target=True) == [
+        WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, POLL_EMOJI]
+    assert wanted_emoji(card, play_now_target=True, session_target=True) == [
+        WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI]
+    assert wanted_emoji(make_card(), play_now_target=False, poll_target=False) == [WAKE_EMOJI]
 
 
 # has_session_channel: where a session can be planned

@@ -90,13 +90,13 @@ Paths are relative to this directory.
 
 ## Reactions and presses
 
-- `src/fluxer_panel/presses.py:159` `if event.guild_id is None or event.user_id == self._identity.user_id or event.user_is_bot:` — DM reactions, the bot's own reactions and another bot's reactions never reach the press adapter.
-- `src/fluxer_panel/presses.py:179` `if found is None or not found.switched_on:` — the kill switch, the global one and the card's own, is read before any rate limit, so a switched-off surface absorbs nothing and counts nothing.
-- `src/fluxer_panel/presses.py:226` `if last is not None and now - last < self._config.press_user_window_seconds:` — the per-user window. A repeated press from one user inside it is absorbed.
-- `src/fluxer_panel/presses.py:234` `if len(times) >= self._config.press_card_burst:` — the per-card burst limit. A card's presses past the burst are absorbed.
-- `src/fluxer_panel/presses.py:292` `await self._pacer.wait(event.channel_id)` — the reaction removal waits for the channel's shared budget before the call.
-- `src/fluxer_panel/presses.py:293` `await self._rest.remove_reaction(event.channel_id, event.message_id, event.emoji.name, event.user_id)` — after a press is handled, the user's reaction is removed, so the button resets for the next tap.
-- `src/fluxer_panel/presses.py:296` `newly = await self._db.run(lambda c: interaction_settings.mark_degraded(c, channel, int(now)))` — a removal refused with 403 marks its channel degraded, and the admins are DMed once. A later press retries the removal at most once a day, and a success clears the mark.
+- `src/fluxer_panel/presses.py:161` `if event.guild_id is None or event.user_id == self._identity.user_id or event.user_is_bot:` — DM reactions, the bot's own reactions and another bot's reactions never reach the press adapter.
+- `src/fluxer_panel/presses.py:181` `if found is None or not found.switched_on:` — the kill switch, the global one and the card's own, is read before any rate limit, so a switched-off surface absorbs nothing and counts nothing.
+- `src/fluxer_panel/presses.py:228` `if last is not None and now - last < self._config.press_user_window_seconds:` — the per-user window. A repeated press from one user inside it is absorbed.
+- `src/fluxer_panel/presses.py:236` `if len(times) >= self._config.press_card_burst:` — the per-card burst limit. A card's presses past the burst are absorbed.
+- `src/fluxer_panel/presses.py:294` `await self._pacer.wait(event.channel_id)` — the reaction removal waits for the channel's shared budget before the call.
+- `src/fluxer_panel/presses.py:295` `await self._rest.remove_reaction(event.channel_id, event.message_id, event.emoji.name, event.user_id)` — after a press is handled, the user's reaction is removed, so the button resets for the next tap.
+- `src/fluxer_panel/presses.py:298` `newly = await self._db.run(lambda c: interaction_settings.mark_degraded(c, channel, int(now)))` — a removal refused with 403 marks its channel degraded, and the admins are DMed once. A later press retries the removal at most once a day, and a success clears the mark.
 
 ## Play-now mentions
 

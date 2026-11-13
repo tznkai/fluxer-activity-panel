@@ -20,15 +20,17 @@ from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.logs import log_event
 from fluxer_panel.pacer import ChannelPacer
-from fluxer_panel.presses import FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, WAKE_EMOJI
+from fluxer_panel.presses import FOLLOW_EMOJI, PLAY_NOW_EMOJI, POLL_EMOJI, SESSION_EMOJI, WAKE_EMOJI
 
 log = logging.getLogger(__name__)
 
 
-def wanted_emoji(card: Card, *, play_now_target: bool, session_target: bool = False) -> list[str]:
+def wanted_emoji(card: Card, *, play_now_target: bool, session_target: bool = False,
+                 poll_target: bool = False) -> list[str]:
     """WAKE_EMOJI always; FOLLOW_EMOJI only when the card has a follow role; PLAY_NOW_EMOJI only when there is a
-    play-now target; SESSION_EMOJI last, only when there is a session channel. A copy outside the games community
-    carries the same emoji, and a press there gets a DM that points at the card."""
+    play-now target; SESSION_EMOJI only when there is a session channel; POLL_EMOJI last, only when `poll_target`
+    (the same session-channel result). A copy outside the games community carries the same emoji, and a press there
+    gets a DM that points at the card."""
     wanted = [WAKE_EMOJI]
     if card.follow_role is not None:
         wanted.append(FOLLOW_EMOJI)
@@ -36,6 +38,8 @@ def wanted_emoji(card: Card, *, play_now_target: bool, session_target: bool = Fa
         wanted.append(PLAY_NOW_EMOJI)
     if session_target:
         wanted.append(SESSION_EMOJI)
+    if poll_target:
+        wanted.append(POLL_EMOJI)
     return wanted
 
 

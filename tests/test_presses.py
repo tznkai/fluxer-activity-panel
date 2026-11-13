@@ -24,7 +24,8 @@ from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.pacer import ChannelPacer
-from fluxer_panel.presses import FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, WAKE_EMOJI, Action, Press, Presses, Surface
+from fluxer_panel.presses import (
+    FOLLOW_EMOJI, PLAY_NOW_EMOJI, POLL_EMOJI, SESSION_EMOJI, WAKE_EMOJI, Action, Press, Presses, Surface)
 from tests.fakes import FakeFluxerState, Override, make_rest_app
 
 TOKEN = "SENTINEL-TOKEN-presses"
@@ -261,6 +262,8 @@ def panel_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
     (PLAY_NOW_EMOJI, Action.PLAY_NOW),
     (SESSION_EMOJI, Action.SESSION),
     ("\U0001F4C5", Action.SESSION),       # the calendar, as Fluxer names it
+    (POLL_EMOJI, Action.POLL),
+    ("\U0001F5F3", Action.POLL),          # the poll without U+FE0F matches too
 ])
 async def test_the_three_emoji_on_a_card_are_presses_for_it(harness, name: str, action: Action) -> None:
     h = await harness()

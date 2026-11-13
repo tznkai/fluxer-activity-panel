@@ -16,7 +16,7 @@ from typing import Any
 import aiohttp
 import pytest
 
-from fluxer_client.rest import FluxerREST
+from fluxer_client.rest import FluxerREST, encode_emoji
 from fluxer_panel import cards, polls
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
@@ -26,6 +26,7 @@ from fluxer_panel.interactions import GamesChannelRefused
 from fluxer_panel.logs import FIELDS_ATTR
 from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.poll_post import POLL_RUNOFF_EMOJI, POLL_SCHEDULE_EMOJI, PollPost, _Dirty
+from fluxer_panel.presses import POLL_EMOJI
 from tests.fakes import FakeFluxerState, Override, make_rest_app
 
 TOKEN = "poll-post-token"
@@ -319,6 +320,16 @@ async def test_seed_closed_adds_only_the_calendar_for_a_runoff(world: SimpleName
     await world.post.seed_closed(poll_id)
     emojis = [r.path.rsplit("/", 2)[-2] for r in requests(world, "PUT")]
     assert emojis == [POLL_SCHEDULE_EMOJI]
+
+
+async def test_a_closed_poll_message_never_gets_the_poll_emoji(world: SimpleNamespace) -> None:
+    """The poll message carries the calendar and the runoff repeat only; the poll emoji is a press on the card and its
+    copies, never on a poll message."""
+    poll_id = await _closed_with_winner(world)
+    await world.post.seed_closed(poll_id)
+    emojis = [r.path.rsplit("/", 2)[-2] for r in requests(world, "PUT")]
+    assert encode_emoji(POLL_EMOJI) not in emojis
+    assert emojis == [POLL_SCHEDULE_EMOJI, POLL_RUNOFF_EMOJI]
 
 
 async def test_seed_closed_adds_nothing_without_a_winner(world: SimpleNamespace) -> None:
