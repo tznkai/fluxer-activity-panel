@@ -197,7 +197,8 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   (403) or `text.SUBSCRIPTION_CHANNEL_GONE_ALERT` (404), with the card slug and channel id as its only inputs. A 404
   on an edit reposts the copy. `!card subscribe` on a paused channel resumes it, which clears a 403 pause;
   `!card unsubscribe` clears a channel-gone pause. `!card archive` first cancels the card's upcoming sessions, under the card lock (their messages are edited and
-  their attendees DMed). It then deletes every copy first and the card's message last. A 404 counts as deleted. A 403 on a copy or on the card's own message leaves that message in place, the
+  their attendees DMed), and closes its open poll with no winner (`_close_open_poll_locked`; a failed close is logged
+  as `poll_archive_failed` and the archive goes on). It then deletes every copy first and the card's message last. A 404 counts as deleted. A 403 on a copy or on the card's own message leaves that message in place, the
   archive goes on, and the reply names each channel left: `text.CARD_ARCHIVED_SOME_LEFT` with one
   `text.ARCHIVE_LEFT_LINE` per channel. `text.CARD_ARCHIVED` is used only when nothing is left. Any other failure
   stops the archive while the card stays live, and the copies it already deleted are forgotten so the poller posts
@@ -292,6 +293,11 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   a recipient in backoff is skipped without being marked. `polls.mark_reminded_if` also requires the poll to be open, so a
   close that commits first stops the reminder. Close-time changes are edits, not new DMs.
 - A voter's maybe on a scheduled session is an implicit RSVP row, replaced by any real reaction.
+- 📅 on a closed poll schedules the winner through `SessionFlow.publish` (the starter is the proposer, each voter for
+  the winner a `maybe`, `notify_proposer=False`), so every session post still goes through `SessionPost`. It is refused
+  under `poll_count.LEAD_SECONDS` before the winning time, and `polls.set_session_if_unset` links one session only.
+- `PollJobs.run` (due closes, halfway reminders) runs on every poller tick after the session jobs, even when the tick
+  raised (`Poller.set_poll_jobs`), and its `due` shortens the poller's wait. It never raises.
 
 ## Reactions rules
 
@@ -372,8 +378,8 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   `play_now`, `interactions` (one row, the global switch), `card_interactions_off` and `reaction_degraded`.
 - Session tables (migration 0008): `sessions` is rebuilt, since migration 0001 created it with `group_role_id` and no state
   columns. Its `state` is `upcoming`, `ended` or `cancelled`, and `closed_at` is set exactly when it is not upcoming.
-  It also has `recurrence`, `series_id`, `next_posted` and `moved`. `rsvp_reaction` holds the presence rows (one
-  implicit row for the proposer), and `rsvps` is rebuilt as the computed state (`waitlist_pos` for a waiting user).
+  It also has `recurrence`, `series_id`, `next_posted` and `moved`. `rsvp_reaction` holds the presence rows (`implicit = 1`
+  for the proposer's going and a scheduled poll's voters' maybes), and `rsvps` is rebuilt as the computed state (`waitlist_pos` for a waiting user).
   Both `rsvps` and `rsvp_reaction` cascade with their session.
 - Schema: every table is `STRICT`. Ids are `TEXT` with CHECKs that they are digits only and at most 25 long; names are
   not stored, except a verified voice or text channel's display name (`card_voice.channel_name`,
