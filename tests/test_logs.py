@@ -130,6 +130,13 @@ def test_session_id_is_kept_as_an_integer_row_id(captured):
     assert record["session_id"] == 42
 
 
+def test_poll_id_is_kept_as_an_integer_row_id(captured):
+    log = logging.getLogger("fluxer_panel.test")
+    log_event(log, "poll_closed", poll_id=7)
+    (record,) = parsed(captured)
+    assert record["poll_id"] == 7
+
+
 def test_plain_stdlib_record_is_valid_json_with_message_as_event(captured):
     logging.getLogger("fluxer_client.rest").warning("rate limited on %s", "GET /x")
     (record,) = parsed(captured)

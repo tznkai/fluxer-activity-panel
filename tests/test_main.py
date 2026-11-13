@@ -502,7 +502,7 @@ async def test_purge_subcommand_defers_due_sessions_and_exits_zero(tmp_path):
     # ok is True with no network step: the subcommand has no REST, so the due session is deferred, not scrubbed
     assert status["ok"] is True
     assert status["schema_version"] == 2
-    assert status["deleted"] == {"sessions": 0, "rsvps": 0, "requests": 1, "play_now": 1}
+    assert status["deleted"] == {"sessions": 0, "rsvps": 0, "requests": 1, "play_now": 1, "polls": 0}
     assert status["sessions_deferred"] == 1
     assert "purge_done" in [e["event"] for e in json_lines(out)]
     assert TOKEN not in out + err

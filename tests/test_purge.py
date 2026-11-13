@@ -293,7 +293,7 @@ async def test_run_purge_writes_a_valid_status_file(db: Database, status: Path) 
         "last_success_at": NOW,
         "last_attempt_at": NOW,
         "ok": True,
-        "deleted": {"sessions": 1, "rsvps": 1, "requests": 1, "play_now": 0},
+        "deleted": {"sessions": 1, "rsvps": 1, "requests": 1, "play_now": 0, "polls": 0},
         "sessions_deferred": 0,
         "schema_version": 2,
     }
@@ -367,7 +367,7 @@ async def test_failing_purge_rolls_back_and_keeps_the_previous_success(
     assert data["ok"] is False
     assert data["last_attempt_at"] == NOW
     assert data["last_success_at"] == NOW - 100
-    assert data["deleted"] == {"sessions": 0, "rsvps": 0, "requests": 0, "play_now": 0}
+    assert data["deleted"] == {"sessions": 0, "rsvps": 0, "requests": 0, "play_now": 0, "polls": 0}
     assert any(r.getMessage() == "purge_failed" for r in caplog.records)
 
 
@@ -613,7 +613,7 @@ async def test_without_a_scrubber_due_sessions_stay_and_are_counted_as_deferred(
         "last_success_at": NOW,
         "last_attempt_at": NOW,
         "ok": True,
-        "deleted": {"sessions": 0, "rsvps": 0, "requests": 1, "play_now": 1},
+        "deleted": {"sessions": 0, "rsvps": 0, "requests": 1, "play_now": 1, "polls": 0},
         "sessions_deferred": 2,
         "schema_version": 2,
     }
@@ -736,6 +736,114 @@ async def test_old_requests_and_play_now_are_purged_without_a_session_due(db: Da
     assert await _purge(db, NOW) == PurgeResult(sessions=0, rsvps=0, requests=1, play_now=1)
 
 
+# AC8.4: a closed poll's rows are purged after retention; open polls and the poll message are never touched. ----
+
+_POLL_MESSAGES = itertools.count(6001)
+
+
+def _poll(conn: sqlite3.Connection, card_id: int, *, state: str, created_at: int, closed_at: int | None = None,
+          outcome: str = "none", session_id: int | None = None) -> int:
+    """A poll with two options, one ballot and one vote on the first option. It is opened, then closed in place,
+    because the outcome and winner columns are checked against each other. A session link needs a winner."""
+    cur = conn.execute(
+        "INSERT INTO polls (card_id, guild_id, channel_id, message_id, starter_id, kind, state, created_at, "
+        "closes_at, ballot_size) VALUES (?, '1001', '1002', ?, '1001', 'approval', 'open', ?, ?, 6)",
+        (card_id, str(next(_POLL_MESSAGES)), created_at, created_at + 3600))
+    poll_id = cur.lastrowid
+    first = conn.execute("INSERT INTO poll_options (poll_id, position, starts_at, origin) "
+                         "VALUES (?, 0, ?, 'offered')", (poll_id, STARTS)).lastrowid
+    conn.execute("INSERT INTO poll_options (poll_id, position, starts_at, origin) VALUES (?, 1, ?, 'offered')",
+                 (poll_id, STARTS + 3600))
+    conn.execute("INSERT INTO poll_ballots (poll_id, user_id) VALUES (?, '1001')", (poll_id,))
+    conn.execute("INSERT INTO poll_votes (poll_id, user_id, option_id) VALUES (?, '1001', ?)", (poll_id, first))
+    if state == "closed":
+        winner = first if outcome == "winner" else None
+        conn.execute("UPDATE polls SET state = 'closed', closed_at = ?, outcome = ?, winner_option_id = ?, "
+                     "session_id = ? WHERE id = ?", (closed_at, outcome, winner, session_id, poll_id))
+    return poll_id
+
+
+_POLL_TABLES = ("polls", "poll_options", "poll_ballots", "poll_votes")
+
+
+async def test_closed_poll_and_its_options_ballots_and_votes_are_purged(db: Database) -> None:
+    await db.run(lambda conn: _poll(conn, _card(conn), state="closed", created_at=CUT - 2 * DAY, closed_at=CUT - 1))
+
+    assert await _purge(db, NOW) == PurgeResult(sessions=0, rsvps=0, requests=0, play_now=0, polls=1)
+    for table in _POLL_TABLES:
+        assert await db.run(lambda c, t=table: _count(c, t)) == 0
+
+
+async def test_closed_poll_closed_exactly_at_the_cutoff_is_kept(db: Database) -> None:
+    await db.run(lambda conn: _poll(conn, _card(conn), state="closed", created_at=CUT - DAY, closed_at=CUT))
+
+    assert await _purge(db, NOW) == PurgeResult(sessions=0, rsvps=0, requests=0, play_now=0, polls=0)
+    assert await db.run(lambda c: _count(c, "polls")) == 1
+
+
+async def test_open_poll_is_never_purged_however_old(db: Database) -> None:
+    await db.run(lambda conn: _poll(conn, _card(conn), state="open", created_at=ANCIENT))
+
+    assert await _purge(db, NOW) == PurgeResult(sessions=0, rsvps=0, requests=0, play_now=0, polls=0)
+    assert await db.run(lambda c: _count(c, "polls")) == 1
+
+
+async def test_closed_poll_is_purged_by_the_offline_purge_and_never_scrubbed(db: Database) -> None:
+    await db.run(lambda conn: _poll(conn, _card(conn), state="closed", created_at=CUT - 2 * DAY, closed_at=CUT - 1))
+    scrub = _Scrubber(db)
+
+    assert await _purge(db, NOW, scrub=scrub) == PurgeResult(sessions=0, rsvps=0, requests=0, play_now=0, polls=1)
+    assert scrub.calls == []
+
+
+async def test_closed_poll_is_purged_when_no_scrubber_is_given(db: Database) -> None:
+    """The `purge` subcommand passes no scrubber and has no REST, so it must still delete closed polls."""
+    await db.run(lambda conn: _poll(conn, _card(conn), state="closed", created_at=CUT - 2 * DAY, closed_at=CUT - 1))
+
+    assert await _purge(db, NOW, scrub=None) == PurgeResult(sessions=0, rsvps=0, requests=0, play_now=0, polls=1)
+
+
+async def test_due_poll_linked_to_a_due_session_is_purged_in_the_same_run(db: Database) -> None:
+    def seed(conn: sqlite3.Connection) -> None:
+        card = _card(conn)
+        session = _session(conn, card, closed_at=CUT - 1)
+        _poll(conn, card, state="closed", created_at=CUT - DAY, closed_at=CUT - 1, outcome="winner",
+              session_id=session)
+
+    await db.run(seed)
+
+    assert await _purge(db, NOW) == PurgeResult(sessions=1, rsvps=0, requests=0, play_now=0, polls=1)
+    assert await db.run(lambda c: _count(c, "polls")) == 0
+
+
+async def test_kept_poll_whose_session_is_purged_keeps_its_row_with_no_session(db: Database) -> None:
+    def seed(conn: sqlite3.Connection) -> None:
+        card = _card(conn)
+        session = _session(conn, card, closed_at=CUT - 1)
+        _poll(conn, card, state="closed", created_at=NOW - DAY, closed_at=NOW - 1, outcome="winner",
+              session_id=session)
+
+    await db.run(seed)
+
+    assert await _purge(db, NOW) == PurgeResult(sessions=1, rsvps=0, requests=0, play_now=0, polls=0)
+    assert await db.run(lambda c: c.execute("SELECT session_id FROM polls").fetchone()[0]) is None
+
+
+async def test_run_purge_status_file_counts_deleted_polls_and_the_log_count_includes_them(
+        db: Database, status: Path, caplog: pytest.LogCaptureFixture) -> None:
+    def seed(conn: sqlite3.Connection) -> None:
+        _poll(conn, _card(conn), state="closed", created_at=CUT - 2 * DAY, closed_at=CUT - 1)
+
+    await db.run(seed)
+    caplog.set_level(logging.INFO, logger="fluxer_panel.purge")
+
+    await _run(db, status, NOW)
+
+    assert _read_status(status)["deleted"] == {"sessions": 0, "rsvps": 0, "requests": 0, "play_now": 0, "polls": 1}
+    done = [r for r in caplog.records if r.getMessage() == "purge_done"]
+    assert done[0].panel_fields["count"] == 1  # type: ignore[attr-defined]
+
+
 # Status file edge cases -------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("previous", [
@@ -762,7 +870,7 @@ def test_write_status_treats_a_malformed_previous_file_as_no_success(tmp_path: P
     assert data["last_success_at"] is None
     assert data["ok"] is False
     assert data["last_attempt_at"] == NOW
-    assert data["deleted"] == {"sessions": 0, "rsvps": 0, "requests": 0, "play_now": 0}
+    assert data["deleted"] == {"sessions": 0, "rsvps": 0, "requests": 0, "play_now": 0, "polls": 0}
 
 
 async def test_deeply_nested_previous_status_does_not_stop_a_failed_run(db: Database, status: Path) -> None:
@@ -806,7 +914,7 @@ async def test_checkpoint_failure_after_commit_reports_not_ok_and_keeps_the_rows
         "last_success_at": NOW - 100,
         "last_attempt_at": NOW,
         "ok": False,
-        "deleted": {"sessions": 0, "rsvps": 0, "requests": 0, "play_now": 0},
+        "deleted": {"sessions": 0, "rsvps": 0, "requests": 0, "play_now": 0, "polls": 0},
         "sessions_deferred": 0,
         "schema_version": 2,
     }

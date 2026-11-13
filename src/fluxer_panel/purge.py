@@ -35,6 +35,7 @@ class PurgeResult:
     requests: int
     play_now: int
     sessions_deferred: int = 0
+    polls: int = 0
 
 
 _NOTHING = PurgeResult(sessions=0, rsvps=0, requests=0, play_now=0)
@@ -56,7 +57,10 @@ def _purge_tx(conn: sqlite3.Connection, now: int, *, session_ids: Sequence[int],
                             {"cutoff": now - REQUEST_RETENTION}).rowcount
     play_now = conn.execute("DELETE FROM play_now WHERE created_at < :cutoff",
                             {"cutoff": now - REQUEST_RETENTION}).rowcount
-    return PurgeResult(sessions=sessions_deleted, rsvps=rsvps, requests=requests, play_now=play_now)
+    polls_deleted = conn.execute("DELETE FROM polls WHERE state = 'closed' AND closed_at < :cutoff",
+                                 {"cutoff": cutoff}).rowcount
+    return PurgeResult(sessions=sessions_deleted, rsvps=rsvps, requests=requests, play_now=play_now,
+                       polls=polls_deleted)
 
 
 async def purge(db: Database, now: int, *, scrub: Scrub | None, retention: int) -> PurgeResult:
@@ -97,7 +101,7 @@ def write_status(path: Path, *, now: int, result: PurgeResult | None) -> None:
         "ok": result is not None,
         # listed key by key, so the deferred count is not reported as a deletion
         "deleted": {"sessions": shown.sessions, "rsvps": shown.rsvps, "requests": shown.requests,
-                    "play_now": shown.play_now},
+                    "play_now": shown.play_now, "polls": shown.polls},
         "sessions_deferred": shown.sessions_deferred,
         "schema_version": STATUS_SCHEMA_VERSION,
     }
@@ -117,7 +121,8 @@ async def run_purge(db: Database, status_path: Path, now: int, *, scrub: Scrub |
         log.exception("purge_failed")
         result = None
     else:
-        log_event(log, "purge_done", count=result.sessions + result.rsvps + result.requests + result.play_now,
+        log_event(log, "purge_done",
+                  count=result.sessions + result.rsvps + result.requests + result.play_now + result.polls,
                   duration_ms=round((time.monotonic() - started) * 1000))
     try:
         write_status(status_path, now=now, result=result)
