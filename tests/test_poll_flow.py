@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sqlite3
 from collections import Counter
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
@@ -79,6 +80,8 @@ class World:
     flow: PollFlow
     interactions: Interactions
     card_id: int
+    locks: CardLocks
+    backoff: DmBackoff
 
 
 def config_for(**extra: str) -> Config:
@@ -132,7 +135,7 @@ async def build(tmp_path: Path, aiohttp_server: Any) -> AsyncIterator[Callable[.
                                         poll_flow=flow)
             card_id = await database.run(lambda c: seed_card(c, follow=follow))
             return World(db=database, state=state, rest=rest, config=config, clock=clock, post=post, flow=flow,
-                         interactions=interactions, card_id=card_id)
+                         interactions=interactions, card_id=card_id, locks=locks, backoff=backoff)
 
         yield make
     for database in opened:
@@ -156,6 +159,13 @@ def posts_to(state: FakeFluxerState, path: str) -> list[Any]:
     return [r for r in state.requests if r.method == "POST" and r.path == path]
 
 
+def message_posts(state: FakeFluxerState) -> list[Any]:
+    """Every POST that sends a message to a guild channel: not the DM channel creation, nor a DM to a user."""
+    dms = set(state.dm_channels.values())
+    return [r for r in state.requests
+            if r.method == "POST" and r.path.endswith("/messages") and r.path.split("/")[4] not in dms]
+
+
 def dm_contents(state: FakeFluxerState, user_id: str) -> list[str]:
     """The text of every DM message the bot sent to one user, in order."""
     channel = state.dm_channels.get(user_id)
@@ -165,8 +175,11 @@ def dm_contents(state: FakeFluxerState, user_id: str) -> list[str]:
     return [r.payload["content"] for r in state.requests if r.method == "POST" and r.path == path]
 
 
+BALLOT_PREFIX = text.POLL_BALLOT_HEAD.split("{n}")[0]     # "Time poll ": every ballot opens with it, then the poll id
+
+
 def ballot_contents(state: FakeFluxerState, user_id: str) -> list[str]:
-    return [content for content in dm_contents(state, user_id) if content.startswith(text.POLL_BALLOT_HEAD.split("{")[0])]
+    return [content for content in dm_contents(state, user_id) if content.startswith(BALLOT_PREFIX)]
 
 
 async def open_poll(world: World) -> polls.Poll | None:
@@ -246,6 +259,7 @@ async def test_the_options_are_the_offered_slots_in_soonest_order_lettered_from_
     assert [o.position for o in stored] == list(range(len(expected)))
     assert all(o.origin == "offered" for o in stored)
     [ballot] = ballot_contents(world.state, STARTER)
+    assert ballot.startswith(f"Time poll {poll.id} for Lobby.")
     assert f"a. <t:{expected[0]}:F>" in ballot
     assert f"b. <t:{expected[1]}:F>" in ballot
 
@@ -387,6 +401,148 @@ async def test_a_poll_stored_during_the_post_deletes_the_provisional_message_and
     assert dm_contents(world.state, STARTER) == [text.POLL_ALREADY_OPEN.format(link=link_to(world, PLAY, "5999"))]
 
 
+# The error paths of PollFlow.start ----------------------------------------------------------------------
+
+def failures_logged(caplog: pytest.LogCaptureFixture, name: str) -> list[Any]:
+    return [getattr(r, FIELDS_ATTR, {}).get("reason") for r in caplog.records if r.getMessage() == name]
+
+
+def set_card_channel(conn: Any, card_id: int, channel_id: str) -> None:
+    """Gives the card its own verified play-now channel, which the poll posts to instead of PLAY_NOW_CHANNEL_ID."""
+    cards.set_play_now_channel(conn, card_id, cards.ChannelLink(guild_id=GUILD, channel_id=channel_id,
+                                                                channel_name=None, verified=True))
+
+
+async def test_a_failed_insert_deletes_the_provisional_message_and_tells_the_presser(build, monkeypatch) -> None:
+    world = await build()
+    members(world.state, STARTER, HOLDER_A)
+
+    def broken_create(conn: Any, **_: Any) -> int:
+        raise sqlite3.IntegrityError("injected by the test")
+
+    monkeypatch.setattr(polls, "create", broken_create)
+    await world.flow.start(press(world.card_id))
+    await world.post.drain()
+
+    assert len(posts_to(world.state, POLL_POSTS)) == 1
+    assert (PLAY, FIRST_POLL_MESSAGE) in world.state.deleted
+    assert await open_poll(world) is None
+    assert dm_contents(world.state, STARTER) == [text.POLL_POST_FAILED]
+    assert ballot_contents(world.state, HOLDER_A) == []
+
+
+async def test_a_poll_message_with_a_bad_id_is_not_stored_and_nothing_is_deleted(build, caplog) -> None:
+    world = await build()
+    members(world.state, STARTER, HOLDER_A)
+    caplog.set_level(logging.DEBUG)
+    world.state.overrides[f"POST {POLL_POSTS}"] = Override(200, b'{"id": "not-a-snowflake"}')
+
+    await world.flow.start(press(world.card_id))
+    await world.post.drain()
+
+    assert await open_poll(world) is None
+    assert [r for r in world.state.requests if r.method == "DELETE"] == []
+    assert dm_contents(world.state, STARTER) == [text.POLL_POST_FAILED]
+    assert failures_logged(caplog, "poll_post_failed") == ["bad_message_id"]
+
+
+async def test_a_poll_post_answering_500_stores_nothing_and_tells_the_presser(build) -> None:
+    world = await build()
+    members(world.state, STARTER, HOLDER_A)
+    world.state.overrides[f"POST {POLL_POSTS}"] = Override(500, b'{"code":"INTERNAL","message":"x"}')
+
+    await world.flow.start(press(world.card_id))
+    await world.post.drain()
+
+    assert len(posts_to(world.state, POLL_POSTS)) == 1
+    assert await open_poll(world) is None
+    assert dm_contents(world.state, STARTER) == [text.POLL_POST_FAILED]
+    assert ballot_contents(world.state, HOLDER_A) == []
+
+
+async def test_a_card_whose_channel_changes_while_the_post_waits_for_the_lock_gets_no_poll(build) -> None:
+    world = await build()
+    members(world.state, STARTER, HOLDER_A)
+    lock = world.locks.get(world.card_id)
+    await lock.acquire()
+    try:
+        task = asyncio.create_task(world.flow.start(press(world.card_id)))
+        # The target and the member list are read before the lock. Once the member list is requested, the flow is only
+        # left to wait on the lock, and the change below is made under the lock, so the flow reads the card after it.
+        await wait_until(lambda: any(r.method == "GET" and r.path == MEMBERS for r in world.state.requests),
+                         waiting_for="the member list request")
+        await world.db.run(lambda c: set_card_channel(c, world.card_id, "3300"))
+    finally:
+        lock.release()
+    await asyncio.wait_for(task, timeout=5)
+    await world.post.drain()
+
+    assert posts_to(world.state, POLL_POSTS) == []
+    assert await open_poll(world) is None
+    assert dm_contents(world.state, STARTER) == [text.POLL_POST_FAILED]
+
+
+async def test_a_card_whose_own_channel_is_the_games_channel_gets_no_poll(build) -> None:
+    world = await build()
+    members(world.state, STARTER, HOLDER_A)
+    await world.db.run(lambda c: set_card_channel(c, world.card_id, GAMES))
+
+    await world.flow.start(press(world.card_id))
+    await world.post.drain()
+
+    assert message_posts(world.state) == []
+    assert await open_poll(world) is None
+    assert dm_contents(world.state, STARTER) == [text.POLL_POST_FAILED]
+
+
+async def test_a_card_with_no_channel_is_told_so_and_nothing_is_posted(build) -> None:
+    world = await build(PLAY_NOW_CHANNEL_ID="")
+    members(world.state, STARTER, HOLDER_A)
+
+    await world.flow.start(press(world.card_id))
+    await world.post.drain()
+
+    assert message_posts(world.state) == []
+    assert await open_poll(world) is None
+    assert dm_contents(world.state, STARTER) == [text.POLL_NO_CHANNEL]
+
+
+async def test_a_press_in_backoff_starts_nothing_and_sends_nothing(build) -> None:
+    world = await build()
+    members(world.state, STARTER, HOLDER_A)
+    world.backoff.failed(STARTER)
+
+    await world.flow.start(press(world.card_id))
+    await world.post.drain()
+
+    assert world.state.requests == []
+    assert await open_poll(world) is None
+
+
+async def test_a_far_copy_press_without_an_instance_url_says_so_without_a_link(build) -> None:
+    world = await build(FLUXER_INSTANCE_URL="", FLUXER_API_URL="https://fluxer.invalid/api")
+    members(world.state, STARTER, HOLDER_A)
+
+    await world.flow.start(press(world.card_id, home=False))
+    await world.post.drain()
+
+    assert posts_to(world.state, POLL_POSTS) == []
+    assert dm_contents(world.state, STARTER) == [text.POLL_ELSEWHERE_NO_LINK]
+
+
+async def test_a_second_press_without_an_instance_url_says_the_poll_is_open_without_a_link(build) -> None:
+    world = await build(FLUXER_INSTANCE_URL="", FLUXER_API_URL="https://fluxer.invalid/api")
+    members(world.state, STARTER, HOLDER_A)
+    await world.flow.start(press(world.card_id))
+    await world.post.drain()
+
+    await world.flow.start(press(world.card_id, user=HOLDER_A))
+    await world.post.drain()
+
+    assert len(posts_to(world.state, POLL_POSTS)) == 1
+    assert last_reply(world.state, HOLDER_A) == text.POLL_ALREADY_OPEN_NO_LINK
+
+
 # Voting by typed reply (AC3, AC4) ------------------------------------------------------------------------
 
 def reply_event(world: World, user: str, content: str) -> events.MessageCreate:
@@ -394,8 +550,15 @@ def reply_event(world: World, user: str, content: str) -> events.MessageCreate:
                                 author_id=user, author_is_bot=False, member_role_ids=None, content=content)
 
 
+async def hand_reply(flow: PollFlow, world: World, user: str, content: str) -> None:
+    """What the router does with a non-command DM: one open-ballot lookup, then the reply with the polls it found."""
+    open_polls = await flow.open_ballots(user)
+    if open_polls:
+        await flow.on_reply(reply_event(world, user, content), open_polls)
+
+
 async def reply(world: World, user: str, content: str) -> None:
-    await world.flow.on_reply(reply_event(world, user, content))
+    await hand_reply(world.flow, world, user, content)
     await world.post.drain()
 
 
@@ -516,6 +679,43 @@ async def test_a_typed_time_equal_to_an_option_picks_that_option_and_adds_none(b
     assert await option_count(world, poll.id) == len(offered)
 
 
+# AC3.5: a letter past the ballot is still a valid pick --------------------------------------------------
+
+async def test_a_letter_not_shown_on_the_ballot_picks_that_option(build) -> None:
+    world = await build(POLL_BALLOT_SIZE="2")
+    poll = await started(world, HOLDER_A)
+    offered = offered_slot_times(world.config, NOW)
+    assert len(offered) == 6
+    last = poll_letters.letter(len(offered) - 1)
+    assert last == "f"
+
+    await reply(world, STARTER, last)
+
+    assert await letters_of(world, poll.id, STARTER) == ["f"]
+    assert last_reply(world.state, STARTER) == text.POLL_YOUR_PICKS.format(letters="f")
+    assert f"f. <t:{offered[5]}:F>" not in await ballot_message_text(world, poll.id, STARTER)
+
+
+# AC3.3: a full ballot counts the new option in its "+K more" line -----------------------------------------
+
+async def test_a_typed_time_on_a_full_ballot_raises_its_more_count_on_every_open_ballot(build) -> None:
+    world = await build(POLL_BALLOT_SIZE="2")   # the ballot shows two options, so the rest are counted
+    poll = await started(world, HOLDER_A)
+    offered = offered_slot_times(world.config, NOW)
+    typed_at = int(datetime(2026, 11, 14, 14, 7, tzinfo=timezone.utc).timestamp())
+    assert typed_at not in offered
+    link = link_to(world, PLAY, poll.message_id)
+    before = await ballot_message_text(world, poll.id, HOLDER_A)
+    assert text.POLL_BALLOT_MORE.format(k=len(offered) - 2, link=link) in before
+
+    await reply(world, STARTER, "a, 2026-11-14 14:07")
+
+    after = await ballot_message_text(world, poll.id, HOLDER_A)
+    assert text.POLL_BALLOT_MORE.format(k=len(offered) - 1, link=link) in after
+    assert after.count("more options in the poll message") == 1
+    assert f"{poll_letters.letter(len(offered))}. <t:{typed_at}:F>" not in after
+
+
 # AC3.6: an unreadable item changes nothing and names its position -----------------------------------------
 
 @pytest.mark.parametrize("bad, reason", [
@@ -533,8 +733,10 @@ async def test_an_unreadable_item_changes_nothing_and_is_refused_by_position(bui
 
     assert await letters_of(world, poll.id, STARTER) == ["a"]
     assert await option_count(world, poll.id) == before
-    assert last_reply(world.state, STARTER) == (text.POLL_REPLY_ITEM.format(index=2, reason=reason) + "\n"
-                                                + text.POLL_FORMAT + " " + text.SESSION_TIME_EXAMPLE)
+    refusal = last_reply(world.state, STARTER)
+    assert refusal == (text.POLL_REPLY_ITEM.format(index=2, reason=reason) + "\n"
+                       + text.POLL_FORMAT + " " + text.SESSION_TIME_EXAMPLE)
+    assert refusal.count("Reply") == 1      # the format line and the example line read as one paragraph
 
 
 # AC3.7: a reply to a closed poll is refused as closed ----------------------------------------------------
@@ -577,9 +779,9 @@ async def test_replies_from_three_voters_in_one_window_give_one_poll_edit_and_on
 
     flow, post = debounced_flow(world, hold)
     before = len(world.state.requests)
-    await flow.on_reply(reply_event(world, STARTER, "a"))
-    await flow.on_reply(reply_event(world, HOLDER_A, "b"))
-    await flow.on_reply(reply_event(world, HOLDER_B, "a, c"))
+    await hand_reply(flow, world, STARTER, "a")
+    await hand_reply(flow, world, HOLDER_A, "b")
+    await hand_reply(flow, world, HOLDER_B, "a, c")
     gate.set()
     await post.drain()
 
@@ -665,6 +867,30 @@ async def test_a_reply_that_runs_out_of_room_partway_rolls_back_the_options_it_a
     assert await option_count(world, poll.id) == polls.MAX_OPTIONS - 1
     assert await picks_of(world, poll.id, STARTER) == []
     assert last_reply(world.state, STARTER) == text.POLL_FULL
+
+
+# A failed answer: the vote is stored and the poll and ballots are still refreshed --------------------------
+
+async def test_a_failed_answer_still_stores_the_vote_and_refreshes_the_poll_and_ballots(build, caplog) -> None:
+    world = await build()
+    poll = await started(world, HOLDER_A)
+    caplog.set_level(logging.DEBUG)
+    dm = world.state.dm_channels[STARTER]
+    world.state.overrides[f"POST /api/v1/channels/{dm}/messages"] = Override(
+        403, b'{"code":"FORBIDDEN","message":"x"}')
+    before = len(world.state.requests)
+
+    await reply(world, STARTER, "a, c")
+
+    assert await letters_of(world, poll.id, STARTER) == ["a", "c"]
+    patches = Counter(r.path for r in world.state.requests[before:] if r.method == "PATCH")
+    assert patches[f"/api/v1/channels/{PLAY}/messages/{poll.message_id}"] == 1
+    for user in (STARTER, HOLDER_A):
+        ballot = await ballot_of(world, poll.id, user)
+        assert ballot is not None and ballot.dm_channel_id is not None and ballot.dm_message_id is not None
+        assert patches[f"/api/v1/channels/{ballot.dm_channel_id}/messages/{ballot.dm_message_id}"] == 1
+    failures = [getattr(r, FIELDS_ATTR, {}) for r in caplog.records if r.getMessage() == "poll_answer_failed"]
+    assert [fields.get("reason") for fields in failures] == ["FluxerHTTPError"]
 
 
 # Logs: the vote's log names the poll and the outcome, never the user or the reply -------------------------

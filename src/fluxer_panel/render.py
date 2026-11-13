@@ -634,7 +634,7 @@ def render_poll_ballot(view: PollView, *, user_id: str, zone_name: str,
     letters = _letters(view.options)
     position = {option.id: option.position for option in view.options}
     head = (text.POLL_BALLOT_HEAD_RUNOFF if poll.is_runoff else text.POLL_BALLOT_HEAD).format(
-        card=fit(escape(view.card_title), POLL_BALLOT_CARD_LIMIT))
+        n=poll.id, card=fit(escape(view.card_title), POLL_BALLOT_CARD_LIMIT))
     mine = sorted((vote for vote in view.votes if vote.user_id == user_id),
                   key=lambda vote: (vote.rank is None, vote.rank or 0, position[vote.option_id]))
     picks = ", ".join(letters[vote.option_id] for vote in mine)

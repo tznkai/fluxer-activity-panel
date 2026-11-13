@@ -103,8 +103,8 @@ Paths are relative to this directory.
 - `src/fluxer_panel/interactions.py:57` `return {"parse": []}` — a play-now message with no follow role mentions nobody.
 - `src/fluxer_panel/interactions.py:58` `return {"parse": [], "roles": [role_id], "replied_user": False}` — the play-now role ping. Only the card's own follow role can be mentioned, and only when `_role_in` has matched it.
 - `src/fluxer_panel/interactions.py:64` `return follow.role_id if follow is not None and follow.guild_id == guild_id else None` — the follow-role community check: a role from another community is never mentioned.
-- `src/fluxer_panel/interactions.py:325` `if channel_id == self._config.games_channel_id:` — the play-now guard in `send_play_now`. A play-now message is never sent to the games channel.
-- `src/fluxer_panel/interactions.py:326` `raise GamesChannelRefused` — the refusal happens before any REST call.
+- `src/fluxer_panel/interactions.py:335` `if channel_id == self._config.games_channel_id:` — the play-now guard in `send_play_now`. A play-now message is never sent to the games channel.
+- `src/fluxer_panel/interactions.py:336` `raise GamesChannelRefused` — the refusal happens before any REST call.
 
 ## Purge deletion
 
@@ -349,6 +349,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 
 - `src/fluxer_panel/poll_post.py:104` `if channel_id == self._config.games_channel_id:` — `send_poll` checks the games channel before any REST call.
 - `src/fluxer_panel/poll_post.py:105` `raise GamesChannelRefused` — the refusal for a poll send.
+- `src/fluxer_panel/poll_post.py:112` `if channel_id == self._config.games_channel_id:` — `delete_unstored` refuses the games channel before any REST call.
 - `src/fluxer_panel/poll_post.py:231` `if view.poll.channel_id == self._config.games_channel_id:` — `_refused` makes the same check against a stored poll's channel, for every flush, closed-poll seed and unseed.
 - `src/fluxer_panel/poll_post.py:313` `if self._refused(view):` — `_edit_marked` (run by `_flush_locked`) refuses a stored games channel before any edit.
 - `src/fluxer_panel/poll_post.py:130` `sent = await notify.dm_user(self._rest, user_id, content, backoff=self._backoff)` — a ballot DM goes through the DM helper, which sends empty mentions and honours the DM backoff.
@@ -356,13 +357,13 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 
 ## Non-admin DM path
 
-- `src/fluxer_panel/dm_router.py:116` `if event.guild_id is not None:` — a guild message goes to `admin.handle`, which refuses a command and gives no reply. Nothing from a guild channel reaches the session path.
-- `src/fluxer_panel/dm_router.py:119` `if event.author_is_bot or not is_snowflake(event.author_id):` — a bot or non-snowflake author goes to `admin.handle`, which refuses it and logs it.
-- `src/fluxer_panel/dm_router.py:62` `def admit(self, user_id: str) -> bool:` — `NonAdminLimiter.admit` allows 5 commands, replies or DM reactions per 60 seconds per non-admin user.
-- `src/fluxer_panel/dm_router.py:63` `if user_id in self._config.admin_user_ids:` — admins are exempt from the limit.
-- `src/fluxer_panel/dm_router.py:124` `if not self._limiter.admit(event.author_id):` — a `!session` command from a non-admin is rate limited before it is parsed.
-- `src/fluxer_panel/dm_router.py:129` `if admin.parse_head(event.content, self._config.prefix) is not None:` — admin heads (`!admin`, `!card`, `!request`) go to `admin.handle` unchanged, and `authorize` checks them there.
-- `src/fluxer_panel/session_flow.py:231` `if not self._limiter.admit(user):` — a 📅 reaction in a DM uses the same limiter.
+- `src/fluxer_panel/dm_router.py:118` `if event.guild_id is not None:` — a guild message goes to `admin.handle`, which refuses a command and gives no reply. Nothing from a guild channel reaches the session path.
+- `src/fluxer_panel/dm_router.py:121` `if event.author_is_bot or not is_snowflake(event.author_id):` — a bot or non-snowflake author goes to `admin.handle`, which refuses it and logs it.
+- `src/fluxer_panel/dm_router.py:64` `def admit(self, user_id: str) -> bool:` — `NonAdminLimiter.admit` allows 5 commands, replies or DM reactions per 60 seconds per non-admin user.
+- `src/fluxer_panel/dm_router.py:65` `if user_id in self._config.admin_user_ids:` — admins are exempt from the limit.
+- `src/fluxer_panel/dm_router.py:126` `if not self._limiter.admit(event.author_id):` — a `!session` command from a non-admin is rate limited before it is parsed.
+- `src/fluxer_panel/dm_router.py:131` `if admin.parse_head(event.content, self._config.prefix) is not None:` — admin heads (`!admin`, `!card`, `!request`) go to `admin.handle` unchanged, and `authorize` checks them there.
+- `src/fluxer_panel/session_flow.py:223` `if not self._limiter.admit(user):` — a 📅 reaction in a DM uses the same limiter.
 - `src/fluxer_panel/session_commands.py:137` `return event.author_id == session.proposer_id or admin.authorize(event, self._config)` — a session change needs the proposer or an admin.
 
 ## DM backoff
@@ -371,7 +372,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/notify.py:34` `and not bypass and backoff.blocked(user_id):` — the skip. It is logged as `user_dm_skipped` with reason `backoff`, and no request is made.
 - `src/fluxer_panel/notify.py:28` `bypass: bool = False)` — the promotion, cancel, move and series-stopped DMs, and the wake request close DMs (ready, expired and cleared), pass `bypass`, so they go out even while the user is in backoff.
 - `src/fluxer_panel/notify.py:18` `async def dm_admins(` — admin DMs never take the backoff path, so an admin is always told.
-- `src/fluxer_panel/session_flow.py:169` `if self._backoff.blocked(user):` — a 📅 start is refused while the proposer is in backoff, before any DM is sent.
+- `src/fluxer_panel/session_flow.py:161` `if self._backoff.blocked(user):` — a 📅 start is refused while the proposer is in backoff, before any DM is sent.
 
 ## What the phase 4 prompt got wrong
 

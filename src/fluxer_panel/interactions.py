@@ -94,6 +94,16 @@ async def card_target(rest: FluxerREST, config: Config, card: Card, *,
     return (configured, guild_id), None
 
 
+def target_channel_id(card: Card, config: Config) -> str | None:
+    """The channel a session or poll posts to, read from the card with no REST call: its verified channel, else
+    PLAY_NOW_CHANNEL_ID. The session and poll flows both use it, so a card that changed since its target was read is
+    noticed under the card lock."""
+    own = card.play_now_channel
+    if own is not None and own.verified:
+        return own.channel_id
+    return config.play_now_channel_id
+
+
 class Interactions:
     def __init__(self, *, db: Database, rest: FluxerREST, config: Config, locks: CardLocks, games_guild: GamesGuild,
                  seeder: Seeder, pacer: ChannelPacer, identity: BotIdentity, roles: RoleCache,

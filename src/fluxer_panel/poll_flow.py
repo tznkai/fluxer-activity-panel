@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
@@ -25,21 +25,12 @@ from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.dm_backoff import DmBackoff
 from fluxer_panel.games import GamesGuild
-from fluxer_panel.interactions import card_target
+from fluxer_panel.interactions import card_target, target_channel_id
 from fluxer_panel.logs import log_event
 from fluxer_panel.poll_post import PollPost
 from fluxer_panel.presses import Press
 
 log = logging.getLogger(__name__)
-
-
-def _channel_of(card: Card, config: Config) -> str | None:
-    """The channel a poll posts to, read from the card with no REST call: its verified channel, else the configured one.
-    The same rule as the session flow's, so a card that changed since the target was read is noticed under the lock."""
-    own = card.play_now_channel
-    if own is not None and own.verified:
-        return own.channel_id
-    return config.play_now_channel_id
 
 
 @dataclass(frozen=True)
@@ -147,7 +138,7 @@ class PollFlow:
 
         async with self._locks.get(card.id):
             fresh = await self._db.run(lambda c: cards.get_by_id(c, card.id))
-            if fresh is None or fresh.state != "live" or _channel_of(fresh, self._config) != channel_id:
+            if fresh is None or fresh.state != "live" or target_channel_id(fresh, self._config) != channel_id:
                 await self._dm(user, text.POLL_POST_FAILED)
                 return self._refused(card.id, "card_changed")
             again = await self._db.run(lambda c: polls.open_for_card(c, card.id))
@@ -205,20 +196,22 @@ class PollFlow:
 
     # Voting by DM reply -----------------------------------------------------------------------------------------
 
-    async def has_open_ballot(self, user_id: str) -> bool:
-        return bool(await self._db.run(lambda c: polls.open_ballot_polls(c, user_id)))
+    async def open_ballots(self, user_id: str) -> list[polls.Poll]:
+        """The open polls where this user has a ballot. The router runs this once per DM and passes the result to
+        `on_reply`, so the lookup is not repeated."""
+        return await self._db.run(lambda c: polls.open_ballot_polls(c, user_id))
 
-    async def on_reply(self, event: MessageCreate) -> None:
-        """A DM reply from a user with an open ballot. One open ballot takes the reply; several cannot be told apart in a
-        DM, so the reply changes nothing and names the open polls."""
-        found = await self._db.run(lambda c: polls.open_ballot_polls(c, event.author_id))
-        if not found:
+    async def on_reply(self, event: MessageCreate, open_polls: Sequence[polls.Poll]) -> None:
+        """A DM reply from a user with open ballots (`open_polls`, from `open_ballots`). One open ballot takes the reply;
+        several cannot be told apart in a DM, so the reply changes nothing and names the open polls."""
+        if not open_polls:
             return
-        if len(found) > 1:
+        if len(open_polls) > 1:
             log_event(log, "poll_vote", outcome="refused", reason="several_open", count=0)
-            await self._answer(event.channel_id, text.POLL_WHICH.format(polls=", ".join(str(p.id) for p in found)))
+            await self._answer(event.channel_id,
+                               text.POLL_WHICH.format(polls=", ".join(str(p.id) for p in open_polls)))
             return
-        await self.vote(event.author_id, found[0].id, event.content, reply_channel_id=event.channel_id)
+        await self.vote(event.author_id, open_polls[0].id, event.content, reply_channel_id=event.channel_id)
 
     async def vote(self, user_id: str, poll_id: int, content: str, *, reply_channel_id: str) -> None:
         """Parse and store one reply, then answer it in the DM it came from and refresh the poll and its ballots.
@@ -236,12 +229,19 @@ class PollFlow:
             await self._answer(reply_channel_id, _refusal_text(result))
             return
         log_event(log, "poll_vote", outcome="voted", poll_id=poll_id, count=result.added)
+        # The vote is committed, so the poll and its ballots are marked before the answer is sent: a failed answer
+        # must not leave the messages stale.
+        self._poll_post.changed(poll_id)
         await self._answer(reply_channel_id, text.POLL_YOUR_PICKS.format(letters=", ".join(result.letters))
                            if result.letters else text.POLL_NO_PICKS)
-        self._poll_post.changed(poll_id)
 
     async def _answer(self, channel_id: str, content: str) -> None:
-        await self._rest.send_message(channel_id, content=content, allowed_mentions={"parse": []})
+        """Answers a reply in the DM it came from. A failed send is logged by its exception type and not raised: the
+        reply's effect (if any) is already stored and refreshed."""
+        try:
+            await self._rest.send_message(channel_id, content=content, allowed_mentions={"parse": []})
+        except Exception as exc:  # noqa: BLE001 - the answer is best effort; the vote it reports is already stored
+            log_event(log, "poll_answer_failed", level=logging.WARNING, reason=type(exc).__name__)
 
     # Helpers ---------------------------------------------------------------------------------------------------
 

@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Protocol
 
 from fluxer_client.events import MessageCreate
@@ -24,6 +24,7 @@ from fluxer_panel import admin
 from fluxer_panel.card_commands import CardContext
 from fluxer_panel.config import Config
 from fluxer_panel.logs import log_event
+from fluxer_panel.polls import Poll
 
 log = logging.getLogger(__name__)
 
@@ -42,11 +43,12 @@ class DraftReplies(Protocol):
 
 
 class PollReplies(Protocol):
-    """The part of the poll flow the router needs: whether a user has an open ballot, and the reply to it."""
+    """The part of the poll flow the router needs: the open polls where a user has a ballot (one lookup per DM), and
+    the reply, given those polls."""
 
-    async def has_open_ballot(self, user_id: str) -> bool: ...
+    async def open_ballots(self, user_id: str) -> Sequence[Poll]: ...
 
-    async def on_reply(self, event: MessageCreate) -> None: ...
+    async def on_reply(self, event: MessageCreate, open_polls: Sequence[Poll]) -> None: ...
 
 
 class NonAdminLimiter:
@@ -136,7 +138,9 @@ class DmRouter:
             await flow.on_reply(event)
             return
         polls = self._poll_flow
-        if polls is not None and await polls.has_open_ballot(event.author_id):
-            if not self._limiter.admit(event.author_id):
-                return
-            await polls.on_reply(event)
+        if polls is not None:
+            open_polls = await polls.open_ballots(event.author_id)
+            if open_polls:
+                if not self._limiter.admit(event.author_id):
+                    return
+                await polls.on_reply(event, open_polls)

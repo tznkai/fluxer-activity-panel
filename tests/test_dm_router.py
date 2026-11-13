@@ -7,7 +7,7 @@ author, a non-snowflake author and a guild message never reach a session command
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -71,17 +71,22 @@ class StubFlow:
 
 
 class StubPolls:
-    """Stands in for the poll flow: a set of users with an open ballot, and the replies it was given."""
+    """Stands in for the poll flow: a set of users with an open ballot, and the replies it was given. `lookups` counts
+    the open-ballot lookups, and `handed` keeps the polls each reply was given."""
 
     def __init__(self, open_for: tuple[str, ...] = ()) -> None:
         self.open_for = set(open_for)
         self.replies: list[str] = []
+        self.lookups: list[str] = []
+        self.handed: list[tuple[str, ...]] = []
 
-    async def has_open_ballot(self, user_id: str) -> bool:
-        return user_id in self.open_for
+    async def open_ballots(self, user_id: str) -> list[str]:
+        self.lookups.append(user_id)
+        return [f"poll-for-{user_id}"] if user_id in self.open_for else []
 
-    async def on_reply(self, event: events.MessageCreate) -> None:
+    async def on_reply(self, event: events.MessageCreate, open_polls: Sequence[str]) -> None:
         self.replies.append(event.author_id)
+        self.handed.append(tuple(open_polls))
 
 
 def make_config() -> Config:
@@ -418,6 +423,25 @@ async def test_a_user_with_only_an_open_ballot_reaches_the_poll_flow(harness) ->
     await router.route(message("a, c"))
     assert polls.replies == [NON_ADMIN]
     assert flow.replies == []
+
+
+async def test_a_dm_looks_up_open_ballots_once_and_hands_the_same_polls_to_the_reply(harness) -> None:
+    _, rest, card_ctx = harness
+    polls = StubPolls(open_for=(NON_ADMIN,))
+    router = make_router(rest, card_ctx, NonAdminLimiter(make_config(), clock=Clock()), polls=polls)
+    await router.route(message("a, c"))
+    assert polls.lookups == [NON_ADMIN]
+    assert polls.handed == [(f"poll-for-{NON_ADMIN}",)]
+
+
+async def test_a_dm_from_a_user_with_no_ballot_is_looked_up_once_and_not_limited(harness) -> None:
+    _, rest, card_ctx = harness
+    polls = StubPolls()
+    router = make_router(rest, card_ctx, NonAdminLimiter(make_config(), clock=Clock()), polls=polls)
+    for _ in range(NON_ADMIN_LIMIT + 1):
+        await router.route(message("a, c"))
+    assert polls.lookups == [NON_ADMIN] * (NON_ADMIN_LIMIT + 1)
+    assert polls.replies == []
 
 
 async def test_a_plain_dm_with_no_draft_and_no_ballot_goes_nowhere(harness) -> None:

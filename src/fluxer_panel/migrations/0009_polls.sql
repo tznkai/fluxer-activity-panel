@@ -56,6 +56,8 @@ CREATE TABLE poll_ballots (
     CHECK ((dm_channel_id IS NULL) = (dm_message_id IS NULL))
 ) STRICT;
 
+CREATE INDEX poll_ballots_user ON poll_ballots (user_id);
+
 CREATE TABLE poll_votes (
     poll_id   INTEGER NOT NULL,
     user_id   TEXT NOT NULL,

@@ -384,8 +384,8 @@ POLL_DROPPED = " {letter} was dropped."
 POLL_FIELD_SESSION = "Session"
 POLL_SESSION_LINK = "Open the session"
 # The ballot.
-POLL_BALLOT_HEAD = "Time poll for {card}."
-POLL_BALLOT_HEAD_RUNOFF = "Runoff for {card}."
+POLL_BALLOT_HEAD = "Time poll {n} for {card}."       # {n} is the poll id: a voter with several ballots names it
+POLL_BALLOT_HEAD_RUNOFF = "Runoff {n} for {card}."
 POLL_BALLOT_MORE = "+{k} more options in the poll message: {link}"
 POLL_LINK_LABEL = "Open the poll"
 POLL_HOW_APPROVAL = (
@@ -414,10 +414,10 @@ POLL_TRY_LATER = "I couldn't read the member list. Please try again later."
 POLL_POST_FAILED = "I couldn't post that poll. Try again later."
 POLL_LEFT_OUT = "{n} members with the follow role were not sent a ballot, because the poll is capped."
 POLL_NO_ROLE = "This card has no follow role, so only you were sent a ballot."
-# Voting by DM reply. POLL_FORMAT follows every refusal; `{index}` and `{reason}` are in POLL_REPLY_ITEM.
+# Voting by DM reply. POLL_FORMAT follows every item refusal (POLL_REPLY_ITEM), before the time examples.
 POLL_NO_PICKS = "You have no picks on this poll now."
 POLL_REPLY_CLOSED = "This poll is closed, so your reply changed nothing."
 POLL_NOT_RECIPIENT = "You weren't sent a ballot for this poll."
 POLL_WHICH = "You have more than one open poll ({polls}). Reply with `!poll vote <poll> <reply>` to pick one."
 POLL_FULL = "This poll has no room for another time. Pick from the options shown."
-POLL_FORMAT = "Reply with letters, like `a, c`, or with times."
+POLL_FORMAT = "Pick letters, like `a, c`, or type times, or both."

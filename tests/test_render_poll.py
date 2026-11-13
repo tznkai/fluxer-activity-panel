@@ -226,6 +226,19 @@ def test_the_footer_names_the_poll() -> None:
     assert embed["footer"]["text"] == "Poll 7 · reply to the bot's DM to vote"
 
 
+def test_a_ballot_heading_names_its_poll_number() -> None:
+    """A voter with several ballots answers with `!poll vote <poll> <reply>`, so each ballot shows the poll id."""
+    content = render.render_poll_ballot(make_view(options=options_at(3)), user_id="1004", zone_name=ZONE,
+                                        instance_url=URL)["content"]
+    assert content.splitlines()[0] == "Time poll 7 for Lobby."
+
+
+def test_a_runoff_ballot_heading_names_its_poll_number() -> None:
+    view = make_view(options=options_at(3), poll=make_poll(kind="runoff", parent_poll_id=3))
+    content = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL)["content"]
+    assert content.splitlines()[0] == "Runoff 7 for Lobby."
+
+
 def test_300_options_are_cut_to_the_list_limit_with_a_correct_more_line() -> None:
     options = options_at(300)
     view = make_view(options=options)

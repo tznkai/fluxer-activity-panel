@@ -172,7 +172,7 @@ class Presses:
                     log_event(log, "rsvp_failed", level=logging.WARNING, session_id=session_id,
                               reason=type(exc).__name__)
             return
-        # 2. Only the four press emoji count.
+        # 2. Only the press emoji count.
         action = action_for(event.emoji)
         if action is None:
             return

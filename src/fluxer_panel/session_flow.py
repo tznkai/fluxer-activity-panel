@@ -30,7 +30,7 @@ from fluxer_panel.db import Database
 from fluxer_panel.dm_backoff import DmBackoff
 from fluxer_panel.dm_router import NonAdminLimiter
 from fluxer_panel.games import BotIdentity, GamesGuild
-from fluxer_panel.interactions import card_target
+from fluxer_panel.interactions import card_target, target_channel_id
 from fluxer_panel.logs import log_event
 from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.presses import Press
@@ -71,14 +71,6 @@ def offered_slot_times(config: Config, now: float) -> list[int]:
     return [int(when.timestamp()) for when in session_time.offered_slots(
         now=_local(now, zone), tz=zone, weekday=list(config.session_slots_weekday),
         weekend=list(config.session_slots_weekend))]
-
-
-def _target_channel_id(card: Card, config: Config) -> str | None:
-    """The channel a post goes to, read without any REST call: the card's verified channel, else PLAY_NOW_CHANNEL_ID."""
-    own = card.play_now_channel
-    if own is not None and own.verified:
-        return own.channel_id
-    return config.play_now_channel_id
 
 
 class SessionFlow:
@@ -325,7 +317,7 @@ class SessionFlow:
         lock is released, in the failure cases."""
         async with self._locks.get(card_id):
             fresh = await self._read_card(card_id)
-            if fresh is None or fresh.state != "live" or _target_channel_id(fresh, self._config) != channel_id:
+            if fresh is None or fresh.state != "live" or target_channel_id(fresh, self._config) != channel_id:
                 return _Published(reply=text.SESSION_POST_FAILED)   # the card changed since the target was read
             try:
                 await self._db.run(lambda c: sessions.check_caps(c, card_id, user_id))

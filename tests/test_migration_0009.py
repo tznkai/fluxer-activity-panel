@@ -109,6 +109,12 @@ async def test_v9_polls_reject_invalid_rows(seeded: Database, label: str, sql: s
         await seeded.run(lambda c: c.execute(sql))
 
 
+async def test_v9_indexes_ballots_by_user(seeded: Database) -> None:
+    """The DM router looks up a user's open ballots on every non-admin DM, so poll_ballots is indexed by user id."""
+    columns = await seeded.run(lambda c: [row[2] for row in c.execute("PRAGMA index_info('poll_ballots_user')")])
+    assert columns == ["user_id"]
+
+
 # AC1.7 ------------------------------------------------------------------------------------------------
 # The exit code 3 for a schema_newer refusal is pinned by tests/test_main.py:952-968.
 

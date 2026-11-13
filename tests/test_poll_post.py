@@ -16,7 +16,7 @@ from typing import Any
 import aiohttp
 import pytest
 
-from fluxer_client.rest import FluxerREST, encode_emoji
+from fluxer_client.rest import FluxerREST
 from fluxer_panel import cards, polls
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
@@ -355,7 +355,7 @@ async def test_a_closed_poll_message_never_gets_the_poll_emoji(world: SimpleName
     poll_id = await _closed_with_winner(world)
     await world.post.seed_closed(poll_id)
     emojis = [r.path.rsplit("/", 2)[-2] for r in requests(world, "PUT")]
-    assert encode_emoji(POLL_EMOJI) not in emojis
+    assert POLL_EMOJI not in emojis
     assert emojis == [POLL_SCHEDULE_EMOJI, POLL_RUNOFF_EMOJI]
 
 
