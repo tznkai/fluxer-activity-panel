@@ -34,6 +34,7 @@ from fluxer_panel.seeding import Seeder
 from fluxer_panel.wake import WakeRequests
 
 if TYPE_CHECKING:   # type-only: session_post imports GamesChannelRefused from this module
+    from fluxer_panel.poll_flow import PollFlow
     from fluxer_panel.session_flow import SessionFlow
     from fluxer_panel.session_post import SessionPost
     from fluxer_panel.sessions import Session
@@ -100,10 +101,11 @@ class Interactions:
                  wake: WakeRequests | None = None,
                  status_of: Callable[[int], CardStatus | None] = lambda _id: None,
                  session_post: SessionPost | None = None, backoff: DmBackoff | None = None,
-                 session_flow: SessionFlow | None = None) -> None:
+                 session_flow: SessionFlow | None = None, poll_flow: PollFlow | None = None) -> None:
         self._db = db
         self._wake = wake
         self._session_flow = session_flow   # the calendar's DM flow: a 📅 press starts a draft there
+        self._poll_flow = poll_flow         # the poll flow: a 🗳️ press starts a poll there
         self._backoff = backoff   # the press replies' DM backoff (dm_user checks it)
         self._rest = rest
         self._config = config
@@ -134,6 +136,8 @@ class Interactions:
                 await self.play_now(press)
             case Action.SESSION:
                 await self.session(press)
+            case Action.POLL:
+                await self.poll(press)
 
     async def session(self, press: Press) -> None:
         """A calendar press starts a session draft on a card or a home copy. A play-now post never plans a session, and
@@ -141,6 +145,13 @@ class Interactions:
         if press.surface.kind == "play_now" or self._session_flow is None:
             return
         await self._session_flow.start(press)
+
+    async def poll(self, press: Press) -> None:
+        """A 🗳️ press starts a poll on a card or a home copy. A play-now post never starts one, and without a flow nothing
+        happens."""
+        if press.surface.kind == "play_now" or self._poll_flow is None:
+            return
+        await self._poll_flow.start(press)
 
     async def wake(self, press: Press) -> None:
         """A wake press on any surface (card, copy or play-now post) wakes the card (AC4.8)."""

@@ -316,3 +316,21 @@ def test_a_hostile_title_is_neutralised_in_the_message_and_the_ballot() -> None:
         dumped = json.dumps(payload)
         assert "@everyone" not in dumped
         assert "<@1>" not in dumped
+
+
+# The provisional form: the first poll message, sent before the row exists -------------------------------
+
+def test_a_provisional_message_has_no_footer_and_no_answered_field() -> None:
+    view = make_view(poll=make_poll(id=0, message_id=""))
+    message = render.render_poll_message(view, instance_url=URL, provisional=True)
+    embed = embed_of(message)
+    assert "footer" not in embed
+    assert text.POLL_FIELD_ANSWERED not in fields_of(embed)
+    assert text.POLL_FIELD_CLOSES in fields_of(embed)
+
+
+def test_a_stored_message_keeps_its_footer_and_answered_field() -> None:
+    message = render.render_poll_message(make_view(), instance_url=URL)
+    embed = embed_of(message)
+    assert "footer" in embed
+    assert text.POLL_FIELD_ANSWERED in fields_of(embed)

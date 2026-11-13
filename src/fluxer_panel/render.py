@@ -567,8 +567,9 @@ def _closed_description(view: PollView, letters: dict[int, str], rounds: poll_co
 
 
 def render_poll_message(view: PollView, *, instance_url: str | None,
-                        rounds: poll_count.Rounds | None = None) -> dict[str, Any]:
-    """The public poll message: one embed, counts only. `rounds` is given for a closed runoff."""
+                        rounds: poll_count.Rounds | None = None, provisional: bool = False) -> dict[str, Any]:
+    """The public poll message: one embed, counts only. `rounds` is given for a closed runoff. A provisional message is
+    the first post, before its row is stored: it has no footer and no answered field."""
     poll = view.poll
     letters = _letters(view.options)
     by_id = {option.id: option for option in view.options}
@@ -608,16 +609,18 @@ def render_poll_message(view: PollView, *, instance_url: str | None,
                                                                votes=_votes_text(leader_votes)))
         else:
             add(text.POLL_FIELD_LEADER, text.POLL_NO_LEADER)
-    answered = text.POLL_ANSWERED.format(n=view.answered, m=view.recipients)
-    if view.reached < view.recipients:
-        answered += text.POLL_REACHED.format(r=view.reached, m=view.recipients)
-    add(text.POLL_FIELD_ANSWERED, answered)
+    if not provisional:
+        answered = text.POLL_ANSWERED.format(n=view.answered, m=view.recipients)
+        if view.reached < view.recipients:
+            answered += text.POLL_REACHED.format(r=view.reached, m=view.recipients)
+        add(text.POLL_FIELD_ANSWERED, answered)
     if view.session_link is not None and instance_url is not None:
         add(text.POLL_FIELD_SESSION, jump_link(text.POLL_SESSION_LINK, instance_url, *view.session_link))
     if poll.sorted_at is not None:
         add(text.POLL_FIELD_NOTE, text.POLL_RELETTERED.format(ts=poll.sorted_at))
     embed["fields"] = fields
-    embed["footer"] = {"text": text.POLL_FOOTER.format(n=poll.id)}
+    if not provisional:
+        embed["footer"] = {"text": text.POLL_FOOTER.format(n=poll.id)}
     return {"embeds": [embed], "allowed_mentions": {"parse": []}}
 
 

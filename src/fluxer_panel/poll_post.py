@@ -106,6 +106,18 @@ class PollPost:
         return await self._rest.send_message(channel_id, embeds=payload["embeds"],
                                              allowed_mentions=payload["allowed_mentions"])
 
+    async def delete_unstored(self, channel_id: str, message_id: str) -> None:
+        """Deletes a provisional poll message whose row was not stored (a lost race, or a failed insert). Best effort:
+        the games channel is refused before any REST call, and a failure is logged, never raised."""
+        if channel_id == self._config.games_channel_id:
+            log_event(log, "poll_discard_failed", level=logging.WARNING, channel_id=channel_id,
+                      reason="games_channel")
+            return
+        try:
+            await self._rest.delete_message(channel_id, message_id)
+        except Exception as exc:  # noqa: BLE001 - a failed delete is logged; the caller is not told
+            log_event(log, "poll_discard_failed", level=logging.WARNING, channel_id=channel_id, reason=_reason(exc))
+
     async def send_ballot(self, poll_id: int, user_id: str) -> bool:
         """Render and DM one ballot through notify.dm_user (backoff honoured); store the DM ids or mark dm_failed."""
         loaded = await self._db.run(lambda conn: _read_poll(conn, poll_id))

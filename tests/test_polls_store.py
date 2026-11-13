@@ -487,3 +487,14 @@ async def test_view_without_a_session_has_no_link(db: Database) -> None:
     poll_id = await _poll(db, card)
     view = await db.run(lambda c: polls.view(c, poll_id))
     assert view is not None and view.session_link is None and view.reached == 0
+
+
+def test_a_provisional_view_is_unstored_and_lettered_from_its_positions() -> None:
+    view = polls.provisional_view(card_id=1, card_title="Lobby", guild_id="2001", channel_id="3001", starter_id="1001",
+                            now=100, closes_at=200, ballot_size=6, starts=[1_800_003_600, 1_800_007_200], recipients=3)
+    assert view.poll.id == 0
+    assert view.poll.state == "open" and view.poll.closes_at == 200
+    assert [o.position for o in view.options] == [0, 1]
+    assert len({o.id for o in view.options}) == 2
+    assert [o.starts_at for o in view.options] == [1_800_003_600, 1_800_007_200]
+    assert (view.recipients, view.answered, view.reached, view.votes) == (3, 0, 0, ())

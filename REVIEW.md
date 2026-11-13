@@ -100,11 +100,11 @@ Paths are relative to this directory.
 
 ## Play-now mentions
 
-- `src/fluxer_panel/interactions.py:56` `return {"parse": []}` — a play-now message with no follow role mentions nobody.
-- `src/fluxer_panel/interactions.py:57` `return {"parse": [], "roles": [role_id], "replied_user": False}` — the play-now role ping. Only the card's own follow role can be mentioned, and only when `_role_in` has matched it.
-- `src/fluxer_panel/interactions.py:63` `return follow.role_id if follow is not None and follow.guild_id == guild_id else None` — the follow-role community check: a role from another community is never mentioned.
-- `src/fluxer_panel/interactions.py:314` `if channel_id == self._config.games_channel_id:` — the play-now guard in `send_play_now`. A play-now message is never sent to the games channel.
-- `src/fluxer_panel/interactions.py:315` `raise GamesChannelRefused` — the refusal happens before any REST call.
+- `src/fluxer_panel/interactions.py:57` `return {"parse": []}` — a play-now message with no follow role mentions nobody.
+- `src/fluxer_panel/interactions.py:58` `return {"parse": [], "roles": [role_id], "replied_user": False}` — the play-now role ping. Only the card's own follow role can be mentioned, and only when `_role_in` has matched it.
+- `src/fluxer_panel/interactions.py:64` `return follow.role_id if follow is not None and follow.guild_id == guild_id else None` — the follow-role community check: a role from another community is never mentioned.
+- `src/fluxer_panel/interactions.py:325` `if channel_id == self._config.games_channel_id:` — the play-now guard in `send_play_now`. A play-now message is never sent to the games channel.
+- `src/fluxer_panel/interactions.py:326` `raise GamesChannelRefused` — the refusal happens before any REST call.
 
 ## Purge deletion
 
@@ -349,10 +349,10 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 
 - `src/fluxer_panel/poll_post.py:104` `if channel_id == self._config.games_channel_id:` — `send_poll` checks the games channel before any REST call.
 - `src/fluxer_panel/poll_post.py:105` `raise GamesChannelRefused` — the refusal for a poll send.
-- `src/fluxer_panel/poll_post.py:219` `if view.poll.channel_id == self._config.games_channel_id:` — `_refused` makes the same check against a stored poll's channel, for every flush, closed-poll seed and unseed.
-- `src/fluxer_panel/poll_post.py:301` `if self._refused(view):` — `_edit_marked` (run by `_flush_locked`) refuses a stored games channel before any edit.
-- `src/fluxer_panel/poll_post.py:118` `sent = await notify.dm_user(self._rest, user_id, content, backoff=self._backoff)` — a ballot DM goes through the DM helper, which sends empty mentions and honours the DM backoff.
-- `src/fluxer_panel/poll_post.py:345` `allowed_mentions={"parse": []})` — the ballot edit carries empty `allowed_mentions`.
+- `src/fluxer_panel/poll_post.py:231` `if view.poll.channel_id == self._config.games_channel_id:` — `_refused` makes the same check against a stored poll's channel, for every flush, closed-poll seed and unseed.
+- `src/fluxer_panel/poll_post.py:313` `if self._refused(view):` — `_edit_marked` (run by `_flush_locked`) refuses a stored games channel before any edit.
+- `src/fluxer_panel/poll_post.py:130` `sent = await notify.dm_user(self._rest, user_id, content, backoff=self._backoff)` — a ballot DM goes through the DM helper, which sends empty mentions and honours the DM backoff.
+- `src/fluxer_panel/poll_post.py:357` `allowed_mentions={"parse": []})` — the ballot edit carries empty `allowed_mentions`.
 
 ## Non-admin DM path
 

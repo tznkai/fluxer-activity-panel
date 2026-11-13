@@ -126,6 +126,33 @@ def poll_payload(text: str = "Lobby") -> dict[str, Any]:
     return {"embeds": [{"title": text, "fields": []}], "allowed_mentions": {"parse": []}}
 
 
+# delete_unstored: the best-effort delete of a provisional message whose row was not stored ----------------
+
+async def test_delete_unstored_deletes_the_posted_message(world: SimpleNamespace) -> None:
+    world.state.messages[(CHANNEL, POLL_MSG)] = poll_payload()
+    await world.post.delete_unstored(CHANNEL, POLL_MSG)
+    assert requests(world, "DELETE", POLL_PATH) != []
+    assert (CHANNEL, POLL_MSG) in world.state.deleted
+
+
+async def test_delete_unstored_refuses_the_games_channel_before_any_request_and_does_not_raise(
+        world: SimpleNamespace, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.WARNING)
+    await world.post.delete_unstored(GAMES, POLL_MSG)
+    assert world.state.requests == []
+    assert [r.getMessage() for r in caplog.records].count("poll_discard_failed") == 1
+
+
+async def test_delete_unstored_logs_a_failed_delete_and_never_raises(world: SimpleNamespace,
+                                                                     caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.WARNING)
+    world.state.messages[(CHANNEL, POLL_MSG)] = poll_payload()
+    world.state.overrides[f"DELETE {POLL_PATH}"] = Override(500, b'{"code":"X","message":"x"}')
+    await world.post.delete_unstored(CHANNEL, POLL_MSG)
+    [record] = [r for r in caplog.records if r.getMessage() == "poll_discard_failed"]
+    assert getattr(record, FIELDS_ATTR) == {"channel_id": CHANNEL, "reason": "http_500"}
+
+
 # AC9.1: the games channel is refused before any REST call --------------------------------------------
 
 async def test_send_poll_refuses_the_games_channel_before_any_request(world: SimpleNamespace) -> None:
