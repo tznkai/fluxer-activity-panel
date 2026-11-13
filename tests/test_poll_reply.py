@@ -104,6 +104,14 @@ def test_a_repeated_letter_in_an_approval_reply_is_dropped() -> None:
     assert ballot("a, a") == poll_reply.Picks((poll_reply.Letter(10),))
 
 
+def test_a_repeated_typed_time_in_an_approval_reply_is_dropped() -> None:
+    assert ballot("fri 20:00, fri 20:00") == poll_reply.Picks((poll_reply.TypedTime(fri_8pm()),))
+
+
+def test_the_same_time_written_two_ways_is_dropped_once() -> None:
+    assert ballot("fri 20:00, 2026-11-13 20:00") == poll_reply.Picks((poll_reply.TypedTime(fri_8pm()),))
+
+
 # AC7.5: a runoff takes letters only, once each, and may be partial ---------------------------------
 
 def test_a_runoff_refuses_a_typed_time() -> None:
@@ -116,6 +124,14 @@ def test_a_runoff_refuses_all() -> None:
 
 def test_a_runoff_refuses_a_repeated_letter() -> None:
     assert ballot("a, b, a", runoff=True) == poll_reply.Refusal(3, "repeated")
+
+
+def test_a_runoff_refuses_all_mixed_with_letters_as_no_all() -> None:
+    assert ballot("a, all", runoff=True) == poll_reply.Refusal(2, "no_all")
+
+
+def test_a_runoff_refuses_clear_mixed_with_letters_as_keyword_alone() -> None:
+    assert ballot("a, clear", runoff=True) == poll_reply.Refusal(2, "keyword_alone")
 
 
 def test_a_runoff_accepts_a_partial_ranking_in_rank_order() -> None:
@@ -134,3 +150,11 @@ def test_every_refusal_reason_has_a_text() -> None:
 
 def test_poll_reasons_do_not_collide_with_session_time_reasons() -> None:
     assert set(poll_reply.REASONS).isdisjoint(session_time.REASONS)
+
+
+def test_refusal_texts_start_capitalised_or_with_a_code_span() -> None:
+    # Phase 4 shows both sets as "Item N: {reason}", so each text starts the way a sentence does.
+    for source in (text.POLL_REPLY_REFUSED, text.SESSION_TIME_REFUSED):
+        for reason, refusal in source.items():
+            first = refusal[0]
+            assert first.isupper() or first == "`", reason

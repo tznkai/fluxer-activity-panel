@@ -281,14 +281,14 @@ SESSION_TIME_REFUSED = {
 # Poll replies: the refusal for each reason in `poll_reply.REASONS`, and the line that names the item.
 POLL_REPLY_ITEM = "Item {index}: {reason}"
 POLL_REPLY_REFUSED = {
-    "empty": "there's nothing there. Separate items with commas, like `a, c`.",
+    "empty": "There's nothing there. Separate items with commas, like `a, c`.",
     "keyword_alone": "`all` and `clear` must be the whole reply.",
-    "too_many": "that's too many items. Use 20 or fewer.",
-    "no_option": "there's no option with that letter.",
-    "too_soon": "that time is less than an hour away.",
-    "letters_only": "this is a runoff, so reply with letters only.",
-    "no_all": "this is a runoff, so `all` doesn't work. Rank the letters instead, favourite first.",
-    "repeated": "each letter can appear only once.",
+    "too_many": "That's too many items. Use 20 or fewer.",
+    "no_option": "There's no option with that letter.",
+    "too_soon": "That time is less than an hour away.",
+    "letters_only": "This is a runoff, so reply with letters only.",
+    "no_all": "This is a runoff, so `all` doesn't work. Rank the letters instead, favourite first.",
+    "repeated": "Each letter can appear only once.",
 }
 # The session message: the field names, the When and counts lines, the footer and the closed-form statuses.
 SESSION_FIELD_WHEN = "When"
