@@ -135,6 +135,7 @@ async def test_add_option_refuses_one_more_than_the_maximum(db: Database) -> Non
 
     with pytest.raises(TooManyOptions):
         await db.run(lambda c: polls.add_option(c, poll_id, starts_at=10_000, origin="typed"))
+    assert await db.run(lambda c: _count(c, "poll_options")) == MAX_OPTIONS
 
 
 # Picks ------------------------------------------------------------------------------------------------
@@ -205,6 +206,20 @@ async def test_replace_picks_refuses_a_duplicate_option(db: Database) -> None:
         await db.run(lambda c: polls.replace_picks_if_open(c, poll_id, "1002", [first, first], ranked=False))
 
 
+async def test_replace_picks_refuses_another_polls_option_and_changes_nothing(db: Database) -> None:
+    card = await _card(db)
+    poll_id = await _poll(db, card)
+    other = await _poll(db, await _card(db), message_id="5002")
+    foreign, _ = await _option_ids(db, other)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        await db.run(lambda c: polls.replace_picks_if_open(c, poll_id, "1002", [foreign], ranked=False))
+
+    ballot = await db.run(lambda c: polls.ballot(c, poll_id, "1002"))
+    assert ballot is not None and ballot.answered is False
+    assert await db.run(lambda c: _count(c, "poll_votes")) == 0
+
+
 async def test_replace_picks_on_a_closed_poll_changes_nothing(db: Database) -> None:
     card = await _card(db)
     poll_id = await _poll(db, card)
@@ -239,11 +254,25 @@ async def test_sort_if_open_refuses_ids_that_are_not_exactly_this_polls_options(
     card = await _card(db)
     poll_id = await _poll(db, card)
     first, second = await _option_ids(db, poll_id)
+    foreign = await _option_ids(db, await _poll(db, await _card(db), message_id="5002"))
 
+    # wrong length: rejected by the length check
     with pytest.raises(ValueError):
         await db.run(lambda c: polls.sort_if_open(c, poll_id, [first], now=7))
     with pytest.raises(ValueError):
         await db.run(lambda c: polls.sort_if_open(c, poll_id, [first, second, second], now=7))
+    # right length, wrong members: only the set check rejects these
+    with pytest.raises(ValueError):
+        await db.run(lambda c: polls.sort_if_open(c, poll_id, [first, first], now=7))
+    with pytest.raises(ValueError):
+        await db.run(lambda c: polls.sort_if_open(c, poll_id, [first, 9999], now=7))
+    with pytest.raises(ValueError):
+        await db.run(lambda c: polls.sort_if_open(c, poll_id, [first, foreign[0]], now=7))
+
+    options = await db.run(lambda c: polls.options(c, poll_id))
+    assert [(o.id, o.position) for o in options] == [(first, 0), (second, 1)]
+    poll = await db.run(lambda c: polls.get(c, poll_id))
+    assert poll is not None and poll.sorted_at is None
 
 
 # Compare-and-set on a closed poll ---------------------------------------------------------------------
@@ -267,6 +296,9 @@ async def test_state_changes_refuse_a_closed_poll(db: Database) -> None:
     assert poll is not None
     assert (poll.closes_at, poll.ballot_size, poll.pending_ballot_size, poll.sorted_at, poll.closed_at,
             poll.outcome) == (100, 6, None, None, 5, "none")
+    options = await db.run(lambda c: polls.options(c, poll_id))
+    assert [o.id for o in options] == [first, second]
+    assert [o.position for o in options] == [0, 1]
 
 
 async def test_close_if_open_is_true_only_once(db: Database) -> None:

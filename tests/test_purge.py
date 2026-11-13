@@ -788,7 +788,7 @@ async def test_open_poll_is_never_purged_however_old(db: Database) -> None:
     assert await db.run(lambda c: _count(c, "polls")) == 1
 
 
-async def test_closed_poll_is_purged_by_the_offline_purge_and_never_scrubbed(db: Database) -> None:
+async def test_closed_poll_is_purged_by_the_run_purge_and_never_scrubbed(db: Database) -> None:
     await db.run(lambda conn: _poll(conn, _card(conn), state="closed", created_at=CUT - 2 * DAY, closed_at=CUT - 1))
     scrub = _Scrubber(db)
 

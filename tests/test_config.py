@@ -287,7 +287,7 @@ def test_repr_hides_the_pterodactyl_key_and_the_token():
         ("POLL_MAX_LENGTH_SECONDS", {"POLL_MAX_LENGTH_SECONDS": "0"}, "0"),
         ("POLL_MAX_LENGTH_SECONDS", {"POLL_MAX_LENGTH_SECONDS": "-1"}, "-1"),
         ("POLL_MAX_LENGTH_SECONDS", {"POLL_MAX_LENGTH_SECONDS": "abc"}, "abc"),
-        ("POLL_MAX_LENGTH_SECONDS", {"POLL_LENGTH_SECONDS": "7200", "POLL_MAX_LENGTH_SECONDS": "3600"}, None),
+        ("POLL_MAX_LENGTH_SECONDS", {"POLL_LENGTH_SECONDS": "7200", "POLL_MAX_LENGTH_SECONDS": "3600"}, "7200"),
         # The message's own bounds "1 to 20" contain the digit 0, so no value check here; "21" and "abc" cover leaks.
         ("POLL_BALLOT_SIZE", {"POLL_BALLOT_SIZE": "0"}, None),
         ("POLL_BALLOT_SIZE", {"POLL_BALLOT_SIZE": "21"}, "21"),
@@ -391,3 +391,17 @@ def test_poll_lengths_parse_when_valid():
     assert config.poll_length_seconds == 3600
     assert config.poll_max_length_seconds == 3600
     assert config.poll_max_recipients == 7
+
+
+def test_poll_max_below_length_names_both_variables_and_neither_number():
+    with pytest.raises(ConfigError) as info:
+        Config.from_env(env(POLL_LENGTH_SECONDS="7200", POLL_MAX_LENGTH_SECONDS="3600"))
+    message = str(info.value)
+    assert message == "POLL_MAX_LENGTH_SECONDS must be at least POLL_LENGTH_SECONDS"
+    assert "7200" not in message and "3600" not in message
+
+
+def test_poll_ballot_size_zero_gives_the_exact_message():
+    with pytest.raises(ConfigError) as info:
+        Config.from_env(env(POLL_BALLOT_SIZE="0"))
+    assert str(info.value) == "POLL_BALLOT_SIZE must be an integer from 1 to 20"

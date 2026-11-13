@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 K. Chen
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Retention purge: scrub and delete expired sessions, delete old requests and play-now posts; log each attempt in a
-status file."""
+"""Retention purge: scrub and delete expired sessions, delete old requests, play-now posts and closed polls; log each
+attempt in a status file."""
 
 from __future__ import annotations
 
@@ -43,7 +43,9 @@ _NOTHING = PurgeResult(sessions=0, rsvps=0, requests=0, play_now=0)
 
 def _purge_tx(conn: sqlite3.Connection, now: int, *, session_ids: Sequence[int], cutoff: int) -> PurgeResult:
     """One transaction. The session delete re-checks each row against the due rule, so a row that changed since it
-    was read is kept, and its RSVPs with it. The ids are bound as parameters; nothing is formatted into the SQL."""
+    was read is kept, and its RSVPs with it. Closed polls past retention are deleted in the same transaction; their
+    options, ballots and votes go by cascade, and no REST call is made. The ids are bound as parameters; nothing is
+    formatted into the SQL."""
     sessions_deleted = rsvps = 0
     if session_ids:
         marks = ", ".join(["?"] * len(session_ids))
@@ -67,7 +69,8 @@ async def purge(db: Database, now: int, *, scrub: Scrub | None, retention: int) 
     """Scrub each due session, then delete the due rows. The scrub runs before the delete, so each edit is sent while
     its row exists. A failed scrub is logged and the row is still deleted. With no scrubber (the offline `purge`
     subcommand has no REST), due sessions stay and are counted as deferred. Strict comparisons keep a row exactly at
-    the cutoff. RSVPs go by ON DELETE CASCADE."""
+    the cutoff. RSVPs go by ON DELETE CASCADE. Closed polls past retention are deleted in the same transaction as the
+    sessions, with their options, ballots and votes by cascade and no REST call, so they never reach the scrub."""
     cutoff = now - retention
     due = await db.run(lambda conn: sessions.closed_before(conn, cutoff))
     if scrub is None:

@@ -213,7 +213,9 @@ def add_option(conn: sqlite3.Connection, poll_id: int, *, starts_at: int, origin
 
 def replace_picks_if_open(conn: sqlite3.Connection, poll_id: int, user_id: str, option_ids: Sequence[int], *,
                           ranked: bool) -> bool:
-    """Replace the user's picks. False, with nothing changed, when the poll is closed or the user has no ballot."""
+    """Replace the user's picks. False, with nothing changed, when the poll is closed or the user has no ballot.
+    An option id that is not this poll's raises IntegrityError from the composite foreign key, which rolls back the
+    whole db.run transaction, so the answered flag is not set either."""
     if len(set(option_ids)) != len(option_ids):
         raise ValueError("an option may be picked once")
     cur = conn.execute(

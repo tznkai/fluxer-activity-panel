@@ -112,12 +112,12 @@ Paths are relative to this directory.
 - `src/fluxer_panel/sessions.py:191` `state <> 'upcoming' AND closed_at < ?` — an upcoming session (`closed_at` NULL) never matches, so it is never purged, however old its end.
 - `src/fluxer_panel/sessions.py:192` `AND NOT (recurrence IS 'weekly' AND next_posted = 0)` — keeps a weekly occurrence whose successor is not posted yet, so its purge cannot end the series. `IS` is NULL-safe, so a non-recurring session (recurrence NULL) is not kept by this test and is still purged.
 - `src/fluxer_panel/purge.py:44` `def _purge_tx(` — one transaction: count the RSVPs of the due sessions, delete the due sessions, delete the old requests and play-now posts, and delete the closed polls past retention. The session delete re-checks the due rule, so a row that changed since it was read is kept.
-- `src/fluxer_panel/purge.py:55` `DELETE FROM sessions` — deletes the due sessions. Their RSVPs go with them by cascade.
-- `src/fluxer_panel/purge.py:56` `DELETE FROM requests` — deletes requests older than 30 days, whatever their status.
-- `src/fluxer_panel/purge.py:78` `await scrub(session)` — the scrub runs before each due session's delete, so the edit is sent while the row exists. A failed scrub is logged with the session id, and the delete still runs.
-- `src/fluxer_panel/purge.py:96` `def write_status(` — the status file is written atomically and holds only timestamps and counts, and the deferred count.
-- `src/fluxer_panel/purge.py:117` `await db.checkpoint()` — a WAL checkpoint after each run. A checkpoint failure after the commit is reported as `ok: false`, though the rows may already be gone.
-- `src/fluxer_panel/purge.py:145` `log.exception("purge_loop_error")` — the per-iteration catch-all. A failing iteration is logged, and the loop goes on.
+- `src/fluxer_panel/purge.py:57` `DELETE FROM sessions` — deletes the due sessions. Their RSVPs go with them by cascade.
+- `src/fluxer_panel/purge.py:58` `DELETE FROM requests` — deletes requests older than 30 days, whatever their status.
+- `src/fluxer_panel/purge.py:81` `await scrub(session)` — the scrub runs before each due session's delete, so the edit is sent while the row exists. A failed scrub is logged with the session id, and the delete still runs.
+- `src/fluxer_panel/purge.py:99` `def write_status(` — the status file is written atomically and holds only timestamps and counts, and the deferred count.
+- `src/fluxer_panel/purge.py:120` `await db.checkpoint()` — a WAL checkpoint after each run. A checkpoint failure after the commit is reported as `ok: false`, though the rows may already be gone.
+- `src/fluxer_panel/purge.py:148` `log.exception("purge_loop_error")` — the per-iteration catch-all. A failing iteration is logged, and the loop goes on.
 - `src/fluxer_panel/__main__.py:134` `purge_task = asyncio.create_task(purge_loop(` — the purge task and the poller start only once the gateway task exists, so a stop that wins discovery never starts either.
 - `src/fluxer_panel/__main__.py:135` `scrub=session_post.scrub,` — the `run` purge gets the session scrubber. The `purge` subcommand passes none, so it defers due sessions instead of deleting them.
 - `src/fluxer_panel/__main__.py:152` `gw_task.cancel()` — `run()`'s finally cancels the gateway task first, so the session never closes under a live reconnect.
@@ -321,10 +321,10 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 
 ## Session purge scrub
 
-- `src/fluxer_panel/purge.py:76` `for session in due:` — the scrub loop in `run`. Every due session is visited before any row is deleted.
-- `src/fluxer_panel/purge.py:78` `await scrub(session)` — the scrub edits the message to its closed form without the location, while the row still exists.
-- `src/fluxer_panel/purge.py:80` `"session_scrub_failed"` — a failed scrub is logged with the session id and the exception type only.
-- `src/fluxer_panel/purge.py:83` `_purge_tx(conn, now, session_ids=session_ids` — the delete runs for every due id after the loop, even when a scrub failed. The delete re-checks the due rule, so a row that changed since it was read is kept.
+- `src/fluxer_panel/purge.py:79` `for session in due:` — the scrub loop in `run`. Every due session is visited before any row is deleted.
+- `src/fluxer_panel/purge.py:81` `await scrub(session)` — the scrub edits the message to its closed form without the location, while the row still exists.
+- `src/fluxer_panel/purge.py:83` `"session_scrub_failed"` — a failed scrub is logged with the session id and the exception type only.
+- `src/fluxer_panel/purge.py:86` `_purge_tx(conn, now, session_ids=session_ids` — the delete runs for every due id after the loop, even when a scrub failed. The delete re-checks the due rule, so a row that changed since it was read is kept.
 - `src/fluxer_panel/__main__.py:135` `scrub=session_post.scrub,` — the `run` purge is the only caller that gets the scrubber.
 - `src/fluxer_panel/__main__.py:171` `scrub=None,` — the `purge` subcommand passes no scrubber, so due sessions stay in place and are reported as deferred.
 
