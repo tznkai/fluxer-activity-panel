@@ -65,6 +65,7 @@ TWO = CLOSES + 10800
 THREE = CLOSES + 14400
 DAY = 86400
 BACKOFF = 300
+RUNOFF_LENGTH = 1800
 SESSION = "\U0001F4C5"               # the calendar
 RUNOFF = "\U0001F501"                # the repeat button
 POLL_POSTS = f"/api/v1/channels/{PLAY}/messages"
@@ -80,9 +81,10 @@ class Clock:
 
 
 def config_for() -> Config:
+    # A short poll length: a runoff opened at CLOSES closes while its options (two to four hours out) are still usable.
     env = {"FLUXER_TOKEN": TOKEN, "SESSION_TIME_ZONE": "UTC", "FLUXER_INSTANCE_URL": URL, "ADMIN_USER_IDS": ADMIN,
            "GAMES_CHANNEL_ID": GAMES, "PLAY_NOW_CHANNEL_ID": PLAY, "POLL_INTERVAL_SECONDS": "3600",
-           "DM_BACKOFF_SECONDS": str(BACKOFF)}
+           "DM_BACKOFF_SECONDS": str(BACKOFF), "POLL_LENGTH_SECONDS": str(RUNOFF_LENGTH)}
     return Config.from_env(env)
 
 
@@ -434,3 +436,98 @@ async def test_a_runoff_with_fewer_than_two_usable_voted_times_starts_nothing(wo
 
     assert dm_contents(world.state, STARTER) == [text.POLL_RUNOFF_NEEDS_TWO]
     assert await runoff_of(world, poll_id) is None
+
+
+# AC7.5 and AC7.6: a runoff end to end ----------------------------------------------------------------------
+
+async def option_of(world: World, poll_id: int, starts_at: int) -> int:
+    return (await option_ids(world, poll_id))[starts_at]
+
+
+async def ranks_of(world: World, poll_id: int, user: str) -> list[tuple[int, int | None]]:
+    votes = await world.db.run(lambda c: polls.votes(c, poll_id))
+    return [(vote.option_id, vote.rank) for vote in votes if vote.user_id == user]
+
+
+async def open_runoff(world: World) -> tuple[int, int]:
+    """A closed three-way poll, then a runoff started by an admin. Returns (parent id, runoff id). The runoff's ballots
+    go to the starter and to VOTER_A and VOTER_G, the holders of the role as it is then."""
+    parent = await closed_three_way(world)
+    members(world.state, STARTER, VOTER_A, VOTER_G)
+    await react(world, ADMIN, RUNOFF)
+    runoff = await runoff_of(world, parent)
+    assert runoff is not None
+    return parent, runoff.id
+
+
+async def reply(world: World, user: str, content: str) -> None:
+    open_polls = await world.flow.open_ballots(user)
+    if open_polls:
+        await world.flow.on_reply(events.MessageCreate(
+            message_id="7100", channel_id=world.state.dm_channels[user], guild_id=None, author_id=user,
+            author_is_bot=False, member_role_ids=None, content=content), open_polls)
+    await world.post.drain()
+
+
+def refusal_for(index: int, reason: str) -> str:
+    return (text.POLL_REPLY_ITEM.format(index=index, reason=text.POLL_REPLY_REFUSED[reason]) + "\n"
+            + text.POLL_FORMAT + " " + text.SESSION_TIME_EXAMPLE)
+
+
+@pytest.mark.parametrize(("content", "index", "reason"), [
+    ("fri 20:00", 1, "letters_only"),
+    ("all", 1, "no_all"),
+    ("a, b, a", 3, "repeated"),
+])
+async def test_a_runoff_refuses_a_typed_time_all_and_a_repeated_letter_and_changes_nothing(
+        world: World, content: str, index: int, reason: str) -> None:
+    _parent, runoff_id = await open_runoff(world)
+    await reply(world, VOTER_A, "b")
+    before = await ranks_of(world, runoff_id, VOTER_A)
+    options_before = len(await world.db.run(lambda c: polls.options(c, runoff_id)))
+
+    await reply(world, VOTER_A, content)
+
+    assert await ranks_of(world, runoff_id, VOTER_A) == before
+    assert len(await world.db.run(lambda c: polls.options(c, runoff_id))) == options_before
+    assert dm_contents(world.state, VOTER_A)[-1] == refusal_for(index, reason)
+
+
+async def test_a_runoff_accepts_one_letter_and_a_partial_ranking_in_rank_order(world: World) -> None:
+    _parent, runoff_id = await open_runoff(world)
+
+    await reply(world, VOTER_A, "b")
+    assert await ranks_of(world, runoff_id, VOTER_A) == [(await option_of(world, runoff_id, TWO), 1)]
+
+    await reply(world, VOTER_G, "c, a")
+    assert await ranks_of(world, runoff_id, VOTER_G) == [
+        (await option_of(world, runoff_id, THREE), 1), (await option_of(world, runoff_id, ONE), 2)]
+    assert dm_contents(world.state, VOTER_G)[-1] == text.POLL_YOUR_PICKS.format(letters="c, a")
+
+
+async def test_a_closed_runoff_shows_its_rounds_gets_only_the_calendar_and_its_winner_schedules(world: World) -> None:
+    _parent, runoff_id = await open_runoff(world)
+    await reply(world, STARTER, "a")     # first choice: a
+    await reply(world, VOTER_A, "b")     # first choice: b
+    await reply(world, VOTER_G, "c, a")  # first choice: c, dropped in round one; then a
+
+    runoff = await stored(world, runoff_id)
+    world.clock.now = runoff.closes_at
+    await world.jobs.run()
+    await world.post.drain()
+
+    closed = await stored(world, runoff_id)
+    assert (closed.state, closed.outcome) == ("closed", "winner")
+    assert closed.winner_option_id == await option_of(world, runoff_id, ONE)
+    path = f"/api/v1/channels/{PLAY}/messages/{runoff.message_id}"
+    shown = str([r for r in world.state.requests if r.method == "PATCH" and r.path == path][-1].payload)
+    assert "Round 1:" in shown and "Round 2:" in shown
+    assert text.POLL_DROPPED.format(letter="c") in shown
+    assert text.POLL_WINNER.format(letter="a", ts=ONE) in shown
+    assert set(world.state.reactions.get((PLAY, runoff.message_id), {})) == {SESSION}
+
+    await react(world, STARTER, SESSION, message=runoff.message_id)
+
+    [(session_id, proposer, starts_at, _message)] = await sessions_all(world)
+    assert (proposer, starts_at) == (STARTER, ONE)
+    assert await rsvp_rows(world, session_id) == {(STARTER, "going", 1), (VOTER_G, "maybe", 1)}
