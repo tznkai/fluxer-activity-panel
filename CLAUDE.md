@@ -237,11 +237,13 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   presser's reaction first, then acts only for the poll's starter or an admin (`admin.is_admin_id`).
 - The RSVP engine (`rsvp.apply`) decides every RSVP row. `sessions.write_rsvps` is the only code that rewrites `rsvps`
   after a session exists. `sessions.add` writes the proposer's first going row when the session is created, and
-  `sessions.add_presence` replaces the implicit presence row of any user who reacts. Any user may hold an implicit row: the proposer's going, and each maybe that `sessions.add(..., maybe=...)` writes for a scheduled poll's voters. The reconcile drops the implicit row of every user with a reaction before it adds that user's real row.
+  `sessions.add_presence` replaces the implicit presence row of any user who reacts. Any user may hold an implicit row:
+  the proposer's going, and each maybe that `sessions.add(..., maybe=...)` writes for a scheduled poll's voters. The
+  reconcile drops the implicit row of every user with a reaction before it adds that user's real row.
 - The non-admin paths are `dm_router` with `!session` (`session_commands.py`), `!poll`, and ballot replies. `NonAdminLimiter.admit`
   allows 5 DM commands, draft or ballot replies, or 📅 DM reactions per 60 seconds per non-admin user. Admins are exempt. A `!session`
-  change needs the session's proposer, a `!poll` sort, shown, extend or close needs the poll's starter, and either may be done by `admin.authorize`. A guild message goes to `admin.handle` and never reaches the
-  session path.
+  change needs the session's proposer, a `!poll` sort, shown, extend or close needs the poll's starter, and either
+  may be done by `admin.authorize`. A guild message goes to `admin.handle` and never reaches the session path.
 - DM backoff (`dm_backoff.py`, in memory): a user whose DM failed gets no ordinary DM for `DM_BACKOFF_SECONDS`.
   Promotion, cancel, move and series-stopped DMs, and the wake request close DMs (ready, expired and cleared), pass
   `bypass=True`. Admin DMs (`notify.dm_admins`) never use the

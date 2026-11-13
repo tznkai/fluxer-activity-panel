@@ -435,8 +435,9 @@ channel ID.
 
 - Plan only, not yet run. The operator runs each check by hand, in the private test guild with a second test account,
   and records the result on the `Result` lines. Nothing from the real instance is recorded in this file.
-- Use placeholders only: `<card>` is a card's slug, `<n>` a poll number, `<user>` a member's id, and `<t:…>` a
-  timestamp. Emoji are written as Unicode code points, as in the sections above.
+- Use placeholders only: `<guild>` is the test community's id, `<last user id>` is a member's id from the last page,
+  `<n>` is a poll number, and `<t:…:F>` is a timestamp. Emoji are written as Unicode code points, as in the sections
+  above: the ballot box (U+1F5F3 U+FE0F), the calendar (U+1F4C5) and the repeat button (U+1F501).
 
 ### Member list shape (run first)
 
@@ -453,9 +454,9 @@ channel ID.
 
 ### Ballot edits on web and mobile
 
-- Steps: with two test accounts, A and B, both on the follow role, A starts a poll with 🗳️ on a live card. Read B's
-  ballot on the web and on mobile. B replies `a`, then `fri 20:00` to add a time. Read the poll message and A's ballot
-  after each reply.
+- Steps: with two test accounts, A and B, both on the follow role, A starts a poll with the ballot box (U+1F5F3
+  U+FE0F) on a live card. Read B's ballot on the web and on mobile. B replies `a`, then `fri 20:00` to add a time. Read
+  the poll message and A's ballot after each reply.
 - Expected: both ballots are edited in place, with no new direct message. The counts and the new time appear on the poll
   message. `<t:…:F>` for the new time renders in each viewer's own time zone. The edit shows on mobile without reopening
   the direct message.
@@ -468,8 +469,8 @@ channel ID.
 - Steps: start a poll with the default `POLL_LENGTH_SECONDS` (86400). Let account A answer and leave account B unanswered.
   Let the time pass, and note the close time from the poll message.
 - Expected: the poll closes within one poller tick of its close time. The poll message shows the winner, and each
-  ballot says the poll is closed. 📅 and 🔁 appear on the poll message. B got the halfway reminder once (about 12 hours
-  in), and A got none, since A had answered.
+  ballot says the poll is closed. The calendar (U+1F4C5) and the repeat button (U+1F501) appear on the poll message.
+  B got the halfway reminder once (about 12 hours in), and A got none, since A had answered.
 - Note: this check spans a day. Leave the bot running, and read the result the next day.
 - Result (web): not yet run.
 - Result (mobile): not yet run.
@@ -477,13 +478,17 @@ channel ID.
 ### A runoff
 
 - Steps: restart the bot with `POLL_LENGTH_SECONDS=1800` and `POLL_MAX_LENGTH_SECONDS=3600`, so the runoff's own close is
-  short. Use a card whose poll offers three times at least three hours away, and let three voters pick a time each, one
-  per time, so the poll has a winner. Close it with `!poll close <n>` as the starter. Press 🔁 on the closed poll as the
-  starter. Rank the three times on two of the runoff's recipients, so that the first round has no majority: for example,
-  one ranks `a` first and the other ranks `b` first.
-- Expected: the runoff opens, and its ballots reach the two accounts. The runoff closes before its earliest candidate
-  time, with two rounds shown in the closed message. Its message has 📅 only. Pressing 📅 schedules a session in the
-  card's session channel, with the starter as proposer and the voters for the winner as maybe.
+  short. Use two accounts, A (the starter) and B, and give B the card's follow role, so B is a recipient of both polls.
+  Use a live card whose poll offers at least three times, each at least three hours away. As A, press the ballot box
+  (U+1F5F3 U+FE0F) on the card. A replies with three letters, `a, b, c`, and B replies with `c`, so the three times have
+  votes and `c` has two. Close the poll with `!poll close <n>` as A. Press the repeat button (U+1F501) on the closed poll
+  as A. A replies `a, b`, and B replies `c`. These are the runoff's own letters, which are ranked by votes, so `a` is the
+  time with the most votes.
+- Expected: the runoff opens, and its ballots reach A and B. In round 1, `a` and `c` each have one first choice and `b`
+  has none, so there is no majority and `b` is dropped. Round 2 is a tie between `a` and `c`, which goes to the sooner
+  time. The runoff closes before its earliest candidate time, with two rounds shown in the closed message. Its message
+  has the calendar (U+1F4C5) only. Pressing the calendar schedules a session in the card's session channel, with A as
+  proposer and the voters for the winning time as maybe.
 - Result (web): not yet run.
 - Result (mobile): not yet run.
 

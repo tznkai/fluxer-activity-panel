@@ -20,7 +20,7 @@ import pytest
 from fluxer_client import events
 from fluxer_client.roles import RoleCache
 from fluxer_client.rest import FluxerREST
-from fluxer_panel import cards, polls, sessions
+from fluxer_panel import cards, polls, sessions, text
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
@@ -190,6 +190,17 @@ def poll_message_ids(conn: Any) -> set[str]:
     return {row[0] for row in conn.execute("SELECT message_id FROM polls")}
 
 
+def picks_of(conn: Any, poll_id: int, user: str) -> list[tuple[int, int | None]]:
+    """A user's stored picks on a poll, as (option id, rank)."""
+    return sorted((vote.option_id, vote.rank) for vote in polls.votes(conn, poll_id) if vote.user_id == user)
+
+
+def posts_to(s: Scenario, channel: str) -> list[Any]:
+    """Every message the bot has POSTed to a channel, in order."""
+    path = f"/api/v1/channels/{channel}/messages"
+    return [r for r in s.state.requests if r.method == "POST" and r.path == path]
+
+
 # The scenario ----------------------------------------------------------------------------------------------
 
 async def test_a_full_poll_scenario_never_touches_the_games_channel_and_logs_no_user_or_text(
@@ -214,16 +225,28 @@ async def test_a_full_poll_scenario_never_touches_the_games_channel_and_logs_no_
     for uid in (STARTER, *HOLDERS):
         assert await s.db.run(lambda c, u=uid: polls.ballot(c, poll_id, u)) is not None
 
-    # 3. Votes from the recipients. A typed time adds an option; each reply replaces the last; a refused reply echoes
-    #    the sentinel and stores nothing.
+    # 3. Votes from the recipients. A typed time adds an option; each reply replaces the last one.
     await say(s, HOLDERS[0], "fri 20:00")                # Friday 20:00: a new option, and this holder's pick
     await say(s, HOLDERS[1], "a, c")                     # letters, while they are still on the offered list
     await say(s, HOLDERS[1], "sat 20:00")                # replaces the letters with Saturday 20:00
     await say(s, HOLDERS[2], "all")
     await say(s, HOLDERS[2], "clear")                    # replaces `all` with no picks
-    await say(s, STARTER, f"sat {SENTINEL_TYPED}")       # refused: not a time
     typed_starts = await s.db.run(lambda c: {o.starts_at for o in polls.options(c, poll_id) if o.origin == "typed"})
     assert typed_starts == {FRI_20, SAT_20}
+
+    # A refused reply stores nothing: HOLDERS[0]'s Friday pick and the option count are the same afterwards. The refusal
+    # is answered once, in the DM the reply came from, with the item's format reminder and without echoing the text.
+    before_picks = await s.db.run(lambda c: picks_of(c, poll_id, HOLDERS[0]))
+    before_options = await s.db.run(lambda c: len(polls.options(c, poll_id)))
+    holder_dm = dm_channel(s, HOLDERS[0])
+    answers_before = len(posts_to(s, holder_dm))
+    await say(s, HOLDERS[0], f"sat {SENTINEL_TYPED}")    # refused: not a time
+    assert await s.db.run(lambda c: picks_of(c, poll_id, HOLDERS[0])) == before_picks
+    assert await s.db.run(lambda c: len(polls.options(c, poll_id))) == before_options
+    answers = posts_to(s, holder_dm)[answers_before:]
+    assert len(answers) == 1, "the refusal is answered once, in the DM the reply came from"
+    assert text.POLL_FORMAT in answers[0].payload["content"]
+    assert SENTINEL_TYPED not in answers[0].payload["content"]
 
     # 4. The starter sorts, shows three per ballot and extends by twelve hours. Each is a `!poll` command in DM.
     await say(s, STARTER, "!poll sort 1")

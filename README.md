@@ -417,8 +417,9 @@ only 📅. Pressing either removes the presser's reaction, and only the starter 
   hour away, or a starter at the limit of upcoming sessions for the card, gets a direct message to the presser and
   nothing is created. A poll that already has a session does nothing.
 - 🔁 starts a runoff on a closed poll with a winner. Its candidates are the top three usable times that have votes,
-  ranked by votes and then soonest. They are offered as letters a to c in that rank order. The ballots go to the same
-  recipients, with the member list read again, and the runoff keeps the starter. Voters rank the times they can make,
+  ranked by votes and then soonest. They are offered as letters a to c in that rank order. The ballots go to the
+  starter and the follow role's current holders (the member list is read again), and the runoff keeps the starter.
+  Voters rank the times they can make,
   favourite first, like `b, a, c`, and may rank as many as they like. Runoff replies take letters only, so `all` does
   not work there.
   The runoff is counted by instant runoff. A time with more than half of the first choices still counting wins.
@@ -442,12 +443,14 @@ admins are exempt. An admin can run every command.
 !poll vote <poll> <reply>         a ballot reply, needed when you have more than one open poll
 !poll sort <poll>                 re-letters the times by votes, then soonest (starter or admin)
 !poll shown <poll> <1-20>         how many times a ballot shows, from the next sort (starter or admin)
-!poll extend <poll> [duration]    moves the close later: 90m, 12h or 2d; default POLL_LENGTH_SECONDS (starter or admin)
+!poll extend <poll> [duration]    moves the close later; the duration is described below (starter or admin)
 !poll close <poll>                closes it now, with the winner so far (starter or admin)
 !poll help                        lists these commands
 ```
 
-`!poll extend` cannot make a poll run longer than `POLL_MAX_LENGTH_SECONDS` from when it started. `!poll shown` does not
+`!poll extend` takes an optional duration: a number of minutes (`m`), hours (`h`) or days (`d`), from 1 to 9999, in
+upper or lower case, like `90m`, `12h` or `2d`. Without one, it adds `POLL_LENGTH_SECONDS`. It cannot make a poll run
+longer than `POLL_MAX_LENGTH_SECONDS` from when it started. `!poll shown` does not
 change the ballots until the next `!poll sort`, which also re-letters the times.
 
 **Archive and the kill switch.** `!card archive` closes the card's open poll with no winner, before it deletes the
