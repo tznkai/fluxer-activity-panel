@@ -281,6 +281,20 @@ def test_repr_hides_the_pterodactyl_key_and_the_token():
         ("FOLLOW_ROLE_PREFIX", {"FOLLOW_ROLE_PREFIX": "a" * 41}, "a" * 41),
         ("FOLLOW_ROLE_PREFIX", {"FOLLOW_ROLE_PREFIX": "card sub"}, "card sub"),
         ("FOLLOW_ROLE_PREFIX", {"FOLLOW_ROLE_PREFIX": "SENTINEL"}, "SENTINEL"),
+        ("POLL_LENGTH_SECONDS", {"POLL_LENGTH_SECONDS": "0"}, "0"),
+        ("POLL_LENGTH_SECONDS", {"POLL_LENGTH_SECONDS": "-1"}, "-1"),
+        ("POLL_LENGTH_SECONDS", {"POLL_LENGTH_SECONDS": "abc"}, "abc"),
+        ("POLL_MAX_LENGTH_SECONDS", {"POLL_MAX_LENGTH_SECONDS": "0"}, "0"),
+        ("POLL_MAX_LENGTH_SECONDS", {"POLL_MAX_LENGTH_SECONDS": "-1"}, "-1"),
+        ("POLL_MAX_LENGTH_SECONDS", {"POLL_MAX_LENGTH_SECONDS": "abc"}, "abc"),
+        ("POLL_MAX_LENGTH_SECONDS", {"POLL_LENGTH_SECONDS": "7200", "POLL_MAX_LENGTH_SECONDS": "3600"}, None),
+        # The message's own bounds "1 to 20" contain the digit 0, so no value check here; "21" and "abc" cover leaks.
+        ("POLL_BALLOT_SIZE", {"POLL_BALLOT_SIZE": "0"}, None),
+        ("POLL_BALLOT_SIZE", {"POLL_BALLOT_SIZE": "21"}, "21"),
+        ("POLL_BALLOT_SIZE", {"POLL_BALLOT_SIZE": "abc"}, "abc"),
+        ("POLL_MAX_RECIPIENTS", {"POLL_MAX_RECIPIENTS": "0"}, "0"),
+        ("POLL_MAX_RECIPIENTS", {"POLL_MAX_RECIPIENTS": "abc"}, "abc"),
+        ("POLL_REMINDER", {"POLL_REMINDER": "maybe"}, "maybe"),
         *[
             (variable, {variable: value}, value)
             for variable in (v for v, _ in REACTION_INTEGER_SETTINGS.values())
@@ -351,3 +365,29 @@ def test_bad_session_integer_names_the_variable(name, raw):
         Config.from_env(env(**{name: raw}))
     assert name in str(info.value)
     assert raw not in str(info.value)
+
+
+def test_poll_defaults_are_applied():
+    config = Config.from_env(env())
+    assert config.poll_length_seconds == 86400
+    assert config.poll_max_length_seconds == 604800
+    assert config.poll_ballot_size == 6
+    assert config.poll_max_recipients == 50
+    assert config.poll_reminder is True
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("OFF", False), ("off", False), ("On", True)])
+def test_poll_reminder_accepts_on_or_off_in_any_case(raw, expected):
+    assert Config.from_env(env(POLL_REMINDER=raw)).poll_reminder is expected
+
+
+@pytest.mark.parametrize("raw", ["1", "20"])
+def test_poll_ballot_size_accepts_the_bounds(raw):
+    assert Config.from_env(env(POLL_BALLOT_SIZE=raw)).poll_ballot_size == int(raw)
+
+
+def test_poll_lengths_parse_when_valid():
+    config = Config.from_env(env(POLL_LENGTH_SECONDS="3600", POLL_MAX_LENGTH_SECONDS="3600", POLL_MAX_RECIPIENTS="7"))
+    assert config.poll_length_seconds == 3600
+    assert config.poll_max_length_seconds == 3600
+    assert config.poll_max_recipients == 7

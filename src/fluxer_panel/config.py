@@ -72,6 +72,20 @@ def _slot_templates(env: Mapping[str, str], name: str, default: str) -> tuple[dt
     return tuple(sorted(dtime(int(m.group(1)), int(m.group(2))) for m in matches))
 
 
+def _bounded_int(env: Mapping[str, str], name: str, default: str, low: int, high: int) -> int:
+    raw = _opt(env, name) or default
+    if not _POSITIVE_INT.fullmatch(raw) or not low <= int(raw) <= high:
+        raise ConfigError(f"{name} must be an integer from {low} to {high}")
+    return int(raw)
+
+
+def _on_off(env: Mapping[str, str], name: str, default: str) -> bool:
+    raw = (_opt(env, name) or default).lower()
+    if raw not in ("on", "off"):
+        raise ConfigError(f"{name} must be on or off")
+    return raw == "on"
+
+
 @dataclass(frozen=True)
 class Config:
     token: str = field(repr=False)
@@ -108,6 +122,11 @@ class Config:
     session_length_seconds: int = 7200
     session_retention_seconds: int = 604800
     dm_backoff_seconds: int = 3600
+    poll_length_seconds: int = 86400
+    poll_max_length_seconds: int = 604800
+    poll_ballot_size: int = 6
+    poll_max_recipients: int = 50
+    poll_reminder: bool = True
 
     @property
     def pterodactyl_configured(self) -> bool:
@@ -155,6 +174,10 @@ class Config:
             raise ConfigError("PTERODACTYL_API_KEY must be printable ASCII with no spaces")
         if (pterodactyl_url is None) != (pterodactyl_key is None):
             raise ConfigError("set both PTERODACTYL_URL and PTERODACTYL_API_KEY, or neither")
+        poll_length = _positive_int(env, "POLL_LENGTH_SECONDS", "86400")
+        poll_max_length = _positive_int(env, "POLL_MAX_LENGTH_SECONDS", "604800")
+        if poll_max_length < poll_length:
+            raise ConfigError("POLL_MAX_LENGTH_SECONDS must be at least POLL_LENGTH_SECONDS")
         data_dir = Path(_opt(env, "DATA_DIR") or "data")
         return cls(
             token=token, instance_url=instance_url, api_url=api_url, gateway_url=gateway_url,
@@ -188,4 +211,9 @@ class Config:
             session_length_seconds=_positive_int(env, "SESSION_LENGTH_SECONDS", "7200"),
             session_retention_seconds=_positive_int(env, "SESSION_RETENTION_SECONDS", "604800"),
             dm_backoff_seconds=_positive_int(env, "DM_BACKOFF_SECONDS", "3600"),
+            poll_length_seconds=poll_length,
+            poll_max_length_seconds=poll_max_length,
+            poll_ballot_size=_bounded_int(env, "POLL_BALLOT_SIZE", "6", 1, 20),
+            poll_max_recipients=_positive_int(env, "POLL_MAX_RECIPIENTS", "50"),
+            poll_reminder=_on_off(env, "POLL_REMINDER", "on"),
         )
