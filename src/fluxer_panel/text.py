@@ -463,3 +463,17 @@ POLL_LIST_LINE = "{n}. {card} · {state} · {when}{link}"
 POLL_LIST_LINK = " · {link}"
 POLL_LIST_OPEN_AT = "closes <t:{ts}:F>"
 POLL_LIST_CLOSED_AT = "closed <t:{ts}:F>"
+
+# `help` and `!help` in a DM: the command heads, each with where its own help is. Admins also get HELP_ADMIN.
+HELP_TOP = (
+    "Commands, sent to me by direct message:\n"
+    "!session: list, move or cancel game sessions. Send `!session help` for the details.\n"
+    "!poll: list, vote in and manage time polls. Send `!poll help` for the details.\n"
+    "On a card, press \U0001F4C5 to propose a session or \U0001F5F3️ to start a time poll."
+)
+HELP_ADMIN = (
+    "Admin commands:\n"
+    "!card: create, edit and publish cards. Send `!card help` for the details.\n"
+    "!request: list or clear wake requests. Send `!request` for the details.\n"
+    "!admin ping: check that I am running."
+)

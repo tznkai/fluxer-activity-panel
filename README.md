@@ -192,6 +192,10 @@ channel. It shows how to join, what a first-timer should know, and optional extr
 up to three text channels, up to three server addresses, an in-person location and seats. A card for a game
 server can also show a status line, such as Asleep, Waking up or Ready with a player count.
 
+Anyone can send `help` or `!help` to the bot by direct message for a list of the command families: `!session` and
+`!poll`, each with its own `help`. An admin's list also names `!card`, `!request` and `!admin ping`. In a channel the
+bot does not answer it, and it counts toward the non-admin limit of 5 commands per 60 seconds.
+
 ### Lifecycle
 
 - **Draft:** `!card new` creates a card as a draft. A draft is never posted.

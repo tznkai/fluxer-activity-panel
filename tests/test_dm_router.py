@@ -543,3 +543,76 @@ async def test_poll_commands_and_session_commands_share_one_budget(harness) -> N
     for _ in range(3):
         await router.route(message("!poll list"))
     assert len(recorder.calls) + len(poll_commands.calls) == NON_ADMIN_LIMIT
+
+
+# `help` and `!help`: the list of command heads ------------------------------------------------------------
+
+def dm_posts(state: FakeFluxerState) -> list[Any]:
+    return [r.payload for r in state.requests if r.method == "POST" and r.path == DM_MESSAGES]
+
+
+@pytest.mark.parametrize("content", ["help", "!help", "HELP", "  !Help  "])
+async def test_help_from_a_non_admin_lists_the_member_heads_only(harness, content: str) -> None:
+    state, rest, card_ctx = harness
+    router = make_router(rest, card_ctx, NonAdminLimiter(make_config(), clock=Clock()))
+    await router.route(message(content))
+    posts = dm_posts(state)
+    assert [p["content"] for p in posts] == [text.HELP_TOP]
+    assert posts[0]["allowed_mentions"] == {"parse": []}
+    for head in ("!session", "!poll"):
+        assert head in posts[0]["content"]
+    for head in ("!card", "!request", "!admin"):
+        assert head not in posts[0]["content"]
+
+
+async def test_help_from_an_admin_also_lists_the_admin_heads(harness) -> None:
+    state, rest, card_ctx = harness
+    router = make_router(rest, card_ctx, NonAdminLimiter(make_config(), clock=Clock()))
+    await router.route(message("!help", author=ADMIN))
+    posts = dm_posts(state)
+    assert [p["content"] for p in posts] == [f"{text.HELP_TOP}\n{text.HELP_ADMIN}"]
+    for head in ("!session", "!poll", "!card", "!request", "!admin"):
+        assert head in posts[0]["content"]
+
+
+@pytest.mark.parametrize("content", ["help", "!help"])
+async def test_help_in_a_guild_channel_gets_no_reply(harness, content: str) -> None:
+    state, rest, card_ctx = harness
+    router = make_router(rest, card_ctx, NonAdminLimiter(make_config(), clock=Clock()))
+    await router.route(message(content, guild=True))
+    await router.route(message(content, author=ADMIN, guild=True))
+    assert state.requests == []
+
+
+async def test_help_from_a_bot_gets_no_reply(harness) -> None:
+    state, rest, card_ctx = harness
+    router = make_router(rest, card_ctx, NonAdminLimiter(make_config(), clock=Clock()))
+    await router.route(message("help", bot=True))
+    assert dm_posts(state) == []
+
+
+async def test_help_is_answered_before_an_open_draft_or_ballot_takes_the_reply(harness) -> None:
+    state, rest, card_ctx = harness
+    flow, polls = StubFlow(drafts=(NON_ADMIN,)), StubPolls(open_for=(NON_ADMIN,))
+    router = make_router(rest, card_ctx, NonAdminLimiter(make_config(), clock=Clock()), flow=flow, polls=polls)
+    await router.route(message("help"))
+    assert [p["content"] for p in dm_posts(state)] == [text.HELP_TOP]
+    assert flow.replies == [] and polls.replies == []
+
+
+@pytest.mark.parametrize("content", ["help me", "!helpful", "!help session"])
+async def test_only_a_bare_help_word_is_help(harness, content: str) -> None:
+    state, rest, card_ctx = harness
+    flow = StubFlow(drafts=(NON_ADMIN,))
+    router = make_router(rest, card_ctx, NonAdminLimiter(make_config(), clock=Clock()), flow=flow)
+    await router.route(message(content))
+    assert dm_posts(state) == []
+    assert flow.replies == [NON_ADMIN]   # the text went on to the draft, as any other reply
+
+
+async def test_help_counts_toward_the_non_admin_limit(harness) -> None:
+    state, rest, card_ctx = harness
+    router = make_router(rest, card_ctx, NonAdminLimiter(make_config(), clock=Clock()))
+    for _ in range(NON_ADMIN_LIMIT + 1):
+        await router.route(message("help"))
+    assert len(dm_posts(state)) == NON_ADMIN_LIMIT

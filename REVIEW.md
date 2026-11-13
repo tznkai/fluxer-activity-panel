@@ -363,13 +363,14 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 
 ## Non-admin DM path
 
-- `src/fluxer_panel/dm_router.py:119` `if event.guild_id is not None:` — a guild message goes to `admin.handle`, which refuses a command and gives no reply. Nothing from a guild channel reaches the session path.
-- `src/fluxer_panel/dm_router.py:122` `if event.author_is_bot or not is_snowflake(event.author_id):` — a bot or non-snowflake author goes to `admin.handle`, which refuses it and logs it.
+- `src/fluxer_panel/dm_router.py:138` `if event.guild_id is not None:` — a guild message goes to `admin.handle`, which refuses a command and gives no reply. Nothing from a guild channel reaches the session path.
+- `src/fluxer_panel/dm_router.py:141` `if event.author_is_bot or not is_snowflake(event.author_id):` — a bot or non-snowflake author goes to `admin.handle`, which refuses it and logs it.
+- `src/fluxer_panel/dm_router.py:144` `if _is_help(event.content, self._config.prefix):` — `help` and `!help` are answered only after the guild and bot checks, so the list is sent to a DM and never to a guild channel. A non-admin's help goes through the same limiter, and the admin heads are listed only when `admin.authorize` passes.
 - `src/fluxer_panel/dm_router.py:64` `def admit(self, user_id: str) -> bool:` — `NonAdminLimiter.admit` allows 5 commands, replies or DM reactions per 60 seconds per non-admin user.
 - `src/fluxer_panel/dm_router.py:65` `if user_id in self._config.admin_user_ids:` — admins are exempt from the limit.
-- `src/fluxer_panel/dm_router.py:127` `if not self._limiter.admit(event.author_id):` — a `!session` command from a non-admin is rate limited before it is parsed.
-- `src/fluxer_panel/dm_router.py:132` `poll_head = _head(event.content, self._config.prefix, "poll")` — a `!poll` command from a non-admin is admitted through the same non-admin limiter as `!session` (the admit call is the next branch), before it is parsed or reaches the poll commands.
-- `src/fluxer_panel/dm_router.py:139` `if admin.parse_head(event.content, self._config.prefix) is not None:` — admin heads (`!admin`, `!card`, `!request`) go to `admin.handle` unchanged, and `authorize` checks them there.
+- `src/fluxer_panel/dm_router.py:151` `if not self._limiter.admit(event.author_id):` — a `!session` command from a non-admin is rate limited before it is parsed.
+- `src/fluxer_panel/dm_router.py:156` `poll_head = _head(event.content, self._config.prefix, "poll")` — a `!poll` command from a non-admin is admitted through the same non-admin limiter as `!session` (the admit call is the next branch), before it is parsed or reaches the poll commands.
+- `src/fluxer_panel/dm_router.py:163` `if admin.parse_head(event.content, self._config.prefix) is not None:` — admin heads (`!admin`, `!card`, `!request`) go to `admin.handle` unchanged, and `authorize` checks them there.
 - `src/fluxer_panel/session_flow.py:223` `if not self._limiter.admit(user):` — a 📅 reaction in a DM uses the same limiter.
 - `src/fluxer_panel/session_commands.py:137` `return event.author_id == session.proposer_id or admin.authorize(event, self._config)` — a session change needs the proposer or an admin.
 
