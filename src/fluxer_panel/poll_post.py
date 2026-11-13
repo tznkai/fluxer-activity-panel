@@ -76,9 +76,10 @@ def _rounds(view: PollView) -> poll_count.Rounds | None:
 
 class PollPost:
     def __init__(self, *, db: Database, rest: FluxerREST, config: Config, pacer: ChannelPacer,
-                 backoff: DmBackoff | None = None, edit_delay: float = 5.0,
-                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-                 identity: BotIdentity | None = None) -> None:
+                 identity: BotIdentity, backoff: DmBackoff | None = None, edit_delay: float = 5.0,
+                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
+        """`identity` is required: unseeding removes the bot's own reactions, so wiring must pass the shared
+        BotIdentity. Its user id is None until READY; an unseed before then is logged and skipped."""
         self._db = db
         self._rest = rest
         self._config = config
@@ -183,9 +184,9 @@ class PollPost:
         view = loaded[0]
         if self._refused(view):
             return
-        bot_id = self._identity.user_id if self._identity is not None else None
+        bot_id = self._identity.user_id
         if bot_id is None:
-            log_event(log, "poll_unseed_skipped", poll_id=poll_id, reason="no_bot_id")
+            log_event(log, "poll_unseed_skipped", level=logging.WARNING, poll_id=poll_id, reason="no_bot_id")
             return
         for emoji in self._emojis(view):
             await self._pacer.wait(view.poll.channel_id)
@@ -237,11 +238,17 @@ class PollPost:
         return self._last.get(poll_id, {}).get((channel_id, message_id)) == canonical
 
     async def _run(self, poll_id: int) -> None:
-        """One task per poll: wait the debounce window, flush, and go again while changes keep arriving."""
+        """One task per poll: wait the debounce window, flush, and go again while changes keep arriving. A flush that
+        raises is logged and ends the task without raising; its marks are restored, so the next change flushes them."""
         try:
             while True:
                 await self._sleep(self._edit_delay)
-                await self.flush(poll_id)
+                try:
+                    await self.flush(poll_id)
+                except Exception as exc:  # noqa: BLE001 - a background task must not raise; the marks are restored
+                    log_event(log, "poll_flush_failed", level=logging.WARNING, poll_id=poll_id,
+                              reason=type(exc).__name__)
+                    return
                 dirty = self._dirty.get(poll_id)
                 if dirty is None or dirty.empty():
                     return
@@ -268,10 +275,25 @@ class PollPost:
         self._locks.pop(poll_id, None)
 
     async def _flush_locked(self, poll_id: int) -> bool:
-        """The flush body, run under the poll's lock. Returns True when the poll message answered 404."""
+        """The flush body, run under the poll's lock. Returns True when the poll message answered 404. The marks are
+        taken before any I/O, so a flush that raises hands them back (`_restore`) for the next change to flush."""
         dirty = self._dirty.pop(poll_id, None)
         if dirty is None or dirty.empty():
             return False
+        try:
+            return await self._edit_marked(poll_id, dirty)
+        except Exception:
+            self._restore(poll_id, dirty)
+            raise
+
+    def _restore(self, poll_id: int, dirty: _Dirty) -> None:
+        """Merges the marks of a flush that raised back into the poll's pending marks."""
+        pending = self._dirty.setdefault(poll_id, _Dirty())
+        pending.message = pending.message or dirty.message
+        pending.everyone = pending.everyone or dirty.everyone
+        pending.ballots |= dirty.ballots
+
+    async def _edit_marked(self, poll_id: int, dirty: _Dirty) -> bool:
         loaded = await self._db.run(lambda conn: _read_poll(conn, poll_id))
         if loaded is None:
             return False

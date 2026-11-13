@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+import sqlite3
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -24,7 +25,7 @@ from fluxer_panel.games import BotIdentity
 from fluxer_panel.interactions import GamesChannelRefused
 from fluxer_panel.logs import FIELDS_ATTR
 from fluxer_panel.pacer import ChannelPacer
-from fluxer_panel.poll_post import POLL_RUNOFF_EMOJI, POLL_SCHEDULE_EMOJI, PollPost
+from fluxer_panel.poll_post import POLL_RUNOFF_EMOJI, POLL_SCHEDULE_EMOJI, PollPost, _Dirty
 from tests.fakes import FakeFluxerState, Override, make_rest_app
 
 TOKEN = "poll-post-token"
@@ -66,7 +67,7 @@ async def world(tmp_path: Path, aiohttp_server: Any) -> AsyncIterator[SimpleName
             rest = FluxerREST(client, f"{base}/api", TOKEN)
             backoff = DmBackoff(3600)
             post = PollPost(db=database, rest=rest, config=config_for(), pacer=ChannelPacer(max_calls=1000),
-                            backoff=backoff, edit_delay=0, sleep=record_sleep)
+                            identity=BotIdentity(user_id=BOT), backoff=backoff, edit_delay=0, sleep=record_sleep)
             yield SimpleNamespace(db=database, state=state, rest=rest, post=post, backoff=backoff, sleeps=sleeps)
     finally:
         database.close()
@@ -337,7 +338,7 @@ async def test_seed_closed_waits_the_pacer_before_each_add(world: SimpleNamespac
 
     poll_id = await _closed_with_winner(world)
     post = PollPost(db=world.db, rest=world.rest, config=config_for(), pacer=SpyPacer(max_calls=1000),
-                    edit_delay=0, sleep=lambda _s: asyncio.sleep(0))
+                    identity=BotIdentity(user_id=BOT), edit_delay=0, sleep=lambda _s: asyncio.sleep(0))
     await post.seed_closed(poll_id)
     assert waits == [CHANNEL, CHANNEL]
     assert len(requests(world, "PUT")) == 2
@@ -400,7 +401,8 @@ async def test_aclose_cancels_a_flush_blocked_past_its_timeout(world: SimpleName
     assert POLL_KEY in world.state.gated
     await world.post.aclose(timeout=0.05)
     assert world.post._tasks == {}
-    assert not gate.is_set()
+    assert requests(world, "PATCH", POLL_PATH) == [], "the gated edit completed after the cancel"
+    gate.set()   # releases the server side of the cancelled request so the fixture can close
 
 
 async def test_a_closed_polls_cache_is_dropped_and_a_change_during_its_flush_is_not_lost(world: SimpleNamespace) -> None:
@@ -432,3 +434,196 @@ async def test_a_closed_runoff_message_shows_its_rounds(world: SimpleNamespace) 
     await settle(world)
     [edit] = requests(world, "PATCH", POLL_PATH)
     assert "Round 1:" in str(edit.payload)
+
+
+# Wiring: the bot identity is required -----------------------------------------------------------------
+
+async def test_identity_is_required_so_wiring_that_omits_it_fails_loudly(world: SimpleNamespace) -> None:
+    with pytest.raises(TypeError):
+        PollPost(db=world.db, rest=world.rest, config=config_for(), pacer=ChannelPacer(max_calls=1000))
+
+
+async def test_unseed_without_a_bot_id_sends_no_delete_and_logs_the_skip(world: SimpleNamespace,
+                                                                         caplog: pytest.LogCaptureFixture) -> None:
+    poll_id = await _closed_with_winner(world)
+    post = PollPost(db=world.db, rest=world.rest, config=config_for(), pacer=ChannelPacer(max_calls=1000),
+                    identity=BotIdentity(), edit_delay=0, sleep=lambda _s: asyncio.sleep(0))
+    caplog.set_level(logging.DEBUG)
+    await post.unseed_closed(poll_id)
+    assert requests(world, "DELETE") == []
+    skipped = [r for r in caplog.records if r.getMessage() == "poll_unseed_skipped"]
+    assert len(skipped) == 1
+    assert getattr(skipped[0], FIELDS_ATTR) == {"poll_id": poll_id, "reason": "no_bot_id"}
+
+
+# Background flush failures ----------------------------------------------------------------------------
+
+async def test_a_flush_that_raises_is_logged_ends_its_task_and_keeps_its_marks(world: SimpleNamespace,
+                                                                               monkeypatch: pytest.MonkeyPatch,
+                                                                               caplog: pytest.LogCaptureFixture) -> None:
+    poll_id = await seed(world)
+    await world.post.send_ballot(poll_id, U1)
+    options = await option_ids(world, poll_id)
+    await vote(world, poll_id, U1, [options[0]])
+    real_run = world.db.run
+    failed_once: list[bool] = []
+
+    async def fail_first_read(fn: Any) -> Any:
+        if not failed_once:
+            failed_once.append(True)
+            raise sqlite3.OperationalError("disk I/O error")
+        return await real_run(fn)
+
+    monkeypatch.setattr(world.db, "run", fail_first_read)
+    caplog.set_level(logging.DEBUG)
+    world.post.changed(poll_id, ballots=[U1])
+    task = world.post._tasks[poll_id]
+    done, _pending = await asyncio.wait({task}, timeout=5)
+    assert done == {task}
+    assert not task.cancelled() and task.exception() is None, "the background task must end without raising"
+    assert world.post._tasks == {}
+
+    failed = [r for r in caplog.records if r.getMessage() == "poll_flush_failed"]
+    assert len(failed) == 1
+    assert getattr(failed[0], FIELDS_ATTR) == {"poll_id": poll_id, "reason": "OperationalError"}
+    assert requests(world, "PATCH", POLL_PATH) == []
+
+    world.post.changed(poll_id, ballots=[])   # a later change, with no ballot of its own
+    await settle(world)
+    assert len(requests(world, "PATCH", POLL_PATH)) == 1, "the restored poll-message mark was not flushed"
+    assert len(patches_to_dm(world, U1)) == 1, "the restored ballot mark was not flushed"
+
+
+async def test_a_raising_hook_is_logged_and_the_flush_completes(world: SimpleNamespace,
+                                                                caplog: pytest.LogCaptureFixture) -> None:
+    poll_id = await seed(world)
+    await world.post.send_ballot(poll_id, U1)
+    options = await option_ids(world, poll_id)
+    await vote(world, poll_id, U1, [options[0]])
+    world.state.overrides[POLL_KEY] = Override(404, b'{"code": "UNKNOWN_MESSAGE", "message": "gone"}')
+    calls: list[int] = []
+
+    async def broken_hook(gone_poll_id: int) -> None:
+        calls.append(gone_poll_id)
+        raise RuntimeError("hook broke")
+
+    world.post.set_on_gone(broken_hook)
+    caplog.set_level(logging.DEBUG)
+    world.post.changed(poll_id)
+    await settle(world)
+    assert calls == [poll_id]
+    logged = [r for r in caplog.records if r.getMessage() == "poll_gone_hook_failed"]
+    assert len(logged) == 1
+    assert getattr(logged[0], FIELDS_ATTR) == {"poll_id": poll_id, "reason": "RuntimeError"}
+    assert len(patches_to_dm(world, U1)) == 1, "the flush went on to the ballots after the hook failed"
+
+
+# Edit and seed failures -------------------------------------------------------------------------------
+
+async def test_a_500_on_the_poll_message_is_logged_and_the_next_change_edits_it(world: SimpleNamespace,
+                                                                                caplog: pytest.LogCaptureFixture) -> None:
+    poll_id = await seed(world)
+    world.state.overrides[POLL_KEY] = Override(500, b'{"code": "INTERNAL", "message": "boom"}')
+    caplog.set_level(logging.DEBUG)
+    world.post.changed(poll_id)
+    await settle(world)
+    failed = [r for r in caplog.records if r.getMessage() == "poll_edit_failed"]
+    assert len(failed) == 1
+    assert getattr(failed[0], FIELDS_ATTR) == {"poll_id": poll_id, "reason": "http_500"}
+    assert (CHANNEL, POLL_MSG) not in world.post._last.get(poll_id, {})
+
+    del world.state.overrides[POLL_KEY]
+    world.post.changed(poll_id)
+    await settle(world)
+    assert len(requests(world, "PATCH", POLL_PATH)) == 2
+    assert (CHANNEL, POLL_MSG) in world.post._last[poll_id], "the next change did not edit the message"
+
+
+async def test_a_failing_seed_is_logged_and_later_seeds_stop(world: SimpleNamespace,
+                                                             caplog: pytest.LogCaptureFixture) -> None:
+    poll_id = await _closed_with_winner(world)
+    world.state.overrides[f"PUT /api/v1/channels/{CHANNEL}/messages/{POLL_MSG}/reactions/"
+                          f"{POLL_SCHEDULE_EMOJI}/@me"] = Override(500, b'{"code": "INTERNAL", "message": "boom"}')
+    caplog.set_level(logging.DEBUG)
+    await world.post.seed_closed(poll_id)
+    assert [r.path.rsplit("/", 2)[-2] for r in requests(world, "PUT")] == [POLL_SCHEDULE_EMOJI]
+    failed = [r for r in caplog.records if r.getMessage() == "poll_seed_failed"]
+    assert len(failed) == 1
+    assert getattr(failed[0], FIELDS_ATTR) == {"poll_id": poll_id, "reason": "http_500"}
+
+
+@pytest.mark.parametrize("status", [404, 500])
+async def test_an_unseed_failure_is_logged_only_when_it_is_not_a_404_and_the_next_emoji_is_still_removed(
+        world: SimpleNamespace, caplog: pytest.LogCaptureFixture, status: int) -> None:
+    poll_id = await _closed_with_winner(world)
+    world.state.overrides[f"DELETE /api/v1/channels/{CHANNEL}/messages/{POLL_MSG}/reactions/"
+                          f"{POLL_SCHEDULE_EMOJI}/{BOT}"] = Override(status, b'{"code": "X", "message": "x"}')
+    caplog.set_level(logging.DEBUG)
+    await world.post.unseed_closed(poll_id)
+    assert [r.path.rsplit("/", 2)[-2] for r in requests(world, "DELETE")] == [POLL_SCHEDULE_EMOJI, POLL_RUNOFF_EMOJI]
+    failed = [r for r in caplog.records if r.getMessage() == "poll_unseed_failed"]
+    if status == 404:
+        assert failed == []
+    else:
+        assert len(failed) == 1
+        assert getattr(failed[0], FIELDS_ATTR) == {"poll_id": poll_id, "reason": f"http_{status}"}
+
+
+# One flush per poll at a time ------------------------------------------------------------------------
+
+def _mark(post: PollPost, poll_id: int) -> None:
+    """Marks the poll message dirty without starting the poll's background task."""
+    post._dirty.setdefault(poll_id, _Dirty()).message = True
+
+
+async def _until(predicate: Callable[[], bool], timeout: float = 5.0) -> None:
+    async def spin() -> None:
+        while not predicate():
+            await asyncio.sleep(0)
+    await asyncio.wait_for(spin(), timeout)
+
+
+async def test_flushes_of_one_poll_share_one_lock_and_their_edits_never_overlap(
+        world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A flush holds the poll's PATCH while a second flush queues on the lock. When the first releases it with the
+    queue still waiting, the lock must stay: dropping it would let a third flush run beside the queued one."""
+    poll_id = await seed(world)
+    post = world.post
+    original = world.rest.edit_message
+    held = asyncio.Event()
+    release = asyncio.Event()
+    inside = 0
+    peak = 0
+    holds = 0
+
+    async def spy(channel_id: str, message_id: str, **kwargs: Any) -> Any:
+        nonlocal inside, peak, holds
+        inside += 1
+        peak = max(peak, inside)
+        try:
+            result = await original(channel_id, message_id, **kwargs)
+            if holds == 0:
+                holds += 1
+                held.set()
+                await release.wait()     # the first flush keeps its lock here, after the edit
+            return result
+        finally:
+            inside -= 1
+
+    monkeypatch.setattr(world.rest, "edit_message", spy)
+    _mark(post, poll_id)
+    first = asyncio.create_task(post.flush(poll_id))
+    await asyncio.wait_for(held.wait(), timeout=5)
+    lock = post._locks[poll_id]
+
+    queued = asyncio.create_task(post.flush(poll_id))       # no marks: it waits for the lock, then returns
+    await _until(lambda: post._users.get(poll_id) == 2)
+
+    release.set()
+    await asyncio.sleep(0)                                   # the first flush finishes; the queued one has not run
+    assert post._locks.get(poll_id) is lock, "the lock was dropped while a flush was still queued on it"
+
+    _mark(post, poll_id)
+    third = asyncio.create_task(post.flush(poll_id))
+    await asyncio.wait_for(asyncio.gather(first, queued, third), timeout=5)
+    assert peak == 1, "two flushes of one poll held their PATCH at the same time"

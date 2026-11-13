@@ -347,12 +347,12 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 
 ## Poll channel guard
 
-- `src/fluxer_panel/poll_post.py:103` `if channel_id == self._config.games_channel_id:` — `send_poll` checks the games channel before any REST call.
-- `src/fluxer_panel/poll_post.py:104` `raise GamesChannelRefused` — the refusal for a poll send.
-- `src/fluxer_panel/poll_post.py:218` `if view.poll.channel_id == self._config.games_channel_id:` — `_refused` makes the same check against a stored poll's channel, for every flush, closed-poll seed and unseed.
-- `src/fluxer_panel/poll_post.py:279` `if self._refused(view):` — `_flush_locked` refuses a stored games channel before any edit.
-- `src/fluxer_panel/poll_post.py:117` `sent = await notify.dm_user(self._rest, user_id, content, backoff=self._backoff)` — a ballot DM goes through the DM helper, which sends empty mentions and honours the DM backoff.
-- `src/fluxer_panel/poll_post.py:323` `allowed_mentions={"parse": []})` — the ballot edit carries empty `allowed_mentions`.
+- `src/fluxer_panel/poll_post.py:104` `if channel_id == self._config.games_channel_id:` — `send_poll` checks the games channel before any REST call.
+- `src/fluxer_panel/poll_post.py:105` `raise GamesChannelRefused` — the refusal for a poll send.
+- `src/fluxer_panel/poll_post.py:219` `if view.poll.channel_id == self._config.games_channel_id:` — `_refused` makes the same check against a stored poll's channel, for every flush, closed-poll seed and unseed.
+- `src/fluxer_panel/poll_post.py:301` `if self._refused(view):` — `_edit_marked` (run by `_flush_locked`) refuses a stored games channel before any edit.
+- `src/fluxer_panel/poll_post.py:118` `sent = await notify.dm_user(self._rest, user_id, content, backoff=self._backoff)` — a ballot DM goes through the DM helper, which sends empty mentions and honours the DM backoff.
+- `src/fluxer_panel/poll_post.py:345` `allowed_mentions={"parse": []})` — the ballot edit carries empty `allowed_mentions`.
 
 ## Non-admin DM path
 
