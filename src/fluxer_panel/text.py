@@ -278,6 +278,18 @@ SESSION_TIME_REFUSED = {
     "past": "That time has already passed.",
     "too_far": "That's more than 60 days away.",
 }
+# Poll replies: the refusal for each reason in `poll_reply.REASONS`, and the line that names the item.
+POLL_REPLY_ITEM = "Item {index}: {reason}"
+POLL_REPLY_REFUSED = {
+    "empty": "there's nothing there. Separate items with commas, like `a, c`.",
+    "keyword_alone": "`all` and `clear` must be the whole reply.",
+    "too_many": "that's too many items. Use 20 or fewer.",
+    "no_option": "there's no option with that letter.",
+    "too_soon": "that time is less than an hour away.",
+    "letters_only": "this is a runoff, so reply with letters only.",
+    "no_all": "this is a runoff, so `all` doesn't work. Rank the letters instead, favourite first.",
+    "repeated": "each letter can appear only once.",
+}
 # The session message: the field names, the When and counts lines, the footer and the closed-form statuses.
 SESSION_FIELD_WHEN = "When"
 SESSION_FIELD_LOCATION = "Location"
