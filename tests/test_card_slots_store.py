@@ -43,7 +43,7 @@ async def _get(db: Database, card_id: int) -> cards.Card:
 async def test_v6_slots_migrate_to_slot_one_with_no_suffix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "panel.db"
     real_migrations = dbmod.load_migrations()
-    assert [version for version, _ in real_migrations] == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert [version for version, _ in real_migrations] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
 
     monkeypatch.setattr(dbmod, "load_migrations", lambda: real_migrations[:6])
     monkeypatch.setattr(dbmod, "LATEST_VERSION", 6)
@@ -68,7 +68,7 @@ async def test_v6_slots_migrate_to_slot_one_with_no_suffix(tmp_path: Path, monke
     finally:
         database.close()
 
-    assert version == dbmod.LATEST_VERSION == 8
+    assert version == dbmod.LATEST_VERSION == 9
     assert card is not None
     assert card.voices == (ChannelLink("2001", "3001", "Lobby", True), None, None)
     assert card.text_channels == (ChannelLink("2001", "3101", "builds", True), ChannelLink("2001", "3102", None, False),

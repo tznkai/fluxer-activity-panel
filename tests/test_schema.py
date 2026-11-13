@@ -43,12 +43,19 @@ ALLOWED_COLUMNS: dict[str, set[str]] = {
     "interactions": {"id", "enabled"},
     "card_interactions_off": {"card_id"},
     "reaction_degraded": {"channel_id", "alerted_at", "last_retry_at"},
+    "polls": {"id", "card_id", "guild_id", "channel_id", "message_id", "starter_id", "kind", "parent_poll_id", "state",
+              "created_at", "closes_at", "closed_at", "ballot_size", "pending_ballot_size", "sorted_at", "outcome",
+              "winner_option_id", "session_id"},
+    "poll_options": {"id", "poll_id", "position", "starts_at", "origin"},
+    "poll_ballots": {"poll_id", "user_id", "dm_channel_id", "dm_message_id", "dm_failed", "answered", "reminded"},
+    "poll_votes": {"poll_id", "user_id", "option_id", "rank"},
 }
 
 STRICT_TABLES = {"card_location", "card_voice", "card_text_channel", "card_address", "card_manager", "card_probe",
                  "card_subscription",
                  "card_runtime", "board", "wake_request_dm", "card_follow_role", "card_play_now_channel",
-                 "play_now", "interactions", "card_interactions_off", "reaction_degraded", "rsvp_reaction"}
+                 "play_now", "interactions", "card_interactions_off", "reaction_degraded", "rsvp_reaction",
+                 "polls", "poll_options", "poll_ballots", "poll_votes"}
 
 FORBIDDEN_TOKENS = {"nick", "nickname", "age", "birth", "birthday", "dob", "gender",
                     "member", "membership", "group"}

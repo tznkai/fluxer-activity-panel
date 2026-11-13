@@ -59,7 +59,7 @@ async def test_v7_database_migrates_to_v8_and_keeps_the_family_tables(tmp_path: 
                                                                     monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "panel.db"
     real_migrations = dbmod.load_migrations()
-    assert [version for version, _ in real_migrations] == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert [version for version, _ in real_migrations] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
 
     monkeypatch.setattr(dbmod, "load_migrations", lambda: real_migrations[:7])
     monkeypatch.setattr(dbmod, "LATEST_VERSION", 7)
@@ -99,7 +99,7 @@ async def test_v7_database_migrates_to_v8_and_keeps_the_family_tables(tmp_path: 
     finally:
         database.close()
 
-    assert state["version"] == dbmod.LATEST_VERSION == 8
+    assert state["version"] == dbmod.LATEST_VERSION == 9
     assert state["sessions"] == SESSION_COLUMNS
     assert state["reaction"] == REACTION_COLUMNS
     assert state["rsvps"] == RSVP_COLUMNS
