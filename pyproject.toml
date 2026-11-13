@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fluxer-activity-panel"
-version = "0.2.0"
+version = "0.4.0"
 description = "Fluxer activity panel bot and a reusable Fluxer client"
 readme = "README.md"
 license = "AGPL-3.0-or-later"

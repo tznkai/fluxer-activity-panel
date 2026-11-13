@@ -591,6 +591,9 @@ That is not a refusal and does not quarantine anything.
 
 ### v0.4.0
 
+- v0.3.0 was not released on its own. Upgrading from v0.2.0 applies both sets of notes below, and the database moves
+  from schema 7 to 9 in one start, writing a single `.pre-v8` copy (no `.pre-v9`).
+- `help` or `!help` in a DM lists the command heads; admins also get the admin heads.
 - No new variable is required. Every poll setting has a default. A bad value exits with code 2, and so does a
   `POLL_MAX_LENGTH_SECONDS` below `POLL_LENGTH_SECONDS`.
 - Back up the database before upgrading. The bot also writes a `.pre-v9` copy beside the database before it applies
