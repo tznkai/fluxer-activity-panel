@@ -102,6 +102,18 @@ Sessions (see Sessions under Cards):
   direct message for this long. Promotion, cancel, move and series-stopped messages, and the wake request close
   messages (ready, expired and cleared), bypass the backoff. Admin messages never use it.
 
+Polls (see Polls under Cards). Every one has a default, so none is required. A bad value exits with code 2:
+
+- `POLL_LENGTH_SECONDS` (default `86400`): how long a poll stays open after it starts.
+- `POLL_MAX_LENGTH_SECONDS` (default `604800`): the most a poll may run, counted from its start. It caps `!poll extend`.
+  It must be at least `POLL_LENGTH_SECONDS`.
+- `POLL_BALLOT_SIZE` (default `6`): how many options a ballot shows, from 1 to 20.
+- `POLL_MAX_RECIPIENTS` (default `50`): how many people a poll sends a ballot to. The starter counts toward it.
+- `POLL_REMINDER` (default `on`): `on` or `off`. When it is on, each recipient who has not answered gets one reminder
+  at the halfway point.
+
+`POLL_INTERVAL_SECONDS` is the poller's tick, not a poll setting.
+
 Hand-run tools only (`tools/live/`, see `CLAUDE.md`): `LIVE_GUILD_ID`, `LIVE_CHANNEL_ID`,
 `LIVE_USER_ID`, `LIVE_ROLE_ID`, `LIVE_HIGH_ROLE_ID`, `LIVE_PTERO_SERVERS`, `LIVE_PROBES`,
 `LIVE_VOICE_CHANNEL_ID` and `LIVE_OTHER_GUILD_ID`. The
@@ -136,6 +148,8 @@ The purge also deletes:
 
 - a request created more than 30 days ago, whatever its status.
 - a play-now post created more than 30 days ago, whatever its state.
+- a closed poll that was closed more than `SESSION_RETENTION_SECONDS` ago, with its options, ballots and votes. A closed
+  poll has no REST call, so the `purge` subcommand deletes these too.
 
 The cutoffs are strict: a row exactly at a cutoff is kept.
 
@@ -150,7 +164,7 @@ so a monitor running as another user can read it. It holds only timestamps and c
  "last_success_at": 1767225600,
  "last_attempt_at": 1767225600,
  "ok": true,
- "deleted": {"sessions": 0, "rsvps": 0, "requests": 0, "play_now": 0},
+ "deleted": {"sessions": 0, "rsvps": 0, "requests": 0, "play_now": 0, "polls": 0},
  "sessions_deferred": 2,
  "schema_version": 2
 }
@@ -160,12 +174,13 @@ so a monitor running as another user can read it. It holds only timestamps and c
   and a failed attempt keeps the previous value.
 - `last_attempt_at`: when the latest attempt ran, successful or not.
 - `ok`: whether the latest attempt succeeded. `deleted` holds that attempt's counts (zeros on failure):
-  `sessions`, `rsvps`, `requests` and `play_now` (the play-now posts deleted).
+  `sessions`, `rsvps`, `requests`, `play_now` (the play-now posts deleted) and `polls` (the closed polls deleted).
   A checkpoint failure after the commit is reported as `ok: false` with zero `deleted`, but the rows may already be
   gone. The next run checkpoints again.
 - `sessions_deferred`: the number of due sessions that the `purge` subcommand left in place, because it cannot scrub
   them. Deferred sessions are not counted in `deleted`. A `run` purge always reports 0 here. The running bot deletes
-  the deferred sessions at its next purge. `schema_version` is 2 for this layout.
+  the deferred sessions at its next purge. `schema_version` is 2 for this layout; the `polls` key was added without
+  a version change.
 
 Alert when `last_success_at` is `null` or older than twice `PURGE_INTERVAL_SECONDS`. A missing
 file means the bot has never run a purge.
@@ -363,6 +378,83 @@ series in place; run `!session repeat <session> off` before cancelling, or on th
 same way and stops their series. When a session's message is deleted, the session is cancelled and its attendees are
 told.
 
+### Polls
+
+A time poll asks a card's people which of several times they can make. It is posted in the card's session channel, so
+a card needs one, as for sessions. Polls never post to the games channel.
+
+**Starting.** A press on the ballot box (🗳️) on the card, or on a home copy in the games community, posts the poll and
+DMs a ballot to each recipient. The poll offers up to six times, soonest first, from the same slots as 📅. The
+recipients are the starter and the holders of the card's follow role, bots excluded. When `POLL_MAX_RECIPIENTS` cuts
+the list, the holders with the highest ids are left out, and the starter is told how many. A card with no follow role
+sends a ballot only to the starter, and the starter is told that too. If the member list cannot be read, the start is
+refused with a direct message, and nothing is posted. A card has one open poll at a time: a second press links the open
+one. A press on a copy outside the games community only points back to the card.
+
+**Voting.** A ballot is a direct message to the bot. Its first line names the poll, as `Time poll 7 for <card>.` or
+`Runoff 8 for <card>.`, so a voter with several ballots can tell them apart. Reply with letters, like `a, c`, to pick times. Or type a time in
+`SESSION_TIME_ZONE`, in a form 📅 accepts, like `fri 20:00`, to add a time to the poll for everyone. A typed time must
+be at least an hour away and within 60 days. Mix both, like `a, fri 20:00`. `all` picks every time the ballot shows, and
+`clear` removes your picks. Each reply replaces your last one. A refused reply names the item that failed, such as
+`Item 2: That time is less than an hour away.`. With more than one open poll, a plain reply changes nothing and lists the
+open polls: reply with `!poll vote <poll> <reply>` to pick one.
+
+**The poll message.** It lists the times with their votes, the current leader, how many people have answered, and the
+close time. It never shows who voted.
+
+**Closing.** A poll closes at its close time, which is `POLL_LENGTH_SECONDS` after it starts unless `!poll extend`
+moves it. The poller wakes for that time, so the poll closes at that time or on the first tick after it. A time less
+than an hour away is left out of the count, so a winner is always a time that can still be scheduled. The winner is the
+time with the most votes, and a tie goes to the soonest time. A poll with no votes has no winner. When reminders are on,
+each recipient who has not answered gets one reminder at the halfway point. A recipient in DM backoff is skipped, and can
+still get the reminder if the backoff ends before the close.
+
+After a close with a winner, the poll message gets 📅 and 🔁 for the starter and admins to press. A runoff's message gets
+only 📅. Pressing either removes the presser's reaction, and only the starter or an admin acts.
+
+- 📅 schedules the winning time as a session in the card's session channel. The starter is the proposer, and each voter
+  for that time is a maybe. The starter and each voter get one direct message with the link. A winning time less than an
+  hour away, or a starter at the limit of upcoming sessions for the card, gets a direct message to the presser and
+  nothing is created. A poll that already has a session does nothing.
+- 🔁 starts a runoff on a closed poll with a winner. Its candidates are the top three usable times that have votes,
+  ranked by votes and then soonest. They are offered as letters a to c in that rank order. The ballots go to the same
+  recipients, with the member list read again, and the runoff keeps the starter. Voters rank the times they can make,
+  favourite first, like `b, a, c`, and may rank as many as they like. Runoff replies take letters only, so `all` does
+  not work there.
+  The runoff is counted by instant runoff. A time with more than half of the first choices still counting wins.
+  Otherwise the time with the fewest first choices is dropped, a tie for fewest drops the later time, and its ballots
+  move to their next choice. With two times left and no majority, the time with more first choices wins, and a tie goes
+  to the soonest.
+  A poll can have one runoff. 🔁 is refused with a direct message when there already is one, when fewer than two usable
+  times have votes (the message says to press 📅 instead), and when there is too little time for one.
+  A runoff closes at the earlier of two times: `POLL_LENGTH_SECONDS` after it starts, or one hour and ten minutes
+  before its earliest candidate time. The ten minutes are a margin, so every candidate is still usable when a late tick
+  closes it. If less than 15 minutes would remain, 🔁 is refused and the presser is told to use 📅. A closed runoff gets
+  only 📅.
+
+**Commands.** A poll is named by its number, which its footer shows as `Poll <n>` and `!poll list` shows, or by its
+message link. A member's `!poll list` shows the polls they started or were sent, newest first. An admin's also shows
+every open poll. Poll commands and ballot replies share the direct-message limit for non-admins, 5 per 60 seconds, and
+admins are exempt. An admin can run every command.
+
+```
+!poll list                        your polls, newest first; an admin also sees every open poll
+!poll vote <poll> <reply>         a ballot reply, needed when you have more than one open poll
+!poll sort <poll>                 re-letters the times by votes, then soonest (starter or admin)
+!poll shown <poll> <1-20>         how many times a ballot shows, from the next sort (starter or admin)
+!poll extend <poll> [duration]    moves the close later: 90m, 12h or 2d; default POLL_LENGTH_SECONDS (starter or admin)
+!poll close <poll>                closes it now, with the winner so far (starter or admin)
+!poll help                        lists these commands
+```
+
+`!poll extend` cannot make a poll run longer than `POLL_MAX_LENGTH_SECONDS` from when it started. `!poll shown` does not
+change the ballots until the next `!poll sort`, which also re-letters the times.
+
+**Archive and the kill switch.** `!card archive` closes the card's open poll with no winner, before it deletes the
+card's messages. A poll whose message the bot finds deleted when it next edits it closes as removed. `!card interactions
+off` removes the ballot box (🗳️) from the card's messages and copies. It does not close open polls and does not touch
+poll messages, so 📅 and 🔁 stay on closed polls.
+
 ### Fields
 
 - `title` (up to 200 characters), `description`, `join` (how to join) and `first_time` (up to 1000
@@ -483,6 +575,19 @@ such as the data directory could not be created (for example, its parent is a re
 That is not a refusal and does not quarantine anything.
 
 ## Release notes
+
+### v0.4.0
+
+- No new variable is required. Every poll setting has a default. A bad value exits with code 2, and so does a
+  `POLL_MAX_LENGTH_SECONDS` below `POLL_LENGTH_SECONDS`.
+- Back up the database before upgrading. The bot also writes a `.pre-v9` copy beside the database before it applies
+  the migration.
+- The schema moves to 9 and adds the poll tables: polls, their options, ballots and votes. v0.3.0 refuses a v9 database
+  (exit 3, reason `schema_newer`) and leaves the file unchanged, so a downgrade means restoring the `.pre-v9` backup.
+- Cards and home copies that have a session channel gain 🗳️ after 📅, which is seeded on the next reconcile.
+- The purge status file gains `deleted.polls`. `schema_version` stays 2.
+- Starting a poll, and each runoff, reads the community's member list once to find the follow role's holders. A
+  failed read refuses the start. The live check for this is in `docs/fluxer-notes.md`.
 
 ### v0.3.0
 
