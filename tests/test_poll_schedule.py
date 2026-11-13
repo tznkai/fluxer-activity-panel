@@ -29,7 +29,7 @@ from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.interactions import Interactions
 from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.poll_close import PollCloser
-from fluxer_panel.poll_flow import PollFlow
+from fluxer_panel.poll_flow import RUNOFF_CLOSE_MARGIN, PollFlow
 from fluxer_panel.poll_jobs import PollJobs
 from fluxer_panel.poll_post import PollPost
 from fluxer_panel.presses import Presses
@@ -555,7 +555,7 @@ async def test_a_runoff_closes_an_hour_before_its_earliest_time_with_the_default
 
     runoff = await runoff_of(world, parent)
     assert runoff is not None
-    assert runoff.closes_at == ONE - 3600           # capped: the default length would close it a day out
+    assert runoff.closes_at == ONE - 3600 - RUNOFF_CLOSE_MARGIN   # capped: the default length would close it a day out
     await reply(world, STARTER, "a")
     world.clock.now = runoff.closes_at
     await world.jobs.run()
@@ -585,7 +585,7 @@ async def test_a_runoff_whose_times_are_all_far_away_runs_the_full_poll_length(w
 async def test_a_runoff_with_under_fifteen_minutes_to_run_starts_nothing_and_says_so(world: World) -> None:
     parent = await closed_three_way(world)
     members(world.state, STARTER, VOTER_A, VOTER_G)
-    world.clock.now = ONE - 3600 - 600              # the earliest time is 70 minutes away: 10 minutes of runoff
+    world.clock.now = ONE - 3600 - 600              # the earliest time is 70 minutes away: no room once the margin is taken
 
     await react(world, ADMIN, RUNOFF)
 
@@ -599,13 +599,29 @@ async def test_a_runoff_with_under_fifteen_minutes_to_run_starts_nothing_and_say
 async def test_a_runoff_with_exactly_fifteen_minutes_to_run_starts(world: World) -> None:
     parent = await closed_three_way(world)
     members(world.state, STARTER, VOTER_A, VOTER_G)
-    world.clock.now = ONE - 3600 - 900
+    world.clock.now = ONE - 3600 - RUNOFF_CLOSE_MARGIN - 900   # exactly 15 minutes between now and the close
 
     await react(world, ADMIN, RUNOFF)
 
     runoff = await runoff_of(world, parent)
     assert runoff is not None
-    assert runoff.closes_at == ONE - 3600
+    assert runoff.closes_at == ONE - 3600 - RUNOFF_CLOSE_MARGIN
+
+
+@pytest.mark.parametrize("world", [{"length": None}], indirect=True)
+async def test_a_runoff_closed_by_a_tick_five_minutes_late_still_ranks_its_earliest_time(world: World) -> None:
+    parent = await closed_three_way(world)
+    members(world.state, STARTER, VOTER_A, VOTER_G)
+    await react(world, ADMIN, RUNOFF)
+    runoff = await runoff_of(world, parent)
+    assert runoff is not None
+    await reply(world, STARTER, "a")                # the only ballot ranks the earliest time
+    world.clock.now = runoff.closes_at + 300        # the tick that closes it runs five minutes after closes_at
+    await world.jobs.run()
+    await world.post.drain()
+    closed = await stored(world, runoff.id)
+    assert (closed.state, closed.outcome) == ("closed", "winner")
+    assert closed.winner_option_id == await option_of(world, runoff.id, ONE)
 
 
 # Review fixes: the variation selector, a closed runoff, the presser's refusals and the texts ---------------------

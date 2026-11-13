@@ -94,7 +94,7 @@ Paths are relative to this directory.
 
 - `src/fluxer_panel/presses.py:174` `if event.guild_id is None or event.user_id == self._identity.user_id or event.user_is_bot:` — DM reactions, the bot's own reactions and another bot's reactions never reach the press adapter.
 - `src/fluxer_panel/presses.py:190` `in POLL_ACTION_EMOJI:` — 📅 and 🔁 on a poll message go to the poll flow before the kill switch and the rate limits, and only an add counts; a removal reaches nothing, because the poll flow removes the presser's reaction.
-- `src/fluxer_panel/poll_flow.py:242` `if user_id != poll.starter_id and not admin.is_admin_id(user_id, self._config):` — a 📅 or 🔁 on a poll message acts only for the poll's starter or a listed admin; anyone else's is removed and does nothing.
+- `src/fluxer_panel/poll_flow.py:246` `if user_id != poll.starter_id and not admin.is_admin_id(user_id, self._config):` — a 📅 or 🔁 on a poll message acts only for the poll's starter or a listed admin; anyone else's is removed and does nothing.
 - `src/fluxer_panel/presses.py:207` `if found is None or not found.switched_on:` — the kill switch, the global one and the card's own, is read before any rate limit, so a switched-off surface absorbs nothing and counts nothing.
 - `src/fluxer_panel/presses.py:254` `if last is not None and now - last < self._config.press_user_window_seconds:` — the per-user window. A repeated press from one user inside it is absorbed.
 - `src/fluxer_panel/presses.py:262` `if len(times) >= self._config.press_card_burst:` — the per-card burst limit. A card's presses past the burst are absorbed.

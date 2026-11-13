@@ -36,6 +36,10 @@ from fluxer_panel.presses import RUNOFF_EMOJI, SESSION_EMOJI, Press
 log = logging.getLogger(__name__)
 
 MIN_RUNOFF_SECONDS = 900   # a runoff must have at least this long to run, or it is refused (it would close too soon)
+# A runoff closes this much before its earliest candidate's usability boundary (one hour before it). The poller closes a
+# due poll on the first tick at or after closes_at, which can be late, and PollCloser ranks usable options at the time
+# it runs. The margin keeps the earliest candidate usable when a late tick closes the runoff.
+RUNOFF_CLOSE_MARGIN = 600
 
 
 @dataclass(frozen=True)
@@ -318,9 +322,11 @@ class PollFlow:
         if len(top) < 2:
             await self._dm(presser, text.POLL_RUNOFF_NEEDS_TWO)
             return self._refused_poll(poll_id, "runoff", "needs_two")
-        # The runoff closes an hour before its earliest time at the latest, so every candidate is still usable at close.
+        # The runoff closes an hour and the close margin before its earliest time at the latest, so every candidate is
+        # still usable when a late tick closes it.
         earliest = min(option.starts_at for option in top)
-        closes_at = min(now + self._config.poll_length_seconds, earliest - poll_count.LEAD_SECONDS)
+        closes_at = min(now + self._config.poll_length_seconds,
+                        earliest - poll_count.LEAD_SECONDS - RUNOFF_CLOSE_MARGIN)
         if closes_at - now < MIN_RUNOFF_SECONDS:
             await self._dm(presser, text.POLL_RUNOFF_TOO_SOON.format(ts=earliest))
             return self._refused_poll(poll_id, "runoff", "too_soon")
