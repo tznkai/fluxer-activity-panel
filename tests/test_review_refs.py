@@ -62,6 +62,7 @@ TOPICS = [
     "Session purge scrub",
     "Waitlist promotion",
     "Session channel guard",
+    "Poll channel guard",
     "Non-admin DM path",
     "DM backoff",
     "What the phase 1 prompt got wrong",

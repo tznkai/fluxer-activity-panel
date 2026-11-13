@@ -345,6 +345,15 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/session_post.py:72` `raise GamesChannelRefused` — the refusal for a session edit.
 - `src/fluxer_panel/session_jobs.py:253` `send_session(session.channel_id, payload)` — a recurrence posts the next occurrence to the session's own channel, which the guard above keeps out of the games channel.
 
+## Poll channel guard
+
+- `src/fluxer_panel/poll_post.py:103` `if channel_id == self._config.games_channel_id:` — `send_poll` checks the games channel before any REST call.
+- `src/fluxer_panel/poll_post.py:104` `raise GamesChannelRefused` — the refusal for a poll send.
+- `src/fluxer_panel/poll_post.py:218` `if view.poll.channel_id == self._config.games_channel_id:` — `_refused` makes the same check against a stored poll's channel, for every flush, closed-poll seed and unseed.
+- `src/fluxer_panel/poll_post.py:279` `if self._refused(view):` — `_flush_locked` refuses a stored games channel before any edit.
+- `src/fluxer_panel/poll_post.py:117` `sent = await notify.dm_user(self._rest, user_id, content, backoff=self._backoff)` — a ballot DM goes through the DM helper, which sends empty mentions and honours the DM backoff.
+- `src/fluxer_panel/poll_post.py:323` `allowed_mentions={"parse": []})` — the ballot edit carries empty `allowed_mentions`.
+
 ## Non-admin DM path
 
 - `src/fluxer_panel/dm_router.py:105` `if event.guild_id is not None:` — a guild message goes to `admin.handle`, which refuses a command and gives no reply. Nothing from a guild channel reaches the session path.
