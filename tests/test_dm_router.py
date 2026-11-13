@@ -70,6 +70,20 @@ class StubFlow:
         self.replies.append(event.author_id)
 
 
+class StubPolls:
+    """Stands in for the poll flow: a set of users with an open ballot, and the replies it was given."""
+
+    def __init__(self, open_for: tuple[str, ...] = ()) -> None:
+        self.open_for = set(open_for)
+        self.replies: list[str] = []
+
+    async def has_open_ballot(self, user_id: str) -> bool:
+        return user_id in self.open_for
+
+    async def on_reply(self, event: events.MessageCreate) -> None:
+        self.replies.append(event.author_id)
+
+
 def make_config() -> Config:
     return Config.from_env({"FLUXER_TOKEN": TOKEN, "SESSION_TIME_ZONE": "UTC",
                             "FLUXER_INSTANCE_URL": "https://fluxer.invalid", "ADMIN_USER_IDS": ADMIN})
@@ -118,9 +132,10 @@ def panel_records(caplog: pytest.LogCaptureFixture, event: str) -> list[logging.
 
 
 def make_router(rest: FluxerREST, card_ctx: CardContext | None, limiter: NonAdminLimiter, *,
-                recorder: Recorder | None = None, flow: StubFlow | None = None) -> DmRouter:
+                recorder: Recorder | None = None, flow: StubFlow | None = None,
+                polls: StubPolls | None = None) -> DmRouter:
     return DmRouter(config=make_config(), rest=rest, card_ctx=card_ctx, limiter=limiter, session_flow=flow,
-                    session_commands=recorder)
+                    session_commands=recorder, poll_flow=polls)
 
 
 @pytest.fixture
@@ -383,3 +398,65 @@ async def test_bot_sends_a_dm_through_the_router(harness) -> None:
                                              "author": {"id": NON_ADMIN, "bot": False}})
     assert recorder.calls == [("list", NON_ADMIN)]
     assert state.requests == []
+
+
+# Poll replies: the open ballot route, after the draft route -----------------------------------------------
+
+async def test_a_user_with_a_draft_and_an_open_ballot_reaches_the_draft_only(harness) -> None:
+    _, rest, card_ctx = harness
+    flow, polls = StubFlow(drafts=(NON_ADMIN,)), StubPolls(open_for=(NON_ADMIN,))
+    router = make_router(rest, card_ctx, NonAdminLimiter(make_config(), clock=Clock()), flow=flow, polls=polls)
+    await router.route(message("a, c"))
+    assert flow.replies == [NON_ADMIN]
+    assert polls.replies == []
+
+
+async def test_a_user_with_only_an_open_ballot_reaches_the_poll_flow(harness) -> None:
+    _, rest, card_ctx = harness
+    flow, polls = StubFlow(), StubPolls(open_for=(NON_ADMIN,))
+    router = make_router(rest, card_ctx, NonAdminLimiter(make_config(), clock=Clock()), flow=flow, polls=polls)
+    await router.route(message("a, c"))
+    assert polls.replies == [NON_ADMIN]
+    assert flow.replies == []
+
+
+async def test_a_plain_dm_with_no_draft_and_no_ballot_goes_nowhere(harness) -> None:
+    state, rest, card_ctx = harness
+    flow, polls = StubFlow(), StubPolls()
+    router = make_router(rest, card_ctx, NonAdminLimiter(make_config(), clock=Clock()), flow=flow, polls=polls)
+    await router.route(message("a, c"))
+    assert polls.replies == [] and flow.replies == []
+    assert state.requests == []
+
+
+# AC3.9: poll replies share the non-admin budget ---------------------------------------------------------
+
+async def test_six_poll_replies_in_a_minute_give_five_and_a_silent_drop(harness) -> None:
+    state, rest, card_ctx = harness
+    polls = StubPolls(open_for=(NON_ADMIN,))
+    router = make_router(rest, card_ctx, NonAdminLimiter(make_config(), clock=Clock()), polls=polls)
+    for _ in range(NON_ADMIN_LIMIT + 1):
+        await router.route(message("a"))
+    assert len(polls.replies) == NON_ADMIN_LIMIT
+    assert state.requests == []
+
+
+async def test_session_commands_and_poll_replies_share_one_budget(harness) -> None:
+    _, rest, card_ctx = harness
+    recorder, polls = Recorder(), StubPolls(open_for=(NON_ADMIN,))
+    router = make_router(rest, card_ctx, NonAdminLimiter(make_config(), clock=Clock()), recorder=recorder, polls=polls)
+    await router.route(message("!session list"))
+    await router.route(message("!session list"))
+    for word in ("a", "b", "c", "d"):
+        await router.route(message(word))
+    assert len(recorder.calls) == 2
+    assert len(polls.replies) == NON_ADMIN_LIMIT - 2
+
+
+async def test_an_admin_is_never_limited_on_poll_replies(harness) -> None:
+    _, rest, card_ctx = harness
+    polls = StubPolls(open_for=(ADMIN,))
+    router = make_router(rest, card_ctx, NonAdminLimiter(make_config(), clock=Clock()), polls=polls)
+    for _ in range(NON_ADMIN_LIMIT + 2):
+        await router.route(message("a", author=ADMIN))
+    assert len(polls.replies) == NON_ADMIN_LIMIT + 2

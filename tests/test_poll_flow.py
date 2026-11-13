@@ -33,7 +33,8 @@ from fluxer_panel.logs import FIELDS_ATTR
 from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.poll_flow import PollFlow
 from fluxer_panel.poll_post import PollPost
-from fluxer_panel.presses import Action, Press, Surface
+from fluxer_panel import interaction_settings
+from fluxer_panel.presses import POLL_EMOJI, Action, Press, Presses, Surface
 from fluxer_panel.seeding import Seeder
 from fluxer_panel.session_flow import offered_slot_times
 from tests.fakes import FakeFluxerState, Override, make_rest_app, wait_until
@@ -683,3 +684,43 @@ async def test_a_vote_logs_the_poll_and_outcome_but_never_the_user_or_the_reply(
         assert fields.get("outcome") == "voted"
         assert set(fields) <= {"poll_id", "outcome", "reason", "count"}
         assert STARTER not in fields.values() and "a, c" not in fields.values()
+
+
+# The press end to end: a real Presses, Interactions and PollFlow -----------------------------------------
+
+def presses_for(world: World) -> Presses:
+    return Presses(db=world.db, rest=world.rest, config=world.config, handler=world.interactions,
+                   games_guild=GamesGuild(world.rest, world.config), pacer=ChannelPacer(max_calls=1000),
+                   identity=BotIdentity(user_id=BOT), clock=world.clock)
+
+
+def poll_reaction(user: str = STARTER, *, channel: str = GAMES, message: str = CARD_MSG) -> events.ReactionAdd:
+    return events.ReactionAdd(user_id=user, channel_id=channel, message_id=message, guild_id=GUILD,
+                              emoji=events.Emoji(name=POLL_EMOJI, id=None), member_role_ids=None)
+
+
+async def test_a_poll_press_removes_the_presser_reaction_posts_one_poll_and_sends_the_ballots(build) -> None:
+    world = await build()
+    members(world.state, STARTER, HOLDER_A)
+
+    await presses_for(world).on_reaction(poll_reaction())
+    await world.post.drain()
+
+    removals = [r.raw_path for r in world.state.requests if r.method == "DELETE"]
+    assert removals == [f"/api/v1/channels/{GAMES}/messages/{CARD_MSG}/reactions/%F0%9F%97%B3%EF%B8%8F/{STARTER}"]
+    assert len(posts_to(world.state, POLL_POSTS)) == 1
+    poll = await open_poll(world)
+    assert poll is not None
+    assert await ballot_users(world, poll.id) == {STARTER, HOLDER_A}
+
+
+async def test_with_the_kill_switch_off_a_poll_press_does_nothing(build) -> None:
+    world = await build()
+    members(world.state, STARTER, HOLDER_A)
+    await world.db.run(lambda c: interaction_settings.set_enabled(c, False))
+
+    await presses_for(world).on_reaction(poll_reaction())
+    await world.post.drain()
+
+    assert world.state.requests == []
+    assert await open_poll(world) is None

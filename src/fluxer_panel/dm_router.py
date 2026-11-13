@@ -6,7 +6,8 @@ which a non-admin's DM reaches any command code.
 The order is fixed. A guild message goes to `admin.handle`, which ignores what is not a command and refuses the rest. A
 bot author or a non-snowflake author goes there too, and is refused and logged as before. Then a `!session` command
 takes the rate-limited non-admin path. An admin head (`!admin`, `!card`, `!request`) goes to `admin.handle`, which
-authorizes it. Anything else goes to the session flow, when that user has a draft, and is rate limited the same way."""
+authorizes it. Anything else goes to the session flow, when that user has a draft; failing that, to the poll flow, when
+that user has an open poll ballot. Both are rate limited the same way."""
 
 from __future__ import annotations
 
@@ -36,6 +37,14 @@ class DraftReplies(Protocol):
     """The part of the session flow the router needs: whether a user has an open draft, and the reply to it."""
 
     def has_draft(self, user_id: str) -> bool: ...
+
+    async def on_reply(self, event: MessageCreate) -> None: ...
+
+
+class PollReplies(Protocol):
+    """The part of the poll flow the router needs: whether a user has an open ballot, and the reply to it."""
+
+    async def has_open_ballot(self, user_id: str) -> bool: ...
 
     async def on_reply(self, event: MessageCreate) -> None: ...
 
@@ -93,13 +102,15 @@ def _session_head(content: str, prefix: str) -> str | None:
 
 class DmRouter:
     def __init__(self, *, config: Config, rest: FluxerREST, card_ctx: CardContext | None, limiter: NonAdminLimiter,
-                 session_flow: DraftReplies | None = None, session_commands: SessionHandler | None = None) -> None:
+                 session_flow: DraftReplies | None = None, session_commands: SessionHandler | None = None,
+                 poll_flow: PollReplies | None = None) -> None:
         self._config = config
         self._rest = rest
         self._card_ctx = card_ctx
         self._limiter = limiter
         self._session_flow = session_flow
         self._session_commands = session_commands
+        self._poll_flow = poll_flow
 
     async def route(self, event: MessageCreate) -> None:
         if event.guild_id is not None:
@@ -123,3 +134,9 @@ class DmRouter:
             if not self._limiter.admit(event.author_id):
                 return
             await flow.on_reply(event)
+            return
+        polls = self._poll_flow
+        if polls is not None and await polls.has_open_ballot(event.author_id):
+            if not self._limiter.admit(event.author_id):
+                return
+            await polls.on_reply(event)
