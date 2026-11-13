@@ -35,6 +35,8 @@ from fluxer_panel.presses import RUNOFF_EMOJI, SESSION_EMOJI, Press
 
 log = logging.getLogger(__name__)
 
+MIN_RUNOFF_SECONDS = 900   # a runoff must have at least this long to run, or it is refused (it would close too soon)
+
 
 @dataclass(frozen=True)
 class _Voted:
@@ -137,10 +139,12 @@ class PollFlow:
                               options=[(starts_at, "offered") for starts_at in starts])
 
     async def _open_poll(self, card_id: int, *, starter_id: str, presser_id: str, kind: str,
-                         parent_poll_id: int | None, options: Sequence[tuple[int, str]]) -> int | None:
+                         parent_poll_id: int | None, options: Sequence[tuple[int, str]],
+                         closes_at: int | None = None) -> int | None:
         """Posts the poll message and stores the poll with its options and one ballot per recipient, under the card's
         lock. The ballots, the notes and the poller's kick come after it. Every refusal is DMed to the presser and
-        logged. Returns the new poll's id, or None when nothing started. The caller has checked the press."""
+        logged. `closes_at` is the close time, or None for now plus the poll length. Returns the new poll's id, or None
+        when nothing started. The caller has checked the press."""
         card = await self._db.run(lambda c: cards.get_by_id(c, card_id))
         if card is None or card.state != "live":
             return self._refused(card_id, "card")
@@ -155,6 +159,7 @@ class PollFlow:
             return self._refused(card.id, "open")
 
         now = int(self._clock())
+        closes = now + self._config.poll_length_seconds if closes_at is None else closes_at
         found = await self._recipients(card, starter_id)
         if found is None:
             await self._dm(presser_id, text.POLL_TRY_LATER)
@@ -172,7 +177,7 @@ class PollFlow:
                 return self._refused(card.id, "open")
             view = polls.provisional_view(
                 card_id=card.id, card_title=fresh.title, guild_id=guild_id, channel_id=channel_id,
-                starter_id=starter_id, now=now, closes_at=now + self._config.poll_length_seconds,
+                starter_id=starter_id, now=now, closes_at=closes,
                 ballot_size=self._config.poll_ballot_size, starts=[starts_at for starts_at, _ in options],
                 recipients=len(recipients.user_ids), kind=kind, parent_poll_id=parent_poll_id)
             payload = render.render_poll_message(view, instance_url=self._config.instance_url, provisional=True)
@@ -192,7 +197,7 @@ class PollFlow:
                 poll_id = await self._db.run(partial(
                     polls.create, card_id=card.id, guild_id=guild_id, channel_id=channel_id, message_id=message_id,
                     starter_id=starter_id, kind=kind, parent_poll_id=parent_poll_id, now=now,
-                    closes_at=now + self._config.poll_length_seconds, ballot_size=self._config.poll_ballot_size,
+                    closes_at=closes, ballot_size=self._config.poll_ballot_size,
                     options=list(options), recipients=recipients.user_ids))
             except Exception as exc:  # noqa: BLE001 - with no row the message would never close: it is deleted
                 await self._poll_post.delete_unstored(channel_id, message_id)
@@ -307,9 +312,16 @@ class PollFlow:
         if len(top) < 2:
             await self._dm(presser, text.POLL_RUNOFF_NEEDS_TWO)
             return self._refused_poll(poll_id, "runoff", "needs_two")
+        # The runoff closes an hour before its earliest time at the latest, so every candidate is still usable at close.
+        earliest = min(option.starts_at for option in top)
+        closes_at = min(now + self._config.poll_length_seconds, earliest - poll_count.LEAD_SECONDS)
+        if closes_at - now < MIN_RUNOFF_SECONDS:
+            await self._dm(presser, text.POLL_RUNOFF_TOO_SOON.format(ts=earliest))
+            return self._refused_poll(poll_id, "runoff", "too_soon")
         runoff_id = await self._open_poll(view.poll.card_id, starter_id=view.poll.starter_id, presser_id=presser,
                                           kind="runoff", parent_poll_id=poll_id,
-                                          options=[(option.starts_at, "offered") for option in top])
+                                          options=[(option.starts_at, "offered") for option in top],
+                                          closes_at=closes_at)
         if runoff_id is None:
             return
         await self._poll_post.unseed_closed(poll_id)

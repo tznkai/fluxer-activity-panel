@@ -80,11 +80,19 @@ class Clock:
         return self.now
 
 
-def config_for() -> Config:
-    # A short poll length: a runoff opened at CLOSES closes while its options (two to four hours out) are still usable.
-    env = {"FLUXER_TOKEN": TOKEN, "SESSION_TIME_ZONE": "UTC", "FLUXER_INSTANCE_URL": URL, "ADMIN_USER_IDS": ADMIN,
+def config_for(*, instance_url: bool = True, length: int | None = RUNOFF_LENGTH) -> Config:
+    """The test config. `length` is the poll length; None keeps the default (24 hours). The short length makes the older
+    tests close quickly. A runoff is capped before its earliest time whatever the length, so the tests with the default
+    length cover the cap itself. `instance_url=False` leaves FLUXER_INSTANCE_URL unset, for the no-link texts."""
+    env = {"FLUXER_TOKEN": TOKEN, "SESSION_TIME_ZONE": "UTC", "ADMIN_USER_IDS": ADMIN,
            "GAMES_CHANNEL_ID": GAMES, "PLAY_NOW_CHANNEL_ID": PLAY, "POLL_INTERVAL_SECONDS": "3600",
-           "DM_BACKOFF_SECONDS": str(BACKOFF), "POLL_LENGTH_SECONDS": str(RUNOFF_LENGTH)}
+           "DM_BACKOFF_SECONDS": str(BACKOFF)}
+    if instance_url:
+        env["FLUXER_INSTANCE_URL"] = URL
+    else:
+        env["FLUXER_API_URL"] = URL      # the config needs one of the two URLs
+    if length is not None:
+        env["POLL_LENGTH_SECONDS"] = str(length)
     return Config.from_env(env)
 
 
@@ -112,7 +120,8 @@ def _card(conn: Any) -> int:
 
 
 @pytest.fixture
-async def world(tmp_path: Path, aiohttp_server: Any) -> AsyncIterator[World]:
+async def world(tmp_path: Path, aiohttp_server: Any, request: pytest.FixtureRequest) -> AsyncIterator[World]:
+    """A test may pass `config_for` options with `@pytest.mark.parametrize("world", [{...}], indirect=True)`."""
     database = Database.open(tmp_path / "poll_schedule.db")
     state = FakeFluxerState(bot_user_id=BOT, next_message_id=9001)
     state.guilds.update({GUILD: {"id": GUILD}})
@@ -123,7 +132,7 @@ async def world(tmp_path: Path, aiohttp_server: Any) -> AsyncIterator[World]:
     state.messages[(PLAY, POLL_MSG)] = {"embeds": []}
     server = await aiohttp_server(make_rest_app(state))
     base = str(server.make_url("/")).rstrip("/")
-    config = config_for()
+    config = config_for(**getattr(request, "param", {}))
     clock = Clock(float(NOW))
     kicks: list[int] = []
     post: PollPost | None = None
@@ -531,3 +540,69 @@ async def test_a_closed_runoff_shows_its_rounds_gets_only_the_calendar_and_its_w
     [(session_id, proposer, starts_at, _message)] = await sessions_all(world)
     assert (proposer, starts_at) == (STARTER, ONE)
     assert await rsvp_rows(world, session_id) == {(STARTER, "going", 1), (VOTER_G, "maybe", 1)}
+
+
+# The runoff's close cap: it closes an hour before its earliest time at the latest, and is refused when that leaves
+# under fifteen minutes --------------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("world", [{"length": None}], indirect=True)
+async def test_a_runoff_closes_an_hour_before_its_earliest_time_with_the_default_length(world: World) -> None:
+    parent = await closed_three_way(world)
+    members(world.state, STARTER, VOTER_A, VOTER_G)
+    assert world.config.poll_length_seconds == DAY
+
+    await react(world, ADMIN, RUNOFF)
+
+    runoff = await runoff_of(world, parent)
+    assert runoff is not None
+    assert runoff.closes_at == ONE - 3600           # capped: the default length would close it a day out
+    await reply(world, STARTER, "a")
+    world.clock.now = runoff.closes_at
+    await world.jobs.run()
+    await world.post.drain()
+    closed = await stored(world, runoff.id)
+    assert (closed.state, closed.outcome) == ("closed", "winner")
+    assert closed.winner_option_id == await option_of(world, runoff.id, ONE)
+
+
+@pytest.mark.parametrize("world", [{"length": None}], indirect=True)
+async def test_a_runoff_whose_times_are_all_far_away_runs_the_full_poll_length(world: World) -> None:
+    far = [CLOSES + 2 * DAY, CLOSES + 2 * DAY + 3600, CLOSES + 3 * DAY]
+    parent = await store(world, starts=far, users=(STARTER, VOTER_A, VOTER_B))
+    await vote(world, parent, VOTER_A, [far[0]])
+    await vote(world, parent, VOTER_B, [far[1]])
+    await close_at_closes(world, parent)
+    members(world.state, STARTER, VOTER_A, VOTER_B)
+
+    await react(world, ADMIN, RUNOFF)
+
+    runoff = await runoff_of(world, parent)
+    assert runoff is not None
+    assert runoff.closes_at == CLOSES + DAY         # now + POLL_LENGTH_SECONDS: the cap does not apply
+
+
+@pytest.mark.parametrize("world", [{"length": None}], indirect=True)
+async def test_a_runoff_with_under_fifteen_minutes_to_run_starts_nothing_and_says_so(world: World) -> None:
+    parent = await closed_three_way(world)
+    members(world.state, STARTER, VOTER_A, VOTER_G)
+    world.clock.now = ONE - 3600 - 600              # the earliest time is 70 minutes away: 10 minutes of runoff
+
+    await react(world, ADMIN, RUNOFF)
+
+    assert await runoff_of(world, parent) is None
+    assert dm_contents(world.state, ADMIN) == [text.POLL_RUNOFF_TOO_SOON.format(ts=ONE)]
+    assert session_posts(world.state) == []         # no poll message was posted
+    assert (RUNOFF, ADMIN) in reaction_removals(world.state)
+
+
+@pytest.mark.parametrize("world", [{"length": None}], indirect=True)
+async def test_a_runoff_with_exactly_fifteen_minutes_to_run_starts(world: World) -> None:
+    parent = await closed_three_way(world)
+    members(world.state, STARTER, VOTER_A, VOTER_G)
+    world.clock.now = ONE - 3600 - 900
+
+    await react(world, ADMIN, RUNOFF)
+
+    runoff = await runoff_of(world, parent)
+    assert runoff is not None
+    assert runoff.closes_at == ONE - 3600

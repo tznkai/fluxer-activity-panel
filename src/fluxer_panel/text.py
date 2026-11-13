@@ -422,6 +422,8 @@ POLL_SCHEDULED_DM = "The time poll for {card} is scheduled: {link}"
 POLL_SCHEDULED_DM_NO_LINK = "The time poll for {card} is scheduled. Its session is in the card's session channel."
 POLL_RUNOFF_NEEDS_TWO = ("Fewer than two usable times have votes, so there is no runoff. Press the calendar (\U0001F4C5) "
                          "to schedule the winner instead.")
+POLL_RUNOFF_TOO_SOON = ("There isn't time for a runoff before its earliest time, <t:{ts}:F>. Press the calendar "
+                        "(\U0001F4C5) to schedule the winner instead.")
 POLL_RUNOFF_EXISTS = "This poll already has a runoff: {link}"
 POLL_RUNOFF_EXISTS_NO_LINK = "This poll already has a runoff."
 POLL_RUNOFF_STARTED = "The runoff is open, and its ballots are with the voters: {link}"
