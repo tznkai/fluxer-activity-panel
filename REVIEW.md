@@ -52,7 +52,7 @@ Paths are relative to this directory.
 - `src/fluxer_panel/admin.py:61` `if not authorize(event, config):` — every admin subcommand passes through this check in `handle`.
 - `src/fluxer_panel/admin.py:62` `log_event(log, "admin_denied"` — a refusal is logged with the user and channel ids only.
 - `src/fluxer_panel/bot.py:65` `if msg.author_id == self.user_id:` — the bot skips its own messages, so its replies cannot loop. Every other message goes to `DmRouter.route`. Guild messages, bot or non-snowflake authors and admin heads still reach `admin.handle`, where `authorize` refuses a command from a bot or a guild channel.
-- `src/fluxer_panel/poll_commands.py:158` `return event.author_id == poll.starter_id or admin.authorize(event, self._config)` — a poll change (sort, shown, extend, close) needs the poll's starter or an admin. A `!poll vote` is a ballot reply and needs neither.
+- `src/fluxer_panel/poll_commands.py:165` `return event.author_id == poll.starter_id or admin.authorize(event, self._config)` — a poll change (sort, shown, extend, close) needs the poll's starter or an admin. A `!poll vote` is a ballot reply and needs neither.
 
 ## Role assignment
 

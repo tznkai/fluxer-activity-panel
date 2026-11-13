@@ -562,3 +562,76 @@ async def test_a_command_logs_its_command_outcome_and_poll_id_and_never_a_user_o
     records = [r for r in caplog.records if r.getMessage() == "poll_command"]
     assert len(records) == 1
     assert getattr(records[0], FIELDS_ATTR) == {"command": "poll_sort", "outcome": "done", "poll_id": poll_id}
+
+
+# A runoff's close cap: an extension cannot move it past an hour and ten minutes before its earliest time ----------
+
+RUNOFF_CLOSES = NOW + 1800                      # a runoff as the 🔁 path closes it: 30 minutes out here
+RUNOFF_LIMIT = ONE - 3600 - 600                 # the latest close for a runoff whose earliest time is ONE
+
+
+def _runoff_tx(conn: Any) -> int:
+    """A closed parent with ONE the winner, and a runoff of ONE and TWO that closes at RUNOFF_CLOSES. Returns the runoff."""
+    card_id = cards.create_card(conn, slug="mc", title="Lobby", author_id=ADMIN, now=1)
+    cards.set_state(conn, card_id, "live", 1)
+    parent = polls.create(conn, card_id=card_id, guild_id=GUILD, channel_id=CHANNEL, message_id=POLL_MSG, starter_id=STARTER,
+                          kind="approval", parent_poll_id=None, now=NOW, closes_at=CLOSES, ballot_size=6,
+                          options=[(ONE, "offered"), (TWO, "offered")], recipients=[STARTER])
+    assert parent is not None
+    winner = polls.options(conn, parent)[0].id
+    assert polls.close_if_open(conn, parent, now=CLOSES, outcome="winner", winner_option_id=winner)
+    runoff = polls.create(conn, card_id=card_id, guild_id=GUILD, channel_id=CHANNEL, message_id=POLL_MSG2,
+                          starter_id=STARTER, kind="runoff", parent_poll_id=parent, now=NOW, closes_at=RUNOFF_CLOSES,
+                          ballot_size=6, options=[(ONE, "offered"), (TWO, "offered")], recipients=[STARTER, HOLDER])
+    assert runoff is not None
+    return runoff
+
+
+async def started_runoff(world: World) -> int:
+    return await world.db.run(_runoff_tx)
+
+
+async def test_a_runoff_extension_within_its_cap_is_allowed(build) -> None:
+    world = await build()
+    runoff_id = await started_runoff(world)
+
+    await run(world, STARTER, f"extend {runoff_id} 10m")
+
+    assert (await poll_row(world, runoff_id)).closes_at == RUNOFF_CLOSES + 600
+    assert last_reply(world) == text.POLL_EXTENDED.format(ts=RUNOFF_CLOSES + 600)
+
+
+async def test_a_runoff_extension_past_its_cap_is_refused_and_changes_nothing(build) -> None:
+    world = await build()
+    runoff_id = await started_runoff(world)
+    start = mark(world)
+
+    await run(world, STARTER, f"extend {runoff_id} 1h")
+
+    assert last_reply(world) == text.POLL_EXTEND_RUNOFF_CAP.format(ts=RUNOFF_LIMIT)
+    assert (await poll_row(world, runoff_id)).closes_at == RUNOFF_CLOSES
+    assert patches_since(world, start) == []
+    assert world.kicks == []
+
+
+async def test_a_runoff_extension_to_exactly_its_cap_is_allowed_and_one_more_minute_is_not(build) -> None:
+    world = await build()
+    runoff_id = await started_runoff(world)
+
+    await run(world, STARTER, f"extend {runoff_id} 20m")
+    assert (await poll_row(world, runoff_id)).closes_at == RUNOFF_LIMIT
+    assert last_reply(world) == text.POLL_EXTENDED.format(ts=RUNOFF_LIMIT)
+
+    await run(world, STARTER, f"extend {runoff_id} 1m")
+    assert last_reply(world) == text.POLL_EXTEND_RUNOFF_CAP.format(ts=RUNOFF_LIMIT)
+    assert (await poll_row(world, runoff_id)).closes_at == RUNOFF_LIMIT
+
+
+async def test_an_approval_poll_extension_is_not_held_to_a_runoff_cap(build) -> None:
+    world = await build()
+    poll_id = await started(world)
+
+    await run(world, STARTER, "extend 1 1h")
+
+    assert (await poll_row(world, poll_id)).closes_at == CLOSES + 3600
+    assert last_reply(world) == text.POLL_EXTENDED.format(ts=CLOSES + 3600)

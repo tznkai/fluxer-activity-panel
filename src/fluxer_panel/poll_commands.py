@@ -24,7 +24,7 @@ from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.logs import log_event
 from fluxer_panel.poll_close import PollCloser
-from fluxer_panel.poll_flow import PollFlow
+from fluxer_panel.poll_flow import RUNOFF_CLOSE_MARGIN, PollFlow
 from fluxer_panel.poll_post import PollPost
 
 log = logging.getLogger(__name__)
@@ -56,14 +56,21 @@ def _sort_tx(conn: Any, poll_id: int, now: int) -> bool:
 
 
 def _extend_tx(conn: Any, poll_id: int, seconds: int, cap: int) -> tuple[str, int | None]:
-    """Moves closes_at by `seconds`, read in this transaction. The cap is measured from creation. Returns the outcome
-    ("done", "cap" or "closed") and the new closes_at when it is done."""
+    """Moves closes_at by `seconds`, read in this transaction. The cap is measured from creation. A runoff has a second
+    cap: it cannot close after the time that leaves its earliest option its lead and margin, as the runoff's own close
+    does. Returns the outcome ("done", "cap", "runoff_cap" or "closed") and the new closes_at when it is done, or the
+    latest allowed close for "runoff_cap"."""
     poll = polls.get(conn, poll_id)
     if poll is None or poll.state != "open":
         return "closed", None
     new = poll.closes_at + seconds
     if new - poll.created_at > cap:
         return "cap", None
+    if poll.is_runoff:
+        earliest = min(option.starts_at for option in polls.options(conn, poll_id))
+        limit = earliest - poll_count.LEAD_SECONDS - RUNOFF_CLOSE_MARGIN
+        if new > limit:
+            return "runoff_cap", limit
     if not polls.extend_if_open(conn, poll_id, closes_at=new):
         return "closed", None
     return "done", new
@@ -232,6 +239,8 @@ class PollCommands:
             return text.POLL_NOT_OPEN, "not_open"
         if outcome == "cap" or new is None:
             return text.POLL_EXTEND_CAP, "cap"
+        if outcome == "runoff_cap":
+            return text.POLL_EXTEND_RUNOFF_CAP.format(ts=new), "runoff_cap"
         self._poll_post.changed(poll.id)
         self._kick()
         return text.POLL_EXTENDED.format(ts=new), "done"

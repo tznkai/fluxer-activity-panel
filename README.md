@@ -431,7 +431,7 @@ only 📅. Pressing either removes the presser's reaction, and only the starter 
   A runoff closes at the earlier of two times: `POLL_LENGTH_SECONDS` after it starts, or one hour and ten minutes
   before its earliest candidate time. The ten minutes are a margin, so every candidate is still usable when a late tick
   closes it. If less than 15 minutes would remain, 🔁 is refused and the presser is told to use 📅. A closed runoff gets
-  only 📅.
+  only 📅. `!poll extend` cannot move a runoff past that close time: an extension that would is refused, and nothing changes.
 
 📅 and 🔁 exclude each other on one poll. Once a session exists, 🔁 is refused with a direct message that links to
 the session. Once a runoff exists, 📅 on the parent is refused with a direct message that links to the runoff. The
