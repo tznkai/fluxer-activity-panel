@@ -667,6 +667,9 @@ def _probe_poller(monkeypatch: pytest.MonkeyPatch) -> _PollerProbe:
         def set_session_jobs(self, jobs: Any) -> None:
             pass
 
+        def set_poll_jobs(self, jobs: Any) -> None:
+            pass
+
         def on_games_message(self, channel_id: str) -> None:
             pass
 

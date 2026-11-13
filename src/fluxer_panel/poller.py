@@ -36,6 +36,7 @@ from fluxer_panel.wake import WakeRequests
 
 if TYPE_CHECKING:
     from fluxer_panel.interactions import Interactions
+    from fluxer_panel.poll_jobs import PollJobs
     from fluxer_panel.session_jobs import SessionJobs
 
 log = logging.getLogger(__name__)
@@ -90,6 +91,7 @@ class Poller:
         self._wake: WakeRequests | None = None               # set by set_wake, before the loop starts
         self._interactions: Interactions | None = None       # set by set_interactions, before the loop starts
         self._session_jobs: SessionJobs | None = None        # set by set_session_jobs, before the loop starts
+        self._poll_jobs: PollJobs | None = None              # set by set_poll_jobs, before the loop starts
         self._deleted: OrderedDict[tuple[str, str], None] = OrderedDict()
         self._warned_no_channel = False
         self._games_guild = games_guild if games_guild is not None else GamesGuild(rest, config)
@@ -115,6 +117,10 @@ class Poller:
     def set_session_jobs(self, jobs: SessionJobs) -> None:
         """Given the timed session jobs once, after both are built: each tick runs them, and their `due` shortens the wait."""
         self._session_jobs = jobs
+
+    def set_poll_jobs(self, jobs: PollJobs) -> None:
+        """Given the timed poll jobs once, after both are built: each tick runs them, and their `due` shortens the wait."""
+        self._poll_jobs = jobs
 
     def on_games_message(self, channel_id: str) -> None:
         """Arms the board check when a message lands in the board's channel. It does not kick the loop: a kick runs a
@@ -156,15 +162,16 @@ class Poller:
                 pass
 
     def _wait_timeout(self) -> float:
-        """How long the run loop waits before its next tick: the poll interval, or less when a re-post or a session job
-        is due sooner. A due time at or before the start of the last tick is stale: that tick had its chance at it, so
-        it is ignored. A due time that passed during the last tick (after it started) gives a zero wait, so the next
+        """How long the run loop waits before its next tick: the poll interval, or less when a re-post, a session job or a
+        poll job is due sooner. A due time at or before the start of the last tick is stale: that tick had its chance at
+        it, so it is ignored. A due time that passed during the last tick (after it started) gives a zero wait, so the next
         tick runs at once. That tick starts after the due time, so the time is stale there. A tick that keeps failing
         therefore gets at most one immediate retry, then waits the poll interval."""
         now = self._clock()
         timeout = float(self._config.poll_interval_seconds)
         session_due = self._session_jobs.due if self._session_jobs is not None else None
-        for due in (self._repost_due, session_due):
+        poll_due = self._poll_jobs.due if self._poll_jobs is not None else None
+        for due in (self._repost_due, session_due, poll_due):
             if due is None or due <= self._tick_started:
                 continue
             if due <= now:
@@ -237,8 +244,8 @@ class Poller:
         """Keeps the cards and the board up to date. Each card is published as soon as its own evaluation ends, so one slow
         card does not hold back the others. The board is brought up to date after the cards, so a board posted here sits
         below them. When this tick's read of the stored board fails, the cards publish as they would with a board stored,
-        and no new board is posted in this tick. The session jobs run last, and they run even when an earlier step
-        raised: their `due` is what the wait reads, so it must be refreshed on every tick. The heads-up among them reads
+        and no new board is posted in this tick. The session jobs and then the poll jobs run last, and they run even when an
+        earlier step raised: their `due` is what the wait reads, so it must be refreshed on every tick. The heads-up among them reads
         the cached statuses, so it is skipped when the card pass did not finish; it stays pending for the next tick that
         finishes it. The error is raised again afterwards, so the run loop logs it as before. A cancelled tick is not an
         Exception, so a shutdown does not start the jobs."""
@@ -250,10 +257,12 @@ class Poller:
             cards_done = True
             await self._after_tick()
         except Exception:
-            # Re-raised below, once the session jobs have run.
+            # Re-raised below, once the timed jobs have run.
             await self._run_session_jobs(headsup=cards_done)
+            await self._run_poll_jobs()
             raise
         await self._run_session_jobs()
+        await self._run_poll_jobs()
 
     async def _tick_cards(self) -> None:
         """The card and board passes. Without a games channel there is no board, so only the cards are published."""
@@ -290,6 +299,16 @@ class Poller:
             await self._session_jobs.run(headsup=headsup)
         except Exception as exc:  # noqa: BLE001 - logged; the run loop goes on
             log_event(log, "session_job_failed", level=logging.ERROR, kind="run", reason=type(exc).__name__)
+
+    async def _run_poll_jobs(self) -> None:
+        """Runs the timed poll jobs. `PollJobs.run` never raises, and this guard keeps it that way for the poller, as it does
+        for the session jobs: a failure here must not replace the tick's own error or stop the run loop."""
+        if self._poll_jobs is None:
+            return
+        try:
+            await self._poll_jobs.run()
+        except Exception as exc:  # noqa: BLE001 - logged; the run loop goes on
+            log_event(log, "poll_job_failed", level=logging.ERROR, kind="run", reason=type(exc).__name__)
 
     def _forget_cards_not_in(self, live_ids: set[int]) -> None:
         """Drops the cached schedule, channel name check and status of every card not in `live_ids`, the live set of this

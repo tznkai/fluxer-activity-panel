@@ -33,6 +33,7 @@ from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.poll_close import PollCloser
 from fluxer_panel.poll_commands import PollCommands
 from fluxer_panel.poll_flow import PollFlow
+from fluxer_panel.poll_jobs import PollJobs
 from fluxer_panel.poll_post import PollPost
 from fluxer_panel.poller import Poller
 from fluxer_panel.presses import Presses
@@ -123,6 +124,10 @@ async def run(config: Config, db: Database) -> None:
                                        session_flow=session_flow, status_of=poller.status_of, kick=poller.kick,
                                        backoff=backoff)
             poller.set_session_jobs(session_jobs)
+            # The timed poll jobs (the close and the halfway reminders) run on each tick, with the same close path the
+            # commands use, and their next due time shortens the poller's wait.
+            poll_jobs = PollJobs(db=db, rest=rest, config=config, closer=poll_closer, backoff=backoff, kick=poller.kick)
+            poller.set_poll_jobs(poll_jobs)
             session_commands = SessionCommands(db=db, rest=rest, config=config, locks=card_ctx.locks,
                                                session_post=session_post, kick=poller.kick)
             session_post.set_on_gone(session_commands.on_message_gone)   # a deleted session message cancels it

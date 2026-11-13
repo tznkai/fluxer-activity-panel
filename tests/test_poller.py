@@ -26,7 +26,7 @@ from fluxer_client.events import MessageCreate, MessageDelete
 from fluxer_client.gateway import Gateway
 from fluxer_client.rest import FluxerREST
 from fluxer_client.roles import RoleCache
-from fluxer_panel import admin, board, cards, play_now, render, sessions, subscriptions, text, wake_requests
+from fluxer_panel import admin, board, cards, play_now, polls, render, sessions, subscriptions, text, wake_requests
 from fluxer_panel.bot import Bot
 from fluxer_panel.card_commands import CardContext, CardLocks
 from fluxer_panel.config import Config
@@ -35,8 +35,11 @@ from fluxer_panel.dm_backoff import DmBackoff
 from fluxer_panel.dm_router import NonAdminLimiter
 from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.interactions import Interactions
-from fluxer_panel.logs import setup_logging
+from fluxer_panel.logs import FIELDS_ATTR, setup_logging
 from fluxer_panel.pacer import ChannelPacer
+from fluxer_panel.poll_close import PollCloser
+from fluxer_panel.poll_jobs import PollJobs
+from fluxer_panel.poll_post import PollPost
 from fluxer_panel import poller as poller_module
 from fluxer_panel.poller import _DELETED_CAP, Poller
 from fluxer_panel.presses import WAKE_EMOJI, Presses
@@ -2299,3 +2302,117 @@ async def test_an_rsvp_that_changes_the_count_shows_on_the_next_tick_and_a_cance
     card_patches = [r for r in world.fluxer.requests if r.method == "PATCH" and r.path == POSTED]
     assert next_session_value(card_patches[-1].payload["embeds"][0]) is None
     assert_card_writes_safe(world.fluxer)
+
+
+# The timed poll jobs on the tick (AC6.1, "within one tick"): the wait ends at a poll job's due time, a stale one is
+# ignored, and the jobs run after a failed card pass as the session jobs do.
+
+POLL_CHANNEL = "3301"          # a poll's channel, which is not the games channel
+POLL_MESSAGE = "5601"
+
+
+def wired_poll_jobs(world: World, poller: Poller) -> PollJobs:
+    """The poll jobs as `__main__` builds them, handed to the poller: a real close path on the test database."""
+    backoff = DmBackoff(world.config.dm_backoff_seconds, clock=world.clock)
+    post = PollPost(db=world.db, rest=world.rest, config=world.config, pacer=ChannelPacer(max_calls=1000),
+                    identity=BotIdentity(user_id=WAKE_BOT), backoff=backoff, edit_delay=0, sleep=no_sleep)
+    closer = PollCloser(db=world.db, locks=world.locks, poll_post=post, clock=world.clock)
+    jobs = PollJobs(db=world.db, rest=world.rest, config=world.config, closer=closer, backoff=backoff,
+                    clock=world.clock)
+    poller.set_poll_jobs(jobs)
+    return jobs
+
+
+async def store_poll(db: Database, card_id: int, *, closes_at: int) -> int:
+    def tx(conn: Any) -> int:
+        poll_id = polls.create(conn, card_id=card_id, guild_id=GUILD, channel_id=POLL_CHANNEL, message_id=POLL_MESSAGE,
+                               starter_id=AUTHOR, kind="approval", parent_poll_id=None, now=0, closes_at=closes_at,
+                               ballot_size=6, options=[(closes_at + 7200, "offered")], recipients=[])
+        assert poll_id is not None
+        return poll_id
+
+    return await db.run(tx)
+
+
+async def test_the_wait_ends_when_the_next_poll_job_is_due(world: World, poller: Poller) -> None:
+    poller.set_poll_jobs(StubJobs(due=1000.0))
+    world.clock.now = 800.0
+    assert poller._wait_timeout() == 200.0
+    world.clock.now = 960.0
+    assert poller._wait_timeout() == 40.0
+
+
+async def test_a_poll_job_due_that_falls_due_during_the_tick_gives_a_zero_wait(world: World, poller: Poller) -> None:
+    poller.set_poll_jobs(SlowJobs(world, due=2003.0, seconds=5.0))
+    world.clock.now = 2000.0
+    await poller.tick()
+    assert world.clock.now == 2005.0
+    assert poller._wait_timeout() == 0.0
+
+
+async def test_a_stale_poll_job_due_does_not_make_the_wait_zero(
+        world: World, poller: Poller, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The due time is from before a tick that failed early: that tick had its chance at it, so it is stale.
+    poller.set_poll_jobs(StubJobs(due=1000.0))
+    monkeypatch.setattr(wake_requests, "open_counts", failing_open_counts)
+    world.clock.now = 2000.0
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await poller.tick()
+    assert poller._wait_timeout() == world.config.poll_interval_seconds
+
+
+async def test_a_tick_runs_the_poll_jobs(world: World, poller: Poller) -> None:
+    jobs = StubJobs(due=None)
+    poller.set_poll_jobs(jobs)
+    await poller.tick()
+    assert jobs.runs == 1
+
+
+async def test_a_tick_whose_card_pass_raises_still_runs_the_poll_jobs_and_refreshes_their_due(
+        world: World, poller: Poller, monkeypatch: pytest.MonkeyPatch) -> None:
+    jobs = StubJobs(due=1000.0, refreshed_due=3000.0)
+    poller.set_poll_jobs(jobs)
+    monkeypatch.setattr(wake_requests, "open_counts", failing_open_counts)
+    world.clock.now = 2000.0
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await poller.tick()
+    assert jobs.runs == 1
+    assert jobs.due == 3000.0
+    assert poller._wait_timeout() == 1000.0
+
+
+async def test_a_failing_poll_job_run_does_not_replace_the_tick_error(
+        world: World, poller: Poller, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.ERROR, logger="fluxer_panel.poller")
+    poller.set_poll_jobs(StubJobs(due=None, run_error=ValueError("jobs failed")))
+    poller.set_wake(FailingWake())
+    with pytest.raises(RuntimeError, match="wake pass failed"):
+        await poller.tick()
+    [failed] = records(caplog, "poll_job_failed")
+    assert getattr(failed, FIELDS_ATTR) == {"kind": "run", "reason": "ValueError"}
+
+
+async def test_a_poll_due_at_T_is_closed_by_the_first_tick_at_or_after_T(
+        world: World, poller: Poller, db: Database) -> None:
+    T = 3000
+    wired_poll_jobs(world, poller)
+    card_id = await seed(db, "alpha", title=CARD_TITLE)
+    world.fluxer.messages[(POLL_CHANNEL, POLL_MESSAGE)] = {"embeds": []}
+    poll_id = await store_poll(db, card_id, closes_at=T)
+
+    world.clock.now = T - 1
+    await poller.tick()
+    assert (await db.run(lambda c: polls.get(c, poll_id))).state == "open"
+
+    world.clock.now = T
+    await poller.tick()
+    assert (await db.run(lambda c: polls.get(c, poll_id))).state == "closed"
+
+
+async def test_a_poll_job_due_at_the_start_of_the_tick_is_stale_and_gives_the_poll_interval(
+        world: World, poller: Poller) -> None:
+    # The tick starts at 2000 and the due time is 2000: that tick had its chance at the time, so it does not shorten the wait.
+    poller.set_poll_jobs(StubJobs(due=2000.0))
+    world.clock.now = 2000.0
+    await poller.tick()
+    assert poller._wait_timeout() == world.config.poll_interval_seconds
