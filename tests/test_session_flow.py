@@ -707,6 +707,67 @@ async def test_a_calendar_press_during_a_backoff_makes_no_request_and_starts_no_
     assert getattr(refused, FIELDS_ATTR)["outcome"] == "refused"
 
 
+# Public publish (a poll's 📅 uses it): the same post and store, with voters as implicit maybes ------------------
+
+MAYBE_VOTER = "6003"
+
+
+def in_two_days() -> int:
+    return int(NOW) + 2 * 86400
+
+
+async def test_publish_posts_one_session_for_the_proposer_with_the_voters_as_implicit_maybes(build: Any) -> None:
+    world = await build()
+
+    published = await world.flow.publish(world.card_id, VOTER, in_two_days(), maybe=[MAYBE_VOTER],
+                                         notify_proposer=False)
+
+    [posted] = posted_ids(world)
+    assert published.reply is None
+    assert (published.channel_id, published.guild_id, published.message_id) == (PLAY_NOW, GUILD, posted)
+    assert published.session_id is not None
+    session = await world.db.run(lambda c: sessions.get(c, published.session_id))
+    assert session is not None and session.proposer_id == VOTER
+    presence = await world.db.run(lambda c: sessions.presence_of(c, session.id))
+    assert [(p.user_id, p.choice, p.implicit) for p in presence] == [(VOTER, "going", True),
+                                                                      (MAYBE_VOTER, "maybe", True)]
+    last_edit = requests(world, "PATCH", f"{PLAY_NOW_POSTS}/{posted}")[-1]
+    value = next(f["value"] for f in last_edit.payload["embeds"][0]["fields"] if f["name"] == text.SESSION_FIELD_RSVPS)
+    assert value == text.SESSION_COUNTS.format(going=1, maybe=1)
+    assert dm_texts(world, VOTER) == []
+    assert world.kicks == [1]
+
+
+async def test_publish_with_notify_proposer_dms_the_proposer_one_jump_link(build: Any) -> None:
+    world = await build()
+
+    published = await world.flow.publish(world.card_id, VOTER, in_two_days())
+
+    [dm] = dm_texts(world, VOTER)
+    assert f"/channels/{GUILD}/{PLAY_NOW}/{published.message_id}" in dm
+
+
+async def test_publish_on_a_card_with_no_session_channel_returns_the_refusal_and_posts_nothing(build: Any) -> None:
+    world = await build(play_now=False)
+
+    published = await world.flow.publish(world.card_id, VOTER, in_two_days(), maybe=[MAYBE_VOTER],
+                                         notify_proposer=False)
+
+    assert published.reply == text.SESSION_NO_CHANNEL
+    assert published.session_id is None
+    assert requests(world, "POST") == []
+
+
+async def test_publish_for_a_proposer_at_the_cap_returns_the_cap_text_and_posts_nothing(build: Any) -> None:
+    world = await build()
+    await add_sessions(world, 3, proposer=lambda _n: VOTER)
+
+    published = await world.flow.publish(world.card_id, VOTER, in_two_days(), notify_proposer=False)
+
+    assert published.reply == text.SESSION_CAP["proposer"].format(card="Minecraft")
+    assert requests(world, "POST", PLAY_NOW_POSTS) == []
+
+
 # Logs: no user id and no typed text --------------------------------------------------------------------------
 
 async def test_the_flow_logs_never_carry_a_user_id_or_the_typed_text(build: Any,

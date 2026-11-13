@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -300,35 +300,40 @@ class SessionFlow:
         if slot is None or slot <= now:
             await self._dm(user_id, text.SESSION_TIME_REFUSED["past"])
             return
+        outcome = await self.publish(card.id, user_id, slot)
+        if outcome.reply is not None:
+            await self._dm(user_id, outcome.reply)
+
+    async def publish(self, card_id: int, proposer_id: str, slot: int, *, maybe: Sequence[str] = (),
+                      notify_proposer: bool = True) -> Published:
+        """Posts and stores a session at `slot` for `card_id`, with the proposer going and each `maybe` voter an implicit
+        maybe in the same transaction as the insert. The caller must not hold the card's lock: the target is read before
+        it (it may call REST), the send and the store run under it, and the seeds, the edit, the proposer's DM (only when
+        `notify_proposer`) and the poller kick run after it. Every post goes through SessionPost. A failure returns the
+        reply to send, and nothing is left behind."""
+        card = await self._read_card(card_id)
+        if card is None or card.state != "live":
+            return Published(reply=text.SESSION_POST_FAILED)
         target, _ = await card_target(self._rest, self._config, card, failed_event="session_target_failed")
         if target is None:
-            await self._dm(user_id, text.SESSION_NO_CHANNEL)
-            return
+            return Published(reply=text.SESSION_NO_CHANNEL)
         channel_id, guild_id = target
-        outcome = await self._publish(card.id, user_id, channel_id, guild_id, slot, now)
-        if outcome.message_id is None or outcome.session_id is None:
-            await self._dm(user_id, outcome.reply or text.SESSION_POST_FAILED)
-            return
-        await self._finish(user_id, card, guild_id, channel_id, outcome.message_id, outcome.session_id)
-
-    async def _publish(self, card_id: int, user_id: str, channel_id: str, guild_id: str, slot: int,
-                       now: float) -> _Published:
-        """Sends the message and stores its row, under the card's lock. Returns the stored ids, or the reply to DM after the
-        lock is released, in the failure cases."""
+        now = self._clock()
         async with self._locks.get(card_id):
             fresh = await self._read_card(card_id)
             if fresh is None or fresh.state != "live" or target_channel_id(fresh, self._config) != channel_id:
-                return _Published(reply=text.SESSION_POST_FAILED)   # the card changed since the target was read
+                return Published(reply=text.SESSION_POST_FAILED)   # the card changed since the target was read
             try:
-                await self._db.run(lambda c: sessions.check_caps(c, card_id, user_id))
+                await self._db.run(lambda c: sessions.check_caps(c, card_id, proposer_id))
             except sessions.SessionCapReached as exc:
-                return _Published(reply=text.SESSION_CAP[exc.kind].format(card=render.escape(fresh.title)))
+                return Published(reply=text.SESSION_CAP[exc.kind].format(card=render.escape(fresh.title)))
             length = self._config.session_length_seconds
             provisional = sessions.provisional(card_id=card_id, guild_id=guild_id, channel_id=channel_id,
-                                               starts_at=slot, ends_at=slot + length, proposer_id=user_id,
+                                               starts_at=slot, ends_at=slot + length, proposer_id=proposer_id,
                                                now=int(now))
+            voters = len(set(maybe) - {proposer_id})
             payload = render.session_message(
-                fresh, provisional, rsvp.Counts(going=1, maybe=0, waiting=0),
+                fresh, provisional, rsvp.Counts(going=1, maybe=voters, waiting=0),
                 effective_location=sessions.effective_location(provisional, fresh),
                 effective_seats=sessions.effective_seats(provisional, fresh),
                 instance_url=self._config.instance_url, provisional=True)
@@ -337,28 +342,24 @@ class SessionFlow:
             except Exception as exc:  # noqa: BLE001 - a failed post is told to the proposer; the cause is logged by type
                 log_event(log, "session_post_failed", level=logging.WARNING, card_id=card_id,
                           reason=type(exc).__name__)
-                return _Published(reply=text.SESSION_POST_FAILED)
+                return Published(reply=text.SESSION_POST_FAILED)
             message_id = sent.get("id") if isinstance(sent, dict) else None
             if not is_snowflake(message_id):
                 log_event(log, "session_post_failed", level=logging.WARNING, card_id=card_id,
                           reason="bad_message_id")
-                return _Published(reply=text.SESSION_POST_FAILED)
+                return Published(reply=text.SESSION_POST_FAILED)
             try:
                 session_id = await self._db.run(lambda c: sessions.add(
                     c, card_id=card_id, guild_id=guild_id, channel_id=channel_id, message_id=message_id,
-                    starts_at=slot, ends_at=slot + length, proposer_id=user_id, now=int(now)))
+                    starts_at=slot, ends_at=slot + length, proposer_id=proposer_id, now=int(now), maybe=maybe))
             except Exception as exc:  # noqa: BLE001 - with no row the message would never end: it is deleted
                 await self._session_post.delete_unstored(channel_id, message_id)
                 log_event(log, "session_store_failed", level=logging.WARNING, card_id=card_id,
                           reason=type(exc).__name__)
                 if isinstance(exc, sessions.SessionCapReached):
-                    return _Published(reply=text.SESSION_CAP[exc.kind].format(card=render.escape(fresh.title)))
-                return _Published(reply=text.SESSION_POST_FAILED)
-        return _Published(message_id=message_id, session_id=session_id)
-
-    async def _finish(self, user_id: str, card: Card, guild_id: str, channel_id: str, message_id: str,
-                      session_id: int) -> None:
-        """After the lock: the three RSVP seeds, the footer edit, the proposer's jump link, and a poller kick."""
+                    return Published(reply=text.SESSION_CAP[exc.kind].format(card=render.escape(fresh.title)))
+                return Published(reply=text.SESSION_POST_FAILED)
+        # After the lock: the three RSVP seeds, the footer edit, the proposer's jump link, and a poller kick.
         try:
             await self._session_post.seed_session(channel_id, message_id)
         except Exception as exc:  # noqa: BLE001 - a missing seed is logged; users can still react
@@ -369,15 +370,17 @@ class SessionFlow:
         except Exception as exc:  # noqa: BLE001 - the message keeps its counts from the last good edit
             log_event(log, "session_edit_failed", level=logging.WARNING, session_id=session_id,
                       reason=type(exc).__name__)
-        if self._config.instance_url:
-            link = render.jump_link(text.SESSION_LINK_LABEL, self._config.instance_url, guild_id, channel_id,
-                                    message_id)
-            content = text.SESSION_POSTED.format(link=link)
-        else:
-            content = text.SESSION_POSTED_NO_LINK
-        await self._dm(user_id, content)
+        if notify_proposer:
+            if self._config.instance_url:
+                link = render.jump_link(text.SESSION_LINK_LABEL, self._config.instance_url, guild_id, channel_id,
+                                        message_id)
+                content = text.SESSION_POSTED.format(link=link)
+            else:
+                content = text.SESSION_POSTED_NO_LINK
+            await self._dm(proposer_id, content)
         self._kick()
         log_event(log, "session_flow", outcome="posted", card_id=card.id, session_id=session_id)
+        return Published(session_id=session_id, guild_id=guild_id, channel_id=channel_id, message_id=message_id)
 
     # Expiry ------------------------------------------------------------------------------------------------
 
@@ -401,9 +404,11 @@ class SessionFlow:
             log_event(log, "session_flow", outcome="expired", card_id=draft.card_id)
 
 
-@dataclass
-class _Published:
-    """The result of the locked send and store: either the stored ids, or the reply to DM once the lock is released."""
-    message_id: str | None = None
+@dataclass(frozen=True)
+class Published:
+    """A posted and stored session, or the reply for the caller to send."""
     session_id: int | None = None
+    guild_id: str | None = None
+    channel_id: str | None = None
+    message_id: str | None = None
     reply: str | None = None
