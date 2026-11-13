@@ -279,9 +279,40 @@ def mark_dm_failed(conn: sqlite3.Connection, poll_id: int, user_id: str) -> None
 
 
 def mark_reminded_if(conn: sqlite3.Connection, poll_id: int, user_id: str) -> bool:
+    """Marks the ballot reminded, once, while it is unanswered and its poll is still open: a reminder never follows a close."""
     cur = conn.execute("UPDATE poll_ballots SET reminded = 1 WHERE poll_id = ? AND user_id = ? AND reminded = 0 "
-                       "AND answered = 0", (poll_id, user_id))
+                       "AND answered = 0 AND EXISTS (SELECT 1 FROM polls WHERE id = ? AND state = 'open')",
+                       (poll_id, user_id, poll_id))
     return cur.rowcount == 1
+
+
+def _halfway(poll: Poll) -> int:
+    """The reminder time: halfway between the poll's start and its close, from the current close time."""
+    return poll.created_at + (poll.closes_at - poll.created_at) // 2
+
+
+def _reminder_polls(conn: sqlite3.Connection) -> list[Poll]:
+    """Open polls that still have an unanswered ballot which has not been reminded."""
+    return _polls(conn, "WHERE state = 'open' AND id IN (SELECT poll_id FROM poll_ballots "
+                        "WHERE answered = 0 AND reminded = 0) ORDER BY id")
+
+
+def reminder_due(conn: sqlite3.Connection, now: int) -> list[tuple[Poll, str]]:
+    """(poll, user id) for each unanswered, unreminded ballot whose poll has reached its halfway time and has not closed.
+    Ordered by poll id, then user id."""
+    due: list[tuple[Poll, str]] = []
+    for poll in _reminder_polls(conn):
+        if _halfway(poll) > now or poll.closes_at <= now:
+            continue
+        for ballot in _ballots(conn, "WHERE poll_id = ? AND answered = 0 AND reminded = 0 ORDER BY user_id", (poll.id,)):
+            due.append((poll, ballot.user_id))
+    return due
+
+
+def next_reminder(conn: sqlite3.Connection, now: int) -> int | None:
+    """The earliest halfway time after `now` among open polls that still have an unanswered, unreminded ballot."""
+    times = [_halfway(poll) for poll in _reminder_polls(conn) if _halfway(poll) > now]
+    return min(times) if times else None
 
 
 def set_session_if_unset(conn: sqlite3.Connection, poll_id: int, session_id: int) -> bool:

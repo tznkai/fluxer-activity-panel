@@ -404,6 +404,9 @@ POLL_NOT_ANSWERED = "You haven't answered yet."
 POLL_CLOSES_LINE = "Closes <t:{ts}:F> (<t:{ts}:R>)."
 POLL_BALLOT_CLOSED = "This poll is closed: {link}"
 POLL_BALLOT_REMOVED = "This poll was removed."
+# The halfway reminder DM. `{link}` is a jump link to the poll message; `{n}` is the poll's number, and `{ts}` its close time.
+POLL_REMINDER_DM = ("There's still time to answer the time poll for {card}: {link}. Reply to your ballot, or send "
+                    "`!poll vote {n} <reply>`. It closes <t:{ts}:R>.")
 # Starting a poll (the 🗳️ press). `{link}` is a jump link, labelled with POLL_LINK_LABEL or the card's own label.
 POLL_ELSEWHERE = "Polls are started on the card itself: {link}"
 POLL_ELSEWHERE_NO_LINK = "Polls are started on the card itself, in the games channel."

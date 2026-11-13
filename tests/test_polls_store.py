@@ -421,6 +421,37 @@ async def test_mark_reminded_if_is_true_once_and_never_for_an_answered_ballot(db
     assert answered is not None and answered.reminded is False
 
 
+async def test_mark_reminded_if_is_false_once_the_poll_is_closed(db: Database) -> None:
+    card = await _card(db)
+    poll_id = await _poll(db, card)
+    await db.run(lambda c: polls.close_if_open(c, poll_id, now=5, outcome="none", winner_option_id=None))
+
+    assert await db.run(lambda c: polls.mark_reminded_if(c, poll_id, "1002")) is False
+    reminded = await db.run(lambda c: polls.ballot(c, poll_id, "1002"))
+    assert reminded is not None and reminded.reminded is False
+
+
+async def test_reminder_due_lists_unanswered_unreminded_ballots_from_halfway_until_close(db: Database) -> None:
+    card = await _card(db)
+    poll_id = await _poll(db, card, recipients=("1002", "1003", "1004"))   # created at 1, closes at 100: halfway is 50
+    first, _ = await _option_ids(db, poll_id)
+    await db.run(lambda c: polls.replace_picks_if_open(c, poll_id, "1003", [first], ranked=False))
+    await db.run(lambda c: polls.mark_reminded_if(c, poll_id, "1004"))
+
+    assert await db.run(lambda c: polls.reminder_due(c, 49)) == []
+    due = await db.run(lambda c: polls.reminder_due(c, 50))
+    assert [(poll.id, user) for poll, user in due] == [(poll_id, "1002")]
+    assert await db.run(lambda c: polls.reminder_due(c, 100)) == []
+
+
+async def test_next_reminder_is_the_soonest_halfway_still_ahead_among_open_polls(db: Database) -> None:
+    card = await _card(db)
+    assert await db.run(lambda c: polls.next_reminder(c, 0)) is None
+    await _poll(db, card)                                       # halfway 50
+    assert await db.run(lambda c: polls.next_reminder(c, 0)) == 50
+    assert await db.run(lambda c: polls.next_reminder(c, 50)) is None   # passed: nothing left to wait for
+
+
 async def test_set_ballot_message_and_mark_dm_failed_are_stored(db: Database) -> None:
     card = await _card(db)
     poll_id = await _poll(db, card)
