@@ -433,6 +433,10 @@ only 📅. Pressing either removes the presser's reaction, and only the starter 
   closes it. If less than 15 minutes would remain, 🔁 is refused and the presser is told to use 📅. A closed runoff gets
   only 📅.
 
+📅 and 🔁 exclude each other on one poll. Once a session exists, 🔁 is refused with a direct message that links to
+the session. Once a runoff exists, 📅 on the parent is refused with a direct message that links to the runoff. The
+runoff's own 📅 still schedules its winner.
+
 **Commands.** A poll is named by its number, which its footer shows as `Poll <n>` and `!poll list` shows, or by its
 message link. A member's `!poll list` shows the polls they started or were sent, newest first. An admin's also shows
 every open poll. Poll commands and ballot replies share the direct-message limit for non-admins, 5 per 60 seconds, and

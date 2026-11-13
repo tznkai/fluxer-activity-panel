@@ -271,12 +271,20 @@ class PollFlow:
     async def _schedule(self, poll_id: int, *, presser: str) -> None:
         """📅: posts the winning time as a session in the card's session channel, with the starter as proposer and each
         voter for the winner as an implicit maybe. Nothing is created when the poll has no winner, already has a session,
-        or its winning time is under an hour away (refused with a DM to the presser). Runs under the poll's lock."""
+        a runoff was started from it, or its winning time is under an hour away (refused with a DM to the presser). Runs
+        under the poll's lock. 📅 and 🔁 on one poll exclude each other."""
         if self._session_flow is None:
             return
         view = await self._db.run(lambda c: polls.view(c, poll_id))
         if view is None or view.poll.outcome != "winner" or view.poll.session_id is not None:
             return self._refused_poll(poll_id, "schedule", "not_schedulable")
+        # A runoff started from this poll decides the time, so a session must not be made beside it. This is read under
+        # the poll's lock, after the 🔁 path has had its chance to write its runoff, so the two cannot both succeed.
+        runoff = await self._db.run(lambda c: polls.child_of(c, poll_id))
+        if runoff is not None:
+            await self._dm(presser, self._linked_text(text.POLL_SCHEDULE_RUNOFF_EXISTS,
+                                                      text.POLL_SCHEDULE_RUNOFF_EXISTS_NO_LINK, runoff))
+            return self._refused_poll(poll_id, "schedule", "runoff_exists")
         winner = next(option for option in view.options if option.id == view.poll.winner_option_id)
         if winner.starts_at - self._clock() < poll_count.LEAD_SECONDS:
             await self._dm(presser, text.POLL_TOO_LATE)
@@ -307,11 +315,17 @@ class PollFlow:
         """🔁: starts a runoff of the top three usable times with votes, in rank order as options a to c. The runoff keeps
         the parent's starter, reads the role again, and is opened by the same pipeline as a 🗳️ poll. It closes after the
         poll length or RUNOFF_CLOSE_MARGIN plus an hour before its earliest time, whichever is sooner. Refused with a DM
-        when there is already a runoff, when fewer than two usable times have votes, or when less than MIN_RUNOFF_SECONDS
-        would remain before its capped close. Runs under the poll's lock."""
+        when the winner is already scheduled, when there is already a runoff, when fewer than two usable times have votes,
+        or when less than MIN_RUNOFF_SECONDS would remain before its capped close. Runs under the poll's lock."""
         view = await self._db.run(lambda c: polls.view(c, poll_id))
         if view is None or view.poll.outcome != "winner" or view.poll.is_runoff:
             return self._refused_poll(poll_id, "runoff", "not_runoffable")
+        # A scheduled winner is decided, so no runoff is started beside its session. Read under the poll's lock, as the
+        # 📅 path's check is, so the two cannot both succeed.
+        if view.poll.session_id is not None:
+            await self._dm(presser, self._session_text(text.POLL_RUNOFF_SCHEDULED, text.POLL_RUNOFF_SCHEDULED_NO_LINK,
+                                                       view.session_link))
+            return self._refused_poll(poll_id, "runoff", "scheduled")
         existing = await self._db.run(lambda c: polls.child_of(c, poll_id))
         if existing is not None:
             await self._dm(presser, self._linked_text(text.POLL_RUNOFF_EXISTS, text.POLL_RUNOFF_EXISTS_NO_LINK, existing))
@@ -361,6 +375,15 @@ class PollFlow:
             return without_link
         link = render.jump_link(text.POLL_LINK_LABEL, self._config.instance_url, poll.guild_id, poll.channel_id,
                                 poll.message_id)
+        return with_link.format(link=link)
+
+    def _session_text(self, with_link: str, without_link: str, session: tuple[str, str, str] | None) -> str:
+        """A text that names the scheduled session by its message link (guild, channel, message), or the no-link text
+        when the instance URL is not set or the session is not found."""
+        if not self._config.instance_url or session is None:
+            return without_link
+        guild_id, channel_id, message_id = session
+        link = render.jump_link(text.SESSION_LINK_LABEL, self._config.instance_url, guild_id, channel_id, message_id)
         return with_link.format(link=link)
 
     def _refused_poll(self, poll_id: int, action: str, reason: str) -> None:

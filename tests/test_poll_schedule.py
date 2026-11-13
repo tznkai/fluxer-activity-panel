@@ -764,3 +764,99 @@ async def test_an_admin_scheduling_when_the_card_is_at_its_cap_gets_the_card_tex
     assert dm_contents(world.state, ADMIN) == [text.SESSION_CAP["card"].format(card="Lobby")]
     assert len(await sessions_all(world)) == 10
     assert session_posts(world.state) == []
+
+
+# 📅 and 🔁 on one poll exclude each other ---------------------------------------------------------------------
+
+async def test_a_runoff_started_first_blocks_scheduling_and_the_starter_is_linked_to_the_runoff(world: World) -> None:
+    parent = await closed_winner(world)
+    members(world.state, STARTER, VOTER_A, VOTER_B, VOTER_C)
+    await react(world, STARTER, RUNOFF)
+    runoff = await runoff_of(world, parent)
+    assert runoff is not None
+    posts_before = len(session_posts(world.state))   # the runoff's own poll message is one of these
+
+    await react(world, STARTER, SESSION)
+
+    assert await sessions_all(world) == []
+    assert len(session_posts(world.state)) == posts_before
+    assert (await stored(world, parent)).session_id is None
+    assert dm_contents(world.state, STARTER)[-1] == text.POLL_SCHEDULE_RUNOFF_EXISTS.format(
+        link=link_to(world, PLAY, runoff.message_id))
+    assert await runoff_of(world, runoff.id) is None
+
+
+async def test_a_session_scheduled_first_blocks_a_runoff_and_the_starter_is_linked_to_the_session(world: World) -> None:
+    parent = await closed_winner(world)
+    members(world.state, STARTER, VOTER_A, VOTER_B, VOTER_C)
+    await react(world, STARTER, SESSION)
+    [(_session_id, _proposer, _starts, message_id)] = await sessions_all(world)
+
+    await react(world, STARTER, RUNOFF)
+
+    assert await runoff_of(world, parent) is None
+    assert len(session_posts(world.state)) == 1
+    assert dm_contents(world.state, STARTER)[-1] == text.POLL_RUNOFF_SCHEDULED.format(link=session_link(message_id))
+
+
+async def test_a_runoff_blocks_scheduling_with_no_instance_url_and_names_no_link(world: World) -> None:
+    parent = await closed_winner(world)
+    members(world.state, STARTER, VOTER_A, VOTER_B, VOTER_C)
+    await react(world, STARTER, RUNOFF)
+
+    await react(world, STARTER, SESSION)
+
+    assert await sessions_all(world) == []
+    assert dm_contents(world.state, STARTER)[-1] == text.POLL_SCHEDULE_RUNOFF_EXISTS.format(
+        link=link_to(world, PLAY, (await runoff_of(world, parent)).message_id))
+
+
+@pytest.mark.parametrize("world", [{"instance_url": False}], indirect=True)
+async def test_a_scheduled_winner_blocks_a_runoff_with_no_instance_url_and_names_no_link(world: World) -> None:
+    await closed_winner(world)
+    await react(world, STARTER, SESSION)
+
+    await react(world, STARTER, RUNOFF)
+
+    assert dm_contents(world.state, STARTER)[-1] == text.POLL_RUNOFF_SCHEDULED_NO_LINK
+
+
+async def test_the_calendar_on_a_closed_runoff_still_schedules_the_runoff_winner_beside_its_parent(world: World) -> None:
+    parent = await closed_winner(world)
+    members(world.state, STARTER, VOTER_A, VOTER_B, VOTER_C)
+    await react(world, STARTER, RUNOFF)
+    runoff = await runoff_of(world, parent)
+    assert runoff is not None
+    await reply(world, STARTER, "a")
+    world.clock.now = runoff.closes_at
+    await world.jobs.run()
+    await world.post.drain()
+    assert (await stored(world, runoff.id)).outcome == "winner"
+
+    await react(world, STARTER, SESSION, message=runoff.message_id)
+
+    [(_session_id, proposer, starts_at, _message)] = await sessions_all(world)
+    assert (proposer, starts_at) == (STARTER, ONE)
+    assert (await stored(world, runoff.id)).session_id is not None
+
+
+async def test_a_schedule_and_a_runoff_at_once_on_one_closed_poll_let_exactly_one_act(world: World) -> None:
+    parent = await closed_winner(world)
+    members(world.state, STARTER, VOTER_A, VOTER_B, VOTER_C)
+    world.clock.now = CLOSES
+
+    def press(name: str) -> Any:
+        return world.presses.on_reaction(events.ReactionAdd(
+            user_id=STARTER, channel_id=PLAY, message_id=POLL_MSG, guild_id=GUILD,
+            emoji=events.Emoji(name=name, id=None), member_role_ids=None, user_is_bot=False))
+
+    await asyncio.gather(press(SESSION), press(RUNOFF))
+    await world.post.drain()
+
+    sessions = await sessions_all(world)
+    runoff = await runoff_of(world, parent)
+    assert len(sessions) + (runoff is not None) == 1
+    if sessions:
+        assert runoff is None
+    else:
+        assert runoff is not None and (await stored(world, parent)).session_id is None

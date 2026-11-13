@@ -285,6 +285,9 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   left, 🔁 is refused (`POLL_RUNOFF_TOO_SOON`) and the presser is told to use 📅. A runoff keeps the parent's starter,
   and its candidates are the top three usable times that have votes; fewer than two is refused. The README's `### Polls`
   states the same rule.
+- 📅 and 🔁 exclude each other on one poll. `_schedule` refuses when `polls.child_of` finds a runoff (`reason=runoff_exists`), and
+  `_runoff` refuses when `poll.session_id` is set (`reason=scheduled`). Each check runs under the poll's lock after the re-read,
+  and each refusal DMs the presser a link to the other (the `_NO_LINK` text when the instance URL is unset). A runoff's own 📅 is unaffected.
 - Poll logs carry `poll_id`, `card_id`, counts and reason keys only, never typed text, names or user ids.
 - The card lock covers the post and insert of a poll, the close transaction and the `!poll` changes; DMs and edits run
   after it. `PollCloser.close_locked` is only for a caller that holds the card lock (archive). The 404 hook

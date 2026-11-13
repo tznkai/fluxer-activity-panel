@@ -426,6 +426,10 @@ POLL_RUNOFF_NEEDS_TWO = ("Fewer than two usable times have votes, so there is no
                          "to schedule the winner instead.")
 POLL_RUNOFF_TOO_SOON = ("There isn't time for a runoff before its earliest time, <t:{ts}:F>. Press the calendar "
                         "(\U0001F4C5) to schedule the winner instead.")
+POLL_SCHEDULE_RUNOFF_EXISTS = "A runoff already decides this poll's time, so nothing was scheduled: {link}"
+POLL_SCHEDULE_RUNOFF_EXISTS_NO_LINK = "A runoff already decides this poll's time, so nothing was scheduled."
+POLL_RUNOFF_SCHEDULED = "This poll's winner is already scheduled, so no runoff was started: {link}"
+POLL_RUNOFF_SCHEDULED_NO_LINK = "This poll's winner is already scheduled, so no runoff was started."
 POLL_RUNOFF_EXISTS = "This poll already has a runoff: {link}"
 POLL_RUNOFF_EXISTS_NO_LINK = "This poll already has a runoff."
 POLL_RUNOFF_STARTED = "The runoff is open, and its ballots are with the voters: {link}"
@@ -451,6 +455,8 @@ POLL_SHOWN_PENDING = "The ballot will show {n} options at the next sort. Nothing
 POLL_SHOWN_RANGE = "The number of options shown must be from 1 to 20."
 POLL_EXTENDED = "The poll now closes <t:{ts}:F> (<t:{ts}:R>)."
 POLL_EXTEND_CAP = "That would make the poll run longer than a poll may run, so nothing changed."
+POLL_EXTEND_RUNOFF_CAP = ("A runoff can't close later than <t:{ts}:F>, an hour and ten minutes before its earliest time, "
+                          "so nothing changed.")
 POLL_CLOSED_DONE = "The poll is closed."
 POLL_LIST_EMPTY = "You have no polls to show."
 POLL_LIST_LINE = "{n}. {card} · {state} · {when}{link}"
