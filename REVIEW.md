@@ -363,6 +363,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/dm_router.py:64` `def admit(self, user_id: str) -> bool:` — `NonAdminLimiter.admit` allows 5 commands, replies or DM reactions per 60 seconds per non-admin user.
 - `src/fluxer_panel/dm_router.py:65` `if user_id in self._config.admin_user_ids:` — admins are exempt from the limit.
 - `src/fluxer_panel/dm_router.py:127` `if not self._limiter.admit(event.author_id):` — a `!session` command from a non-admin is rate limited before it is parsed.
+- `src/fluxer_panel/dm_router.py:132` `poll_head = _head(event.content, self._config.prefix, "poll")` — a `!poll` command from a non-admin is admitted through the same non-admin limiter as `!session` (the admit call is the next branch), before it is parsed or reaches the poll commands.
 - `src/fluxer_panel/dm_router.py:139` `if admin.parse_head(event.content, self._config.prefix) is not None:` — admin heads (`!admin`, `!card`, `!request`) go to `admin.handle` unchanged, and `authorize` checks them there.
 - `src/fluxer_panel/session_flow.py:223` `if not self._limiter.admit(user):` — a 📅 reaction in a DM uses the same limiter.
 - `src/fluxer_panel/session_commands.py:137` `return event.author_id == session.proposer_id or admin.authorize(event, self._config)` — a session change needs the proposer or an admin.

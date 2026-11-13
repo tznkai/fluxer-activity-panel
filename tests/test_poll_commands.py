@@ -46,6 +46,7 @@ GAMES = "3001"
 CHANNEL = "3010"
 POLL_MSG = "5001"
 POLL_MSG2 = "5002"
+POLL_MSG3 = "5003"
 CMD_DM = "8800"                 # the DM channel the commands are sent from and answered in
 NOW = 1_800_000_000
 ONE = NOW + 7200
@@ -127,6 +128,7 @@ async def build(tmp_path: Path, aiohttp_server: Any) -> AsyncIterator[Callable[[
             state = FakeFluxerState(bot_user_id=BOT, next_message_id=9001)
             state.messages[(CHANNEL, POLL_MSG)] = {"embeds": []}
             state.messages[(CHANNEL, POLL_MSG2)] = {"embeds": []}
+            state.messages[(CHANNEL, POLL_MSG3)] = {"embeds": []}
             server = await aiohttp_server(make_rest_app(state))
             base = str(server.make_url("/")).rstrip("/")
             rest = FluxerREST(client, f"{base}/api", TOKEN)
@@ -279,6 +281,16 @@ async def test_shown_stores_a_pending_size_and_changes_nothing_until_the_next_so
     assert poll.ballot_size == 3 and poll.pending_ballot_size is None
 
 
+async def test_shown_without_a_number_answers_usage_and_stores_no_pending_size(build) -> None:
+    world = await build()
+    poll_id = await started(world)
+
+    await run(world, STARTER, "shown 1")
+
+    assert last_reply(world) == text.POLL_USAGE
+    assert (await poll_row(world, poll_id)).pending_ballot_size is None
+
+
 async def test_shown_accepts_the_bounds_one_and_twenty(build) -> None:
     world = await build()
     poll_id = await started(world)
@@ -376,15 +388,18 @@ async def test_close_closes_the_poll_at_once_through_the_close_path_with_its_edi
 
 # AC5.6: list, vote and help -----------------------------------------------------------------------------
 
-async def test_list_shows_a_member_the_polls_they_were_sent_or_started(build) -> None:
+async def test_list_shows_a_member_the_polls_they_were_sent_or_started_newest_first(build) -> None:
     world = await build()
     await started(world)
-    await started(world, slug="other", title="Other", starts=(ONE,), users=(OTHER,), message=POLL_MSG2)
+    await started(world, slug="other", title="Other", starts=(ONE,), users=(HOLDER,), message=POLL_MSG2)
+    await started(world, slug="stranger", title="Elsewhere", starts=(ONE,), users=(OTHER,), message=POLL_MSG3)
 
     await run(world, HOLDER, "list")
 
     lines = last_reply(world).splitlines()
-    assert len(lines) == 1 and "Lobby" in lines[0] and "Other" not in lines[0]
+    assert len(lines) == 2
+    assert "Other" in lines[0] and "Lobby" in lines[1]
+    assert "Elsewhere" not in last_reply(world)
 
 
 async def test_list_for_a_stranger_says_there_are_no_polls(build) -> None:
@@ -405,7 +420,7 @@ async def test_list_for_an_admin_shows_every_open_poll(build) -> None:
 
     lines = last_reply(world).splitlines()
     assert len(lines) == 2
-    assert "Lobby" in lines[0] and "Other" in lines[1]
+    assert "Other" in lines[0] and "Lobby" in lines[1]
 
 
 async def test_vote_sets_the_picks_like_a_reply_and_answers_in_the_command_channel(build) -> None:

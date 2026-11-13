@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fluxer_client.events import MessageCreate
@@ -70,13 +70,13 @@ def _extend_tx(conn: Any, poll_id: int, seconds: int, cap: int) -> tuple[str, in
 
 
 def _listing(conn: Any, *, user_id: str, everyone: bool) -> list[tuple[polls.Poll, str]]:
-    """The polls a user may list, oldest first, with each card's title. A member sees the polls they started or were
-    sent (open and closed). An admin also sees every open poll."""
+    """The polls a user may list, newest first (by poll id, which is assigned in creation order), with each card's
+    title. A member sees the polls they started or were sent (open and closed). An admin also sees every open poll."""
     found = {poll.id: poll for poll in polls.for_user(conn, user_id)}
     if everyone:
         found.update({poll.id: poll for poll in polls.open_polls(conn)})
     rows: list[tuple[polls.Poll, str]] = []
-    for poll in sorted(found.values(), key=lambda p: p.id):
+    for poll in sorted(found.values(), key=lambda p: p.id, reverse=True):
         card = cards.get_by_id(conn, poll.card_id)
         rows.append((poll, card.title if card is not None else ""))
     return rows
@@ -95,7 +95,7 @@ class PollCommands:
         self._closer = closer
         self._clock = clock
         self._kick = kick
-        self._handlers: dict[str, Callable[[polls.Poll, str], Any]] = {
+        self._handlers: dict[str, Callable[[polls.Poll, str], Awaitable[_Reply]]] = {
             "sort": self._sort, "shown": self._shown, "extend": self._extend, "close": self._close,
         }
 
