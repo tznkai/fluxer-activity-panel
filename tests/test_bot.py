@@ -513,6 +513,10 @@ class _RecordingHandler:
     async def me_too_changed(self, card_id: int, surface: Surface, user_id: str) -> None:
         pass
 
+    async def poll_reaction(self, poll_id: int, user_id: str, emoji: str, channel_id: str,
+                            message_id: str) -> None:
+        pass
+
 
 @pytest.fixture
 async def press_db(tmp_path):

@@ -123,6 +123,10 @@ class RecordingHandler:
     async def me_too_changed(self, card_id: int, surface: Surface, user_id: str) -> None:
         return None
 
+    async def poll_reaction(self, poll_id: int, user_id: str, emoji: str, channel_id: str,
+                            message_id: str) -> None:
+        return None
+
 
 def presses_for(world: World) -> tuple[Presses, RecordingHandler]:
     handler = RecordingHandler()

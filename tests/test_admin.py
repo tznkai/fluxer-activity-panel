@@ -11,7 +11,7 @@ import pytest
 
 from fluxer_client.events import MessageCreate
 from fluxer_client.rest import FluxerREST
-from fluxer_panel.admin import authorize, handle, parse_command, parse_head
+from fluxer_panel.admin import authorize, handle, is_admin_id, parse_command, parse_head
 from fluxer_panel.config import Config
 from tests.fakes import FakeFluxerState, make_rest_app
 
@@ -173,3 +173,13 @@ async def test_card_head_without_a_card_context_is_ignored(fake, session) -> Non
     state, base = fake
     await handle(make_message("!card list"), make_config(), make_rest(session, base))
     assert state.requests == []
+
+
+def test_is_admin_id_is_true_only_for_a_listed_snowflake() -> None:
+    config = make_config(ADMIN_USER_IDS="1001,1002")
+    assert is_admin_id("1001", config)
+    assert is_admin_id("1002", config)
+    assert not is_admin_id("1003", config)
+    assert not is_admin_id("", config)
+    assert not is_admin_id("1001 ", config)
+    assert not is_admin_id("admin", config)

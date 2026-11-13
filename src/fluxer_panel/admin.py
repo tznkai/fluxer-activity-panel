@@ -29,6 +29,11 @@ def authorize(event: MessageCreate, config: Config) -> bool:
     )
 
 
+def is_admin_id(user_id: str, config: Config) -> bool:
+    """For a guild reaction, where `authorize`'s DM-only rule cannot apply: exact match on a validated id."""
+    return is_snowflake(user_id) and user_id in config.admin_user_ids
+
+
 def parse_head(content: str, prefix: str) -> tuple[str, str] | None:
     """'<prefix><head> <args>' -> (head, args) for a known head; None when the message is not a command."""
     text = content.strip()

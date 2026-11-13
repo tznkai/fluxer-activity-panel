@@ -22,7 +22,7 @@ from typing import Literal, Protocol
 
 from fluxer_client import events
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
-from fluxer_panel import board, cards, interaction_settings, notify, play_now, rsvp, sessions, subscriptions, text
+from fluxer_panel import board, cards, interaction_settings, notify, play_now, polls, rsvp, sessions, subscriptions, text
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.dm_backoff import DmBackoff
@@ -39,6 +39,9 @@ FOLLOW_EMOJI = "\U0001F514"        # the bell
 PLAY_NOW_EMOJI = "\U0001F64B"      # the person raising a hand
 SESSION_EMOJI = "\U0001F4C5"       # the calendar: proposes a session
 POLL_EMOJI = "\U0001F5F3\ufe0f"    # the ballot box: starts a time poll
+RUNOFF_EMOJI = "\U0001F501"        # the repeat button: starts a runoff on a closed poll
+# On a poll message, \ud83d\udcc5 and \ud83d\udd01 are the poll's actions, compared without U+FE0F. They are not presses.
+POLL_ACTION_EMOJI = frozenset({SESSION_EMOJI, RUNOFF_EMOJI})
 
 SurfaceKind = Literal["card", "copy", "play_now", "session"]
 
@@ -84,6 +87,8 @@ class PressHandler(Protocol):
     async def handle(self, press: Press) -> None: ...
     async def me_too_changed(self, card_id: int, surface: Surface, user_id: str) -> None: ...
     async def rsvp_changed(self, session_id: int, user_id: str, choice: rsvp.Choice, added: bool) -> None: ...
+    async def poll_reaction(self, poll_id: int, user_id: str, emoji: str, channel_id: str,
+                            message_id: str) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -130,6 +135,14 @@ def _lookup(conn, channel_id: str, message_id: str) -> _Lookup | None:
                    degraded=interaction_settings.is_degraded(conn, channel_id))
 
 
+def _find_poll(conn, channel_id: str, message_id: str) -> int | None:
+    """The id of the poll whose message this is, when it is in this channel."""
+    poll = polls.get_by_message(conn, message_id)
+    if poll is None or poll.channel_id != channel_id:
+        return None
+    return poll.id
+
+
 def _find_session(conn, channel_id: str, message_id: str) -> int | None:
     """The id of the session whose message this is, when it is in this channel. The state is not checked here:
     `Interactions.rsvp_changed` reads it under the card's lock."""
@@ -172,6 +185,19 @@ class Presses:
                     log_event(log, "rsvp_failed", level=logging.WARNING, session_id=session_id,
                               reason=type(exc).__name__)
             return
+        # 1c. 📅 and 🔁 on a poll message act on the poll: no kill switch, no rate limit. Only an add counts, and the
+        # poll flow removes the presser's reaction, so a removal reaches nothing here.
+        if event.emoji.id is None and event.emoji.name.replace("\ufe0f", "") in POLL_ACTION_EMOJI:
+            poll_id = await self._db.run(lambda c: _find_poll(c, event.channel_id, event.message_id))
+            if poll_id is not None:
+                if isinstance(event, events.ReactionAdd):
+                    try:
+                        await self._handler.poll_reaction(poll_id, event.user_id, event.emoji.name,
+                                                          event.channel_id, event.message_id)
+                    except Exception as exc:  # noqa: BLE001 - a failed poll action is logged, never raised into the gateway
+                        log_event(log, "poll_reaction_failed", level=logging.WARNING, poll_id=poll_id,
+                                  reason=type(exc).__name__)
+                return
         # 2. Only the press emoji count.
         action = action_for(event.emoji)
         if action is None:

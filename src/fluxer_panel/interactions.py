@@ -163,6 +163,13 @@ class Interactions:
             return
         await self._poll_flow.start(press)
 
+    async def poll_reaction(self, poll_id: int, user_id: str, emoji: str, channel_id: str, message_id: str) -> None:
+        """A 📅 or 🔁 on a poll message. Not a press: the poll flow checks the presser and removes the reaction. Without a
+        flow nothing happens."""
+        if self._poll_flow is None:
+            return
+        await self._poll_flow.on_poll_reaction(poll_id, user_id, emoji, channel_id, message_id)
+
     async def wake(self, press: Press) -> None:
         """A wake press on any surface (card, copy or play-now post) wakes the card (AC4.8)."""
         if self._wake is None:

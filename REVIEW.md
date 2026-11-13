@@ -48,8 +48,9 @@ Paths are relative to this directory.
 - `src/fluxer_panel/admin.py:26` `not event.author_is_bot` — bot authors are refused.
 - `src/fluxer_panel/admin.py:27` `is_snowflake(event.author_id)` — the author id must be a valid snowflake before it is compared.
 - `src/fluxer_panel/admin.py:28` `event.author_id in config.admin_user_ids` — exact membership in the configured admin list.
-- `src/fluxer_panel/admin.py:56` `if not authorize(event, config):` — every admin subcommand passes through this check in `handle`.
-- `src/fluxer_panel/admin.py:57` `log_event(log, "admin_denied"` — a refusal is logged with the user and channel ids only.
+- `src/fluxer_panel/admin.py:32` `def is_admin_id(` — the admin check for a guild reaction, where the DM-only rule of `authorize` cannot apply: a snowflake id that is exactly in the configured admin list.
+- `src/fluxer_panel/admin.py:61` `if not authorize(event, config):` — every admin subcommand passes through this check in `handle`.
+- `src/fluxer_panel/admin.py:62` `log_event(log, "admin_denied"` — a refusal is logged with the user and channel ids only.
 - `src/fluxer_panel/bot.py:65` `if msg.author_id == self.user_id:` — the bot skips its own messages, so its replies cannot loop. Every other message goes to `DmRouter.route`. Guild messages, bot or non-snowflake authors and admin heads still reach `admin.handle`, where `authorize` refuses a command from a bot or a guild channel.
 - `src/fluxer_panel/poll_commands.py:158` `return event.author_id == poll.starter_id or admin.authorize(event, self._config)` — a poll change (sort, shown, extend, close) needs the poll's starter or an admin. A `!poll vote` is a ballot reply and needs neither.
 
@@ -91,21 +92,22 @@ Paths are relative to this directory.
 
 ## Reactions and presses
 
-- `src/fluxer_panel/presses.py:161` `if event.guild_id is None or event.user_id == self._identity.user_id or event.user_is_bot:` — DM reactions, the bot's own reactions and another bot's reactions never reach the press adapter.
-- `src/fluxer_panel/presses.py:181` `if found is None or not found.switched_on:` — the kill switch, the global one and the card's own, is read before any rate limit, so a switched-off surface absorbs nothing and counts nothing.
-- `src/fluxer_panel/presses.py:228` `if last is not None and now - last < self._config.press_user_window_seconds:` — the per-user window. A repeated press from one user inside it is absorbed.
-- `src/fluxer_panel/presses.py:236` `if len(times) >= self._config.press_card_burst:` — the per-card burst limit. A card's presses past the burst are absorbed.
-- `src/fluxer_panel/presses.py:294` `await self._pacer.wait(event.channel_id)` — the reaction removal waits for the channel's shared budget before the call.
-- `src/fluxer_panel/presses.py:295` `await self._rest.remove_reaction(event.channel_id, event.message_id, event.emoji.name, event.user_id)` — after a press is handled, the user's reaction is removed, so the button resets for the next tap.
-- `src/fluxer_panel/presses.py:298` `newly = await self._db.run(lambda c: interaction_settings.mark_degraded(c, channel, int(now)))` — a removal refused with 403 marks its channel degraded, and the admins are DMed once. A later press retries the removal at most once a day, and a success clears the mark.
+- `src/fluxer_panel/presses.py:174` `if event.guild_id is None or event.user_id == self._identity.user_id or event.user_is_bot:` — DM reactions, the bot's own reactions and another bot's reactions never reach the press adapter.
+- `src/fluxer_panel/presses.py:190` `in POLL_ACTION_EMOJI:` — 📅 and 🔁 on a poll message go to the poll flow before the kill switch and the rate limits, and only an add counts; a removal reaches nothing, because the poll flow removes the presser's reaction.
+- `src/fluxer_panel/presses.py:207` `if found is None or not found.switched_on:` — the kill switch, the global one and the card's own, is read before any rate limit, so a switched-off surface absorbs nothing and counts nothing.
+- `src/fluxer_panel/presses.py:254` `if last is not None and now - last < self._config.press_user_window_seconds:` — the per-user window. A repeated press from one user inside it is absorbed.
+- `src/fluxer_panel/presses.py:262` `if len(times) >= self._config.press_card_burst:` — the per-card burst limit. A card's presses past the burst are absorbed.
+- `src/fluxer_panel/presses.py:320` `await self._pacer.wait(event.channel_id)` — the reaction removal waits for the channel's shared budget before the call.
+- `src/fluxer_panel/presses.py:321` `await self._rest.remove_reaction(event.channel_id, event.message_id, event.emoji.name, event.user_id)` — after a press is handled, the user's reaction is removed, so the button resets for the next tap.
+- `src/fluxer_panel/presses.py:324` `newly = await self._db.run(lambda c: interaction_settings.mark_degraded(c, channel, int(now)))` — a removal refused with 403 marks its channel degraded, and the admins are DMed once. A later press retries the removal at most once a day, and a success clears the mark.
 
 ## Play-now mentions
 
 - `src/fluxer_panel/interactions.py:57` `return {"parse": []}` — a play-now message with no follow role mentions nobody.
 - `src/fluxer_panel/interactions.py:58` `return {"parse": [], "roles": [role_id], "replied_user": False}` — the play-now role ping. Only the card's own follow role can be mentioned, and only when `_role_in` has matched it.
 - `src/fluxer_panel/interactions.py:64` `return follow.role_id if follow is not None and follow.guild_id == guild_id else None` — the follow-role community check: a role from another community is never mentioned.
-- `src/fluxer_panel/interactions.py:335` `if channel_id == self._config.games_channel_id:` — the play-now guard in `send_play_now`. A play-now message is never sent to the games channel.
-- `src/fluxer_panel/interactions.py:336` `raise GamesChannelRefused` — the refusal happens before any REST call.
+- `src/fluxer_panel/interactions.py:342` `if channel_id == self._config.games_channel_id:` — the play-now guard in `send_play_now`. A play-now message is never sent to the games channel.
+- `src/fluxer_panel/interactions.py:343` `raise GamesChannelRefused` — the refusal happens before any REST call.
 
 ## Purge deletion
 
@@ -263,7 +265,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 
 ## Card commands
 
-- `src/fluxer_panel/admin.py:60` `if head == "card":` — the `!card` branch runs only after `authorize` has passed, so card commands share the DM-only, admin-only check.
+- `src/fluxer_panel/admin.py:65` `if head == "card":` — the `!card` branch runs only after `authorize` has passed, so card commands share the DM-only, admin-only check.
 - `src/fluxer_panel/cards.py:42` `super().__init__(f"{field}: {rule}")` — `CardFieldError` carries a field name and a rule key. The submitted value is never in the message.
 - `src/fluxer_panel/card_fields.py:63` `def suffix(field: str, value: str) -> str:` — the suffix validator. Suffixes are card text and will come from members later, so they are untrusted: composed to NFC, trimmed of spaces only (a newline is refused, not trimmed), runs of spaces collapsed, then 1 to 20 characters. A refusal names the field and the rule, never the value.
 - `src/fluxer_panel/card_fields.py:79` `def _suffix_char(` — the allowlist: Unicode letters, decimal digits and `SUFFIX_MARKS` (space and - + . '). Everything else is refused, parentheses, backticks, markdown, `@`, `<`, `#`, controls, format characters, bidi controls and emoji included, and so are the Hangul filler letters (`_BLANK_LETTERS`), which render blank.

@@ -19,13 +19,13 @@ import pytest
 
 from fluxer_client import events
 from fluxer_client.rest import FluxerREST, encode_emoji
-from fluxer_panel import board, cards, interaction_settings, play_now, subscriptions, text
+from fluxer_panel import board, cards, interaction_settings, play_now, polls, subscriptions, text
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.presses import (
-    FOLLOW_EMOJI, PLAY_NOW_EMOJI, POLL_EMOJI, SESSION_EMOJI, WAKE_EMOJI, Action, Press, Presses, Surface)
+    FOLLOW_EMOJI, PLAY_NOW_EMOJI, POLL_EMOJI, RUNOFF_EMOJI, SESSION_EMOJI, WAKE_EMOJI, Action, Press, Presses, Surface)
 from tests.fakes import FakeFluxerState, Override, make_rest_app
 
 TOKEN = "SENTINEL-TOKEN-presses"
@@ -52,6 +52,8 @@ COPY_MSG = "5005"
 FAR_MSG = "5006"
 PAUSED_MSG = "5007"
 PLAY_NOW_MSG = "5008"
+POLL_CHANNEL = "3006"    # a poll's channel, in GUILD
+POLL_MSG = "5009"        # a poll's message
 UNKNOWN_MSG = "5999"
 CARD_ID = 1
 SECOND_ID = 2
@@ -82,6 +84,7 @@ class RecordingHandler:
         self.presses: list[Press] = []
         self.me_too: list[tuple[int, Surface, str]] = []
         self.rsvps: list[tuple[int, str, str, bool]] = []   # (session id, user id, choice, added)
+        self.poll_reactions: list[tuple[int, str, str, str, str]] = []   # (poll id, user, emoji, channel, message)
         self.deletes_at_call: list[int] = []
         self.fail = False
         self.rsvp_fail = False
@@ -94,6 +97,9 @@ class RecordingHandler:
 
     async def me_too_changed(self, card_id: int, surface: Surface, user_id: str) -> None:
         self.me_too.append((card_id, surface, user_id))
+
+    async def poll_reaction(self, poll_id: int, user_id: str, emoji: str, channel_id: str, message_id: str) -> None:
+        self.poll_reactions.append((poll_id, user_id, emoji, channel_id, message_id))
 
     async def rsvp_changed(self, session_id: int, user_id: str, choice: str, added: bool) -> None:
         self.rsvps.append((session_id, user_id, choice, added))
@@ -211,6 +217,15 @@ def reaction_remove(user: str = PRESSER, channel: str = GAMES, message: str = CA
                                  emoji=emoji_event(name), member_role_ids=frozenset({ROLE}))
 
 
+def store_poll(conn) -> int:
+    """An open approval poll in POLL_CHANNEL, on POLL_MSG, for the seeded card."""
+    poll_id = polls.create(conn, card_id=CARD_ID, guild_id=GUILD, channel_id=POLL_CHANNEL, message_id=POLL_MSG,
+                           starter_id=ADMIN, kind="approval", parent_poll_id=None, now=1, closes_at=10**9,
+                           ballot_size=2, options=[(10**9, "offered")], recipients=[PRESSER])
+    assert poll_id is not None
+    return poll_id
+
+
 def deletes(state: FakeFluxerState) -> list[str]:
     return [r.raw_path for r in state.requests if r.method == "DELETE"]
 
@@ -305,6 +320,55 @@ async def test_me_too_on_a_play_now_post_goes_to_the_handler_for_adds_and_remove
     assert [(card, surface.kind, user) for card, surface, user in h.handler.me_too] == [
         (CARD_ID, "play_now", PRESSER_2), (CARD_ID, "play_now", PRESSER_2)]
     assert deletes(h.state) == []
+
+
+# Poll messages -----------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("name", [SESSION_EMOJI, SESSION_EMOJI + "\ufe0f", RUNOFF_EMOJI, RUNOFF_EMOJI + "\ufe0f"])
+async def test_schedule_and_runoff_on_a_poll_message_reach_the_handler_and_are_not_presses(
+        harness, caplog, name: str) -> None:
+    caplog.set_level(logging.INFO, logger="fluxer_panel")
+    h = await harness()
+    poll_id = await h.db.run(store_poll)
+    await h.presses.on_reaction(reaction_add(channel=POLL_CHANNEL, message=POLL_MSG, name=name))
+    assert h.handler.poll_reactions == [(poll_id, PRESSER, name, POLL_CHANNEL, POLL_MSG)]
+    assert h.handler.presses == []
+    assert h.handler.me_too == []
+    assert [r for r in panel_records(caplog) if r.getMessage() == "press"] == []
+
+
+async def test_a_poll_message_action_is_not_rate_limited_or_killed(harness) -> None:
+    h = await harness()
+    poll_id = await h.db.run(store_poll)
+    await h.db.run(lambda c: interaction_settings.set_enabled(c, False))
+    for _ in range(2):   # the same user twice in one window: both reach the handler
+        await h.presses.on_reaction(reaction_add(channel=POLL_CHANNEL, message=POLL_MSG, name=SESSION_EMOJI))
+    assert h.handler.poll_reactions == [(poll_id, PRESSER, SESSION_EMOJI, POLL_CHANNEL, POLL_MSG)] * 2
+
+
+async def test_a_removal_on_a_poll_message_reaches_nothing(harness) -> None:
+    h = await harness()
+    await h.db.run(store_poll)
+    await h.presses.on_reaction(reaction_remove(channel=POLL_CHANNEL, message=POLL_MSG, name=SESSION_EMOJI))
+    await h.presses.on_reaction(reaction_remove(channel=POLL_CHANNEL, message=POLL_MSG, name=RUNOFF_EMOJI))
+    assert h.handler.poll_reactions == []
+    assert deletes(h.state) == []
+
+
+async def test_other_or_custom_emoji_on_a_poll_message_is_not_a_poll_action(harness) -> None:
+    h = await harness()
+    await h.db.run(store_poll)
+    await h.presses.on_reaction(reaction_add(channel=POLL_CHANNEL, message=POLL_MSG, name=SESSION_EMOJI,
+                                             custom_id=CUSTOM_ID))
+    await h.presses.on_reaction(reaction_add(channel=POLL_CHANNEL, message=POLL_MSG, name=THUMBS_UP))
+    assert h.handler.poll_reactions == []
+
+
+async def test_the_runoff_emoji_on_a_card_does_nothing(harness) -> None:
+    h = await harness()
+    await h.presses.on_reaction(reaction_add(name=RUNOFF_EMOJI))
+    assert h.handler.presses == []
+    assert h.handler.poll_reactions == []
 
 
 # Removal -----------------------------------------------------------------------------------------------
