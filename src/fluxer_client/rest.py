@@ -209,6 +209,16 @@ class FluxerREST:
         path = f"/guilds/{require_snowflake(guild_id)}/members/{require_snowflake(user_id)}"
         return await self.request("GET", path)
 
+    async def list_members(self, guild_id: str, *, limit: int = 1000,
+                           after: str | None = None) -> list[dict[str, Any]]:
+        if not 1 <= limit <= 1000:
+            raise ValueError("limit must be 1-1000")
+        path = f"/guilds/{require_snowflake(guild_id)}/members?limit={limit}"
+        if after is not None:
+            path += f"&after={require_snowflake(after)}"
+        result = await self.request("GET", path)
+        return [m for m in result if isinstance(m, dict)] if isinstance(result, list) else []
+
     async def edit_message(
         self,
         channel_id: str,

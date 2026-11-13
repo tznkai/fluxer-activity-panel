@@ -215,6 +215,16 @@ def make_rest_app(state: FakeFluxerState) -> web.Application:
             return _send(state, request, 404, {"code": "UNKNOWN_MEMBER", "message": "Unknown member"})
         return _send(state, request, 200, state.members[key])
 
+    async def members_list(request: web.Request) -> web.Response:
+        gid = request.match_info["gid"]
+        limit = int(request.query.get("limit", "1"))
+        after = request.query.get("after")
+        rows = sorted(((uid, m) for (g, uid), m in state.members.items() if g == gid), key=lambda r: int(r[0]))
+        if after is not None:
+            rows = [r for r in rows if int(r[0]) > int(after)]
+        body = [{**m, "user": {**m.get("user", {}), "id": uid}} for uid, m in rows[:limit]]
+        return _send(state, request, 200, body)
+
     def _key(request: web.Request) -> tuple[str, str]:
         return request.match_info["cid"], request.match_info["mid"]
 
@@ -391,6 +401,7 @@ def make_rest_app(state: FakeFluxerState) -> web.Application:
     app.router.add_post("/api/v1/guilds/{gid}/roles", create_role)
     app.router.add_patch("/api/v1/guilds/{gid}/roles/{rid}", patch_role)
     app.router.add_get("/api/v1/guilds/{gid}/members/{uid}", member)
+    app.router.add_get("/api/v1/guilds/{gid}/members", members_list)
     app.router.add_get("/api/v1/channels/{cid}/messages", channel_messages)
     reactions_path = "/api/v1/channels/{cid}/messages/{mid}/reactions"
     app.router.add_get(f"{reactions_path}/{{emoji}}/users", reaction_users)

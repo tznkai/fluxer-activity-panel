@@ -807,6 +807,79 @@ async def test_bulk_removal_leaves_other_messages_alone(fake, session):
     assert [r["emoji"]["name"] for r in (await rest.get_message("1", second))["reactions"]] == [RAISED_HAND]
 
 
+# Member list: one paged GET. Ids are validated before the request; `after` is the last user id seen.
+
+
+async def test_list_members_first_page_path_and_raw_query(fake, session):
+    state, base = fake
+    state.members = {("1001", "2001"): {"roles": []}}
+    await make_rest(session, base).list_members("1001", limit=1000)
+    (rec,) = state.requests
+    assert rec.method == "GET"
+    assert rec.path == "/api/v1/guilds/1001/members"
+    assert rec.raw_path == "/api/v1/guilds/1001/members?limit=1000"
+
+
+async def test_list_members_after_cursor_is_appended_to_the_query(fake, session):
+    state, base = fake
+    await make_rest(session, base).list_members("1001", limit=1000, after="2003")
+    assert state.requests[0].raw_path == "/api/v1/guilds/1001/members?limit=1000&after=2003"
+
+
+async def test_list_members_returns_member_dicts_with_user_id_filled(fake, session):
+    state, base = fake
+    state.members = {
+        ("1001", "2002"): {"roles": ["6000"], "user": {"username": "two"}},
+        ("1001", "2001"): {"roles": []},
+        ("1002", "2009"): {"roles": []},
+    }
+    members = await make_rest(session, base).list_members("1001")
+    assert members == [
+        {"roles": [], "user": {"id": "2001"}},
+        {"roles": ["6000"], "user": {"username": "two", "id": "2002"}},
+    ]
+
+
+async def test_list_members_respects_limit_and_after(fake, session):
+    state, base = fake
+    state.members = {("1001", str(uid)): {"roles": []} for uid in (2001, 2002, 2003, 2004)}
+    rest = make_rest(session, base)
+    first = await rest.list_members("1001", limit=2)
+    assert [m["user"]["id"] for m in first] == ["2001", "2002"]
+    second = await rest.list_members("1001", limit=2, after=first[-1]["user"]["id"])
+    assert [m["user"]["id"] for m in second] == ["2003", "2004"]
+
+
+@pytest.mark.parametrize("limit", [0, 1001])
+async def test_list_members_limit_out_of_range_raises_without_request(fake, session, limit):
+    state, base = fake
+    with pytest.raises(ValueError, match="limit must be 1-1000"):
+        await make_rest(session, base).list_members("1001", limit=limit)
+    assert state.requests == []
+
+
+@pytest.mark.parametrize("bad", BAD_IDS, ids=repr)
+async def test_list_members_bad_guild_id_raises_before_any_request(fake, session, bad):
+    state, base = fake
+    with pytest.raises(ValueError):
+        await make_rest(session, base).list_members(bad)
+    assert state.requests == []
+
+
+@pytest.mark.parametrize("bad", BAD_IDS, ids=repr)
+async def test_list_members_bad_after_raises_before_any_request(fake, session, bad):
+    state, base = fake
+    with pytest.raises(ValueError):
+        await make_rest(session, base).list_members("1001", after=bad)
+    assert state.requests == []
+
+
+async def test_list_members_non_list_body_gives_empty_list(fake, session):
+    state, base = fake
+    state.overrides["GET /api/v1/guilds/1001/members"] = Override(200, b'{"items": []}')
+    assert await make_rest(session, base).list_members("1001") == []
+
+
 @pytest.mark.parametrize("method, path, call", [
     ("POST", "/api/v1/guilds/1/roles", lambda r: r.create_role("1", name="x", mentionable=False)),
     ("PATCH", "/api/v1/guilds/1/roles/2", lambda r: r.set_role_mentionable("1", "2", mentionable=True)),
