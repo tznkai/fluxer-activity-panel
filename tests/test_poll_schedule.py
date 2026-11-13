@@ -641,7 +641,10 @@ async def test_a_runoff_reaction_on_a_closed_runoff_is_removed_and_starts_nothin
     await react(world, ADMIN, RUNOFF)
     runoff = await runoff_of(world, parent)
     assert runoff is not None
+    # Three voted times, so that a runoff of the runoff would have candidates and reach the guard under test.
     await reply(world, STARTER, "a")
+    await reply(world, VOTER_A, "b")
+    await reply(world, VOTER_G, "c, a")
     world.clock.now = runoff.closes_at
     await world.jobs.run()
     await world.post.drain()
