@@ -180,6 +180,47 @@ def dm_contents(w: World, user: str) -> list[str]:
             if r.method == "POST" and r.path == f"/api/v1/channels/{channel}/messages"]
 
 
+# A voter scheduled by a poll holds an implicit maybe (their session is a second one, with its own message).
+
+async def add_voted_session(w: World, maybe: list[str]) -> int:
+    """A second upcoming session on the same card, scheduled with these voters as implicit maybes."""
+    def tx(c: Any) -> int:
+        first = sessions.get(c, w.session_id)
+        assert first is not None
+        return sessions.add(c, card_id=first.card_id, guild_id=GUILD, channel_id=SESSION_CH, message_id=SECOND_MSG,
+                            starts_at=STARTS + 3600, ends_at=STARTS + 7200, proposer_id=PROPOSER, now=1, maybe=maybe)
+    return await w.db.run(tx)
+
+
+# The implicit maybe survives a reconcile while the voter has no reaction on the message.
+
+async def test_a_voters_implicit_maybe_survives_a_reconcile_with_no_reaction_from_them(world: World) -> None:
+    second = await add_voted_session(world, [BETA])
+    set_reactors(world, message_id=SECOND_MSG)   # the message is read in full, and nobody has reacted
+    await world.interactions.reconcile_sessions()
+    assert await presence_rows(world, second) == [(PROPOSER, "going", True), (BETA, "maybe", True)]
+
+
+# A voter's real maybe reaction on the message replaces the implicit row, so the row is real and counted.
+
+async def test_a_voters_maybe_reaction_on_the_message_replaces_their_implicit_maybe(world: World) -> None:
+    second = await add_voted_session(world, [BETA])
+    set_reactors(world, maybe=[BETA], message_id=SECOND_MSG)
+    await world.interactions.reconcile_sessions()
+    assert await presence_rows(world, second) == [(PROPOSER, "going", True), (BETA, "maybe", False)]
+    assert (await world.db.run(lambda c: sessions.rsvps_of(c, second)))[BETA] == ("maybe", None)
+
+
+# A voter's no reaction on the message replaces the implicit maybe too: the voter is no, and nothing else remains.
+
+async def test_a_voters_no_reaction_on_the_message_replaces_their_implicit_maybe(world: World) -> None:
+    second = await add_voted_session(world, [BETA])
+    set_reactors(world, no=[BETA], message_id=SECOND_MSG)
+    await world.interactions.reconcile_sessions()
+    assert await presence_rows(world, second) == [(PROPOSER, "going", True), (BETA, "no", False)]
+    assert (await world.db.run(lambda c: sessions.rsvps_of(c, second)))[BETA] == ("no", None)
+
+
 # AC4.11: missing rows are added, rows whose reaction is gone are deleted, and the states are recomputed.
 
 async def test_reconcile_adds_missing_rows_deletes_gone_reactions_and_recomputes(world: World) -> None:

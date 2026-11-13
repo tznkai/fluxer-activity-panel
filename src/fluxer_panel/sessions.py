@@ -10,6 +10,7 @@ expects, so a second command or a late event cannot undo a change that already h
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
@@ -89,9 +90,11 @@ def check_caps(conn: sqlite3.Connection, card_id: int, proposer_id: str | None) 
 def add(conn: sqlite3.Connection, *, card_id: int, guild_id: str, channel_id: str, message_id: str,
         starts_at: int, ends_at: int, proposer_id: str, now: int, location_text: str | None = None,
         seats: int | None = None, recurrence: str | None = None, series_id: int | None = None,
-        proposer_cap: bool = True) -> int:
+        proposer_cap: bool = True, maybe: Sequence[str] = ()) -> int:
     """Inserts an upcoming session with the proposer going. Runs in the caller's transaction, so the caps and the
-    insert are one step. A series' first occurrence takes its own id as its series id."""
+    insert are one step. A series' first occurrence takes its own id as its series id. Each user in `maybe` gets an
+    implicit maybe row after the proposer's, in ascending id order (the proposer and repeats are ignored), and the
+    states are recomputed in the same transaction. With `maybe` empty, no statement beyond the insert runs."""
     check_caps(conn, card_id, proposer_id if proposer_cap else None)
     cur = conn.execute(
         "INSERT INTO sessions (card_id, guild_id, channel_id, message_id, starts_at, ends_at, proposer_id, "
@@ -107,6 +110,14 @@ def add(conn: sqlite3.Connection, *, card_id: int, guild_id: str, channel_id: st
                  "VALUES (?, ?, 'going', ?, 1, 1)", (session_id, proposer_id, now))
     conn.execute("INSERT INTO rsvps (session_id, user_id, choice, responded_at, waitlist_pos) "
                  "VALUES (?, ?, 'going', ?, NULL)", (session_id, proposer_id, now))
+    voters = sorted(set(maybe) - {proposer_id}, key=int)
+    if voters:
+        for user_id in voters:
+            conn.execute("INSERT INTO rsvp_reaction (session_id, user_id, choice, added_at, seq, implicit) "
+                         "SELECT ?, ?, 'maybe', ?, COALESCE(MAX(seq), 0) + 1, 1 FROM rsvp_reaction WHERE session_id = ?",
+                         (session_id, user_id, now, session_id))
+        # Only the proposer is going, so the seat count cannot change the result: the session's own seats are passed.
+        _settle(conn, session_id, seats, now)
     return session_id
 
 
@@ -305,11 +316,10 @@ def rsvps_of(conn: sqlite3.Connection, session_id: int) -> rsvp.Rsvps:
 
 
 def add_presence(conn: sqlite3.Connection, session: Session, user_id: str, choice: str, now: int) -> bool:
-    """Adds one RSVP reaction. The proposer's implicit row goes first, so the first real reaction replaces it and
-    both rows never coexist. Returns False when the same reaction is already there."""
-    if user_id == session.proposer_id:
-        conn.execute("DELETE FROM rsvp_reaction WHERE session_id = ? AND user_id = ? AND implicit = 1",
-                     (session.id, user_id))
+    """Adds one RSVP reaction. A user's implicit row goes first (the proposer's going, or a voter's maybe), so their
+    first real reaction replaces it and both rows never coexist. Returns False when the same reaction is already there."""
+    conn.execute("DELETE FROM rsvp_reaction WHERE session_id = ? AND user_id = ? AND implicit = 1",
+                 (session.id, user_id))
     cur = conn.execute(
         "INSERT INTO rsvp_reaction (session_id, user_id, choice, added_at, seq, implicit) "
         "SELECT ?, ?, ?, ?, COALESCE(MAX(seq), 0) + 1, 0 FROM rsvp_reaction WHERE session_id = ? "
@@ -330,15 +340,16 @@ RECONCILE_ORDER: tuple[rsvp.Choice, ...] = ("going", "maybe", "no")
 
 def reconcile_presence(conn: sqlite3.Connection, session: Session, actual: dict[rsvp.Choice, set[str]], now: int) -> bool:
     """Makes the real (implicit = 0) presence rows match the reactions read from the message. A row whose reaction is
-    gone is deleted, and a reaction with no row is added. The proposer's implicit row goes first when they have any
-    reaction, since it shares the (session, user, going) key with a real going row. Missing rows go in the fixed order
-    going, maybe, no, and ascending user id within a choice, so the seqs are deterministic. The order in which reactions
-    were made while the bot was down is unknown, so this order is accepted. Returns whether anything changed."""
+    gone is deleted, and a reaction with no row is added. Each user who has any reaction on the message loses their
+    implicit row first (the proposer's going, or a voter's maybe), since it can share a key with a real row. Missing
+    rows go in the fixed order going, maybe, no, and ascending user id within a choice, so the seqs are deterministic.
+    The order in which reactions were made while the bot was down is unknown, so this order is accepted. Returns
+    whether anything changed."""
     changed = False
-    if any(session.proposer_id in users for users in actual.values()):
+    for user_id in sorted({user for users in actual.values() for user in users}, key=int):
         cur = conn.execute("DELETE FROM rsvp_reaction WHERE session_id = ? AND user_id = ? AND implicit = 1",
-                           (session.id, session.proposer_id))
-        if cur.rowcount == 1:
+                           (session.id, user_id))
+        if cur.rowcount > 0:
             changed = True
     for user_id, choice in conn.execute(
             "SELECT user_id, choice FROM rsvp_reaction WHERE session_id = ? AND implicit = 0",
@@ -368,8 +379,12 @@ def write_rsvps(conn: sqlite3.Connection, session_id: int, rsvps: rsvp.Rsvps, no
 def recompute(conn: sqlite3.Connection, session: Session, seats: int | None, now: int) -> rsvp.Outcome:
     """Runs the engine on the stored presence and states and writes the result. Every presence change calls this in
     the same transaction as the change."""
-    outcome = rsvp.apply(rsvps_of(conn, session.id), presence_of(conn, session.id), seats)
-    write_rsvps(conn, session.id, outcome.rsvps, now)
+    return _settle(conn, session.id, seats, now)
+
+
+def _settle(conn: sqlite3.Connection, session_id: int, seats: int | None, now: int) -> rsvp.Outcome:
+    outcome = rsvp.apply(rsvps_of(conn, session_id), presence_of(conn, session_id), seats)
+    write_rsvps(conn, session_id, outcome.rsvps, now)
     return outcome
 
 

@@ -40,6 +40,7 @@ GUILD = "2001"
 GAMES = "3100"          # the games channel: no session request may touch it (AC10.3)
 SESSION_CH = "3200"
 SESSION_MSG = "5100"
+SECOND_MSG = "5101"
 CARD_MSG = "5001"
 INSTANCE = "https://fluxer.invalid"
 STARTS = 1_800_000_000
@@ -124,6 +125,39 @@ def counts_text(going: int, maybe: int, waiting: int = 0) -> str:
 
 async def presence(w: World) -> list[rsvp.Presence]:
     return await w.db.run(lambda c: sessions.presence_of(c, w.session_id))
+
+
+# A voter scheduled by a poll holds an implicit maybe on a second session: their live reaction replaces it.
+
+async def add_voted_session(w: World, maybe: list[str]) -> int:
+    """A second upcoming session on the same card, scheduled with these voters as implicit maybes. It has no seat limit."""
+    def tx(c: Any) -> int:
+        first = sessions.get(c, w.session_id)
+        assert first is not None
+        return sessions.add(c, card_id=first.card_id, guild_id=GUILD, channel_id=SESSION_CH, message_id=SECOND_MSG,
+                            starts_at=STARTS + 3600, ends_at=STARTS + 7200, proposer_id=PROPOSER, now=1, maybe=maybe)
+    return await w.db.run(tx)
+
+
+async def flags_of(w: World, session_id: int) -> list[tuple[str, str, bool]]:
+    """The presence rows of one session in seq order: (user, choice, implicit)."""
+    rows = await w.db.run(lambda c: sessions.presence_of(c, session_id))
+    return [(p.user_id, p.choice, p.implicit) for p in rows]
+
+
+async def test_a_voters_live_maybe_replaces_their_implicit_maybe_and_the_count_keeps_them(world: World) -> None:
+    second = await add_voted_session(world, [ALPHA])
+    await world.interactions.rsvp_changed(second, ALPHA, "maybe", True)
+    assert await flags_of(world, second) == [(PROPOSER, "going", True), (ALPHA, "maybe", False)]
+    assert await world.db.run(lambda c: sessions.counts_of(c, second)) == rsvp.Counts(going=1, maybe=1, waiting=0)
+
+
+async def test_a_voter_who_goes_and_then_takes_it_back_keeps_no_row(world: World) -> None:
+    second = await add_voted_session(world, [ALPHA])
+    await world.interactions.rsvp_changed(second, ALPHA, "going", True)
+    assert await flags_of(world, second) == [(PROPOSER, "going", True), (ALPHA, "going", False)]
+    await world.interactions.rsvp_changed(second, ALPHA, "going", False)
+    assert await flags_of(world, second) == [(PROPOSER, "going", True)]
 
 
 # AC4.8: a waiting user is counted, and a promoted user gets exactly one DM with the jump link.

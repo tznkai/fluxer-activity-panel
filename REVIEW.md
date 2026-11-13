@@ -109,9 +109,9 @@ Paths are relative to this directory.
 
 ## Purge deletion
 
-- `src/fluxer_panel/sessions.py:191` `PURGE_DUE_SQL = ("state <> 'upcoming' AND closed_at < ?` — the expiry rule, shared by the due list and the delete's re-check. A session expires when it has been ended or cancelled (`closed_at`) for more than the session retention (7 days by default).
-- `src/fluxer_panel/sessions.py:191` `state <> 'upcoming' AND closed_at < ?` — an upcoming session (`closed_at` NULL) never matches, so it is never purged, however old its end.
-- `src/fluxer_panel/sessions.py:192` `AND NOT (recurrence IS 'weekly' AND next_posted = 0)` — keeps a weekly occurrence whose successor is not posted yet, so its purge cannot end the series. `IS` is NULL-safe, so a non-recurring session (recurrence NULL) is not kept by this test and is still purged.
+- `src/fluxer_panel/sessions.py:202` `PURGE_DUE_SQL = ("state <> 'upcoming' AND closed_at < ?` — the expiry rule, shared by the due list and the delete's re-check. A session expires when it has been ended or cancelled (`closed_at`) for more than the session retention (7 days by default).
+- `src/fluxer_panel/sessions.py:202` `state <> 'upcoming' AND closed_at < ?` — an upcoming session (`closed_at` NULL) never matches, so it is never purged, however old its end.
+- `src/fluxer_panel/sessions.py:203` `AND NOT (recurrence IS 'weekly' AND next_posted = 0)` — keeps a weekly occurrence whose successor is not posted yet, so its purge cannot end the series. `IS` is NULL-safe, so a non-recurring session (recurrence NULL) is not kept by this test and is still purged.
 - `src/fluxer_panel/purge.py:44` `def _purge_tx(` — one transaction: count the RSVPs of the due sessions, delete the due sessions, delete the old requests and play-now posts, and delete the closed polls past retention. The session delete re-checks the due rule, so a row that changed since it was read is kept.
 - `src/fluxer_panel/purge.py:57` `DELETE FROM sessions` — deletes the due sessions. Their RSVPs go with them by cascade.
 - `src/fluxer_panel/purge.py:58` `DELETE FROM requests` — deletes requests older than 30 days, whatever their status.
@@ -335,7 +335,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/rsvp.py:61` `newcomers = sorted(` — a new reaction is queued by the order it was added. A newcomer who finds the seats full joins the back of the waiting list.
 - `src/fluxer_panel/rsvp.py:69` `while waiting and (seats is None or len(going) < seats):` — the promotion loop fills free seats from the front of the waiting list.
 - `src/fluxer_panel/rsvp.py:72` `if state[u] == "waiting":` — `promoted` lists only users who were waiting before this run. A newcomer who takes a free seat is not reported as promoted.
-- `src/fluxer_panel/sessions.py:311` `DELETE FROM rsvp_reaction WHERE session_id` — the proposer's first real reaction replaces their implicit going row, so both rows never coexist.
+- `src/fluxer_panel/sessions.py:321` `DELETE FROM rsvp_reaction WHERE session_id` — a user's first real reaction replaces their implicit row (the proposer's going, or a poll voter's maybe), so both rows never coexist.
 - `src/fluxer_panel/session_post.py:147` `async def dm_promoted(` — one promotion DM per promoted user. It bypasses the DM backoff.
 
 ## Session channel guard

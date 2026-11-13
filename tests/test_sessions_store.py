@@ -409,6 +409,55 @@ async def test_counts_of_totals_the_stored_states(db: Database) -> None:
     assert await db.run(lambda c: sessions.counts_of(c, session_id)) == rsvp.Counts(going=1, maybe=1, waiting=0)
 
 
+# Implicit rows for any user (voters of a scheduled poll) ---------------------------------------------
+
+async def _flags(db: Database, session_id: int) -> list[tuple[str, str, bool]]:
+    """The presence rows in seq order without their seqs: (user, choice, implicit)."""
+    return [(user, choice, implicit) for user, choice, _, implicit in await _presence(db, session_id)]
+
+
+async def test_add_with_maybe_writes_one_implicit_maybe_row_per_voter_in_id_order_and_counts_them(db: Database) -> None:
+    session_id = await _add(db, await _card(db), proposer="1001", maybe=["1003", "1002"])
+
+    assert await _presence(db, session_id) == [("1001", "going", 1, True), ("1002", "maybe", 2, True),
+                                               ("1003", "maybe", 3, True)]
+    assert await db.run(lambda c: sessions.counts_of(c, session_id)) == rsvp.Counts(going=1, maybe=2, waiting=0)
+
+
+async def test_add_ignores_the_proposer_and_repeated_voters_in_maybe(db: Database) -> None:
+    session_id = await _add(db, await _card(db), proposer="1001", maybe=["1001", "1002", "1002"])
+
+    assert await _presence(db, session_id) == [("1001", "going", 1, True), ("1002", "maybe", 2, True)]
+
+
+async def test_a_voters_real_maybe_replaces_their_implicit_maybe_so_the_count_keeps_them(db: Database) -> None:
+    session_id = await _add(db, await _card(db), proposer="1001", maybe=["1002"])
+    session = await _get(db, session_id)
+
+    inserted = await db.run(lambda c: sessions.add_presence(c, session, "1002", "maybe", NOW))
+    await db.run(lambda c: sessions.recompute(c, session, None, NOW))
+
+    assert inserted is True
+    assert await _flags(db, session_id) == [("1001", "going", True), ("1002", "maybe", False)]
+    assert await db.run(lambda c: sessions.counts_of(c, session_id)) == rsvp.Counts(going=1, maybe=1, waiting=0)
+
+
+async def test_a_voters_going_takes_the_implicit_row_and_removing_it_leaves_them_no_row(db: Database) -> None:
+    session_id = await _add(db, await _card(db), proposer="1001", maybe=["1002"])
+    session = await _get(db, session_id)
+
+    await db.run(lambda c: sessions.add_presence(c, session, "1002", "going", NOW))
+    await db.run(lambda c: sessions.recompute(c, session, None, NOW))
+    assert await _flags(db, session_id) == [("1001", "going", True), ("1002", "going", False)]
+
+    removed = await db.run(lambda c: sessions.remove_presence(c, session_id, "1002", "going"))
+    await db.run(lambda c: sessions.recompute(c, session, None, NOW))
+
+    assert removed is True
+    assert await _flags(db, session_id) == [("1001", "going", True)]
+    assert await _rsvps(db, session_id) == {"1001": ("going", None)}
+
+
 # Effective seats and location -----------------------------------------------------------------------
 
 def _card_stub(seats: int | None, location_text: str | None) -> Any:
