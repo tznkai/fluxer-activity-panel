@@ -1301,12 +1301,21 @@ async def test_archive_closes_the_open_poll_with_no_winner_and_edits_its_message
 
     poll = await _stored_poll(world, poll_id)
     assert (poll.state, poll.outcome, poll.winner_option_id) == ("closed", "none", None)
-    assert [r for r in world.state.requests if r.method == "PATCH" and r.path == POLL_PATH]
+    poll_patches = [r for r in world.state.requests if r.method == "PATCH" and r.path == POLL_PATH]
+    assert poll_patches
+    embed = poll_patches[-1].payload["embeds"][0]
+    fields = {item["name"]: item["value"] for item in embed["fields"]}
+    assert fields[text.POLL_FIELD_STATUS] == text.POLL_STATE["closed"]
+    assert fields[text.POLL_FIELD_RESULT] == text.POLL_NO_WINNER
+    assert text.POLL_FIELD_CLOSES not in fields
+    assert text.POLL_WINNER.split("{")[0] not in str(poll_patches[-1].payload)
+    link = render.jump_link(text.POLL_LINK_LABEL, "https://fluxer.invalid", SESSION_GUILD, POLL_CHANNEL, POLL_MESSAGE)
+    closed_line = text.POLL_BALLOT_CLOSED.format(link=link)
     for user in POLL_VOTERS:
         ballot = await world.db.run(lambda c, u=user: polls.ballot(c, poll_id, u))
         assert ballot is not None and ballot.dm_message_id is not None
         dm = world.state.dm_channels[user]
-        assert text.POLL_BALLOT_CLOSED.split("{")[0] in world.state.messages[(dm, ballot.dm_message_id)]["content"]
+        assert closed_line in world.state.messages[(dm, ballot.dm_message_id)]["content"]
     assert not [r for r in world.state.requests if r.method == "PUT" and "/reactions/" in r.raw_path]
     assert world.last_reply() == text.CARD_ARCHIVED
     assert (await world.card("mc")).state == "archived"

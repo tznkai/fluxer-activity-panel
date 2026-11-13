@@ -279,7 +279,8 @@ def mark_dm_failed(conn: sqlite3.Connection, poll_id: int, user_id: str) -> None
 
 
 def mark_reminded_if(conn: sqlite3.Connection, poll_id: int, user_id: str) -> bool:
-    """Marks the ballot reminded, once, while it is unanswered and its poll is still open: a reminder never follows a close."""
+    """Marks the ballot reminded, once, while it is unanswered and its poll is still open. A reminder is never marked for a
+    closed poll: a close that commits first stops it."""
     cur = conn.execute("UPDATE poll_ballots SET reminded = 1 WHERE poll_id = ? AND user_id = ? AND reminded = 0 "
                        "AND answered = 0 AND EXISTS (SELECT 1 FROM polls WHERE id = ? AND state = 'open')",
                        (poll_id, user_id, poll_id))

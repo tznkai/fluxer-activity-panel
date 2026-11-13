@@ -362,6 +362,32 @@ async def test_a_recipient_in_backoff_is_skipped_unmarked_and_reminded_once_the_
     assert (await ballot_of(world, poll_id, VOTERS[1])).reminded is True
 
 
+async def test_a_reminder_whose_text_cannot_be_built_is_not_marked_and_other_polls_still_remind(
+        world: World, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.WARNING, logger="fluxer_panel.poll_jobs")
+    second_card = await world.db.run(_second_card)
+    first = await store(world, starts=[ONE])
+    second = await store(world, starts=[ONE], card_id=second_card, message=SECOND_MSG)
+    world.state.messages[(CHANNEL, SECOND_MSG)] = {"embeds": []}
+    await send_ballots(world, first)
+    await send_ballots(world, second)
+    real_content = world.jobs._reminder_content
+
+    def content_for(view: polls.PollView) -> str:
+        if view.poll.id == first:
+            raise RuntimeError("text failed")
+        return real_content(view)
+
+    monkeypatch.setattr(world.jobs, "_reminder_content", content_for)
+    world.clock.now = HALFWAY
+    await world.jobs.run()
+
+    for user in VOTERS:
+        assert (await ballot_of(world, first, user)).reminded is False
+        assert (await ballot_of(world, second, user)).reminded is True
+    assert events(caplog, "poll_job_failed") == [{"kind": "remind", "poll_id": first, "reason": "RuntimeError"}]
+
+
 async def test_with_reminders_off_no_reminder_is_sent(world: World) -> None:
     poll_id = await store(world, starts=[ONE])
     await send_ballots(world, poll_id)

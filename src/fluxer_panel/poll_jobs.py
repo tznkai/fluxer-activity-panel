@@ -5,8 +5,9 @@ through `PollCloser`, which takes the card lock, ranks and edits. When reminders
 answered gets one reminder DM at the halfway time.
 
 Each step lists its work without a lock, and acts on each item in turn. A reminder is marked in one compare-and-set
-transaction before its DM goes out, so it is never sent twice, and a reminder never follows a close. A recipient who is
-in DM backoff is skipped without being marked, so the one reminder can still go out if the backoff ends before the close.
+transaction before its DM goes out, so it is never sent twice, and a reminder is never marked for a closed poll (a close
+that commits first stops it). A recipient who is in DM backoff is skipped without being marked, so the one reminder can
+still go out if the backoff ends before the close.
 `due` is the soonest close or reminder still to come, and the poller's wait ends there and never passes it.
 """
 
@@ -81,23 +82,33 @@ class PollJobs:
             return
         now = int(self._clock())
         pending = await self._db.run(lambda c: polls.reminder_due(c, now))
-        views: dict[int, polls.PollView] = {}
+        contents: dict[int, str | None] = {}
         sent: dict[int, int] = {}
         for poll, user_id in pending:
             if self._backoff.blocked(user_id):
                 continue
-            if poll.id not in views:
-                view = await self._db.run(partial(polls.view, poll_id=poll.id))
-                if view is None:
-                    continue
-                views[poll.id] = view
+            if poll.id not in contents:
+                contents[poll.id] = await self._reminder_text(poll.id)
+            content = contents[poll.id]
+            if content is None:
+                continue
             if not await self._db.run(partial(polls.mark_reminded_if, poll_id=poll.id, user_id=user_id)):
                 continue
-            content = self._reminder_content(views[poll.id])
             if await notify.dm_user(self._rest, user_id, content, backoff=self._backoff) is not None:
                 sent[poll.id] = sent.get(poll.id, 0) + 1
         for poll_id, count in sent.items():
             log_event(log, "poll_reminded", poll_id=poll_id, count=count)
+
+    async def _reminder_text(self, poll_id: int) -> str | None:
+        """The reminder text for one poll, built before any ballot is marked. None when the poll is gone or its text cannot
+        be built: that poll's reminders wait, and the other polls still go out."""
+        try:
+            view = await self._db.run(partial(polls.view, poll_id=poll_id))
+            return None if view is None else self._reminder_content(view)
+        except Exception as exc:  # noqa: BLE001 - one poll's text must not stop the other polls' reminders
+            log_event(log, "poll_job_failed", level=logging.WARNING, kind="remind", poll_id=poll_id,
+                      reason=type(exc).__name__)
+            return None
 
     def _reminder_content(self, view: polls.PollView) -> str:
         """The reminder's text. The card title is escaped, and the link goes to the poll message, or is plain when no
