@@ -860,3 +860,31 @@ async def test_a_schedule_and_a_runoff_at_once_on_one_closed_poll_let_exactly_on
         assert runoff is None
     else:
         assert runoff is not None and (await stored(world, parent)).session_id is None
+
+
+async def test_a_runoff_that_closed_with_no_winner_still_blocks_its_parent_from_scheduling_and_a_second_runoff(
+        world: World) -> None:
+    """The documented recovery rule: a runoff blocks its parent's 📅 and 🔁 for good, whatever its outcome. Here the runoff
+    closes with no votes, so its outcome is "none"."""
+    parent = await closed_winner(world)
+    members(world.state, STARTER, VOTER_A, VOTER_B, VOTER_C)
+    await react(world, STARTER, RUNOFF)
+    runoff = await runoff_of(world, parent)
+    assert runoff is not None
+    closed = await world.closer.close(runoff.id)
+    await world.post.drain()
+    assert closed is not None and closed.outcome == "none"
+    assert (await stored(world, runoff.id)).outcome == "none"
+    link = link_to(world, PLAY, runoff.message_id)
+
+    await react(world, STARTER, SESSION)
+
+    assert await sessions_all(world) == []
+    assert dm_contents(world.state, STARTER)[-1] == text.POLL_SCHEDULE_RUNOFF_EXISTS.format(link=link)
+
+    await react(world, STARTER, RUNOFF)
+
+    assert dm_contents(world.state, STARTER)[-1] == text.POLL_RUNOFF_EXISTS.format(link=link)
+    count = await world.db.run(lambda c: c.execute("SELECT COUNT(*) FROM polls WHERE parent_poll_id = ?",
+                                                   (parent,)).fetchone()[0])
+    assert count == 1
