@@ -305,8 +305,10 @@ class PollFlow:
 
     async def _runoff(self, poll_id: int, *, presser: str) -> None:
         """🔁: starts a runoff of the top three usable times with votes, in rank order as options a to c. The runoff keeps
-        the parent's starter, reads the role again, and is opened by the same pipeline as a 🗳️ poll. Refused with a DM
-        when there is already a runoff, or fewer than two usable times have votes. Runs under the poll's lock."""
+        the parent's starter, reads the role again, and is opened by the same pipeline as a 🗳️ poll. It closes after the
+        poll length or RUNOFF_CLOSE_MARGIN plus an hour before its earliest time, whichever is sooner. Refused with a DM
+        when there is already a runoff, when fewer than two usable times have votes, or when less than MIN_RUNOFF_SECONDS
+        would remain before its capped close. Runs under the poll's lock."""
         view = await self._db.run(lambda c: polls.view(c, poll_id))
         if view is None or view.poll.outcome != "winner" or view.poll.is_runoff:
             return self._refused_poll(poll_id, "runoff", "not_runoffable")

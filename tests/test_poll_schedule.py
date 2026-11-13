@@ -624,7 +624,20 @@ async def test_a_runoff_closed_by_a_tick_five_minutes_late_still_ranks_its_earli
     assert closed.winner_option_id == await option_of(world, runoff.id, ONE)
 
 
-# Review fixes: the variation selector, a closed runoff, the presser's refusals and the texts ---------------------
+@pytest.mark.parametrize("world", [{"length": None}], indirect=True)
+async def test_a_runoff_one_second_short_of_the_minimum_starts_nothing(world: World) -> None:
+    parent = await closed_three_way(world)
+    members(world.state, STARTER, VOTER_A, VOTER_G)
+    world.clock.now = ONE - 3600 - RUNOFF_CLOSE_MARGIN - 899   # 899 seconds to run: one short of the 900 minimum
+
+    await react(world, ADMIN, RUNOFF)
+
+    assert await runoff_of(world, parent) is None
+    assert dm_contents(world.state, ADMIN) == [text.POLL_RUNOFF_TOO_SOON.format(ts=ONE)]
+    assert session_posts(world.state) == []
+
+
+# The variation selector, a closed runoff, refusals to an admin presser, and the no-link texts ------------------
 
 async def fill_sessions(world: World, proposers: tuple[str, ...]) -> None:
     """One upcoming session per proposer, each at its own time, so the card and proposer counts are as given."""

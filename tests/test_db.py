@@ -286,7 +286,7 @@ async def test_concurrent_runs_both_complete_serialised(db: Database) -> None:
     assert await db.run(lambda c: c.execute("SELECT COUNT(*) FROM families").fetchone()[0]) == 2
 
 
-# Review fixes: unwritable files, lock contention, hot journals, side effects ----------------------
+# Unwritable files, lock contention, hot journals, side effects ----------------------
 
 requires_permissions = pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0,
                                           reason="root ignores file permissions")
