@@ -799,16 +799,16 @@ async def test_a_session_scheduled_first_blocks_a_runoff_and_the_starter_is_link
     assert dm_contents(world.state, STARTER)[-1] == text.POLL_RUNOFF_SCHEDULED.format(link=session_link(message_id))
 
 
+@pytest.mark.parametrize("world", [{"instance_url": False}], indirect=True)
 async def test_a_runoff_blocks_scheduling_with_no_instance_url_and_names_no_link(world: World) -> None:
-    parent = await closed_winner(world)
+    await closed_winner(world)
     members(world.state, STARTER, VOTER_A, VOTER_B, VOTER_C)
     await react(world, STARTER, RUNOFF)
 
     await react(world, STARTER, SESSION)
 
     assert await sessions_all(world) == []
-    assert dm_contents(world.state, STARTER)[-1] == text.POLL_SCHEDULE_RUNOFF_EXISTS.format(
-        link=link_to(world, PLAY, (await runoff_of(world, parent)).message_id))
+    assert dm_contents(world.state, STARTER)[-1] == text.POLL_SCHEDULE_RUNOFF_EXISTS_NO_LINK
 
 
 @pytest.mark.parametrize("world", [{"instance_url": False}], indirect=True)

@@ -288,6 +288,8 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
 - 📅 and 🔁 exclude each other on one poll. `_schedule` refuses when `polls.child_of` finds a runoff (`reason=runoff_exists`), and
   `_runoff` refuses when `poll.session_id` is set (`reason=scheduled`). Each check runs under the poll's lock after the re-read,
   and each refusal DMs the presser a link to the other (the `_NO_LINK` text when the instance URL is unset). A runoff's own 📅 is unaffected.
+  Once a runoff exists for a poll, that poll is never scheduled or re-run again (`child_of` stays set even when the runoff
+  has no winner or its message is gone), so a new poll is the recovery.
 - `!poll extend` on a runoff is capped too: `_extend_tx` refuses, and changes nothing, when the new close is past
   `min(option starts_at) - poll_count.LEAD_SECONDS - poll_flow.RUNOFF_CLOSE_MARGIN`. The reply is `text.POLL_EXTEND_RUNOFF_CAP`.
   Approval polls keep only the creation cap (`POLL_MAX_LENGTH_SECONDS`), which applies to runoffs as well.
