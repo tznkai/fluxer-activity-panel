@@ -399,9 +399,10 @@ async def test_aclose_cancels_a_flush_blocked_past_its_timeout(world: SimpleName
             break
         await asyncio.sleep(0.01)
     assert POLL_KEY in world.state.gated
+    task = world.post._tasks[poll_id]
     await world.post.aclose(timeout=0.05)
+    assert task.cancelled(), "the flush blocked past the timeout was not cancelled"
     assert world.post._tasks == {}
-    assert requests(world, "PATCH", POLL_PATH) == [], "the gated edit completed after the cancel"
     gate.set()   # releases the server side of the cancelled request so the fixture can close
 
 
@@ -492,6 +493,36 @@ async def test_a_flush_that_raises_is_logged_ends_its_task_and_keeps_its_marks(w
     await settle(world)
     assert len(requests(world, "PATCH", POLL_PATH)) == 1, "the restored poll-message mark was not flushed"
     assert len(patches_to_dm(world, U1)) == 1, "the restored ballot mark was not flushed"
+
+
+async def test_a_failed_flush_of_every_ballot_restores_the_everyone_mark(world: SimpleNamespace,
+                                                                         monkeypatch: pytest.MonkeyPatch) -> None:
+    """A flush that raises after changed(poll_id) with no ballots (every ballot) hands its everyone mark back, so the
+    next change that names no ballot still edits every ballot's DM."""
+    poll_id = await seed(world)
+    await world.post.send_ballot(poll_id, U1)
+    options = await option_ids(world, poll_id)
+    await vote(world, poll_id, U1, [options[0]])
+    real_run = world.db.run
+    failed_once: list[bool] = []
+
+    async def fail_first_read(fn: Any) -> Any:
+        if not failed_once:
+            failed_once.append(True)
+            raise sqlite3.OperationalError("disk I/O error")
+        return await real_run(fn)
+
+    monkeypatch.setattr(world.db, "run", fail_first_read)
+    world.post.changed(poll_id)                     # ballots=None: every ballot is marked
+    await asyncio.wait_for(world.post.drain(), timeout=5)
+    assert failed_once == [True]
+    assert requests(world, "PATCH", POLL_PATH) == []
+    assert patches_to_dm(world, U1) == []
+
+    world.post.changed(poll_id, ballots=[])         # a later change naming no ballot of its own
+    await settle(world)
+    assert len(requests(world, "PATCH", POLL_PATH)) == 1
+    assert len(patches_to_dm(world, U1)) == 1, "the restored everyone mark was not flushed"
 
 
 async def test_a_raising_hook_is_logged_and_the_flush_completes(world: SimpleNamespace,
