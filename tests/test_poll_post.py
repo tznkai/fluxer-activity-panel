@@ -153,6 +153,30 @@ async def test_delete_unstored_logs_a_failed_delete_and_never_raises(world: Simp
     assert getattr(record, FIELDS_ATTR) == {"channel_id": CHANNEL, "reason": "http_500"}
 
 
+async def test_remove_reaction_treats_a_404_as_already_gone_and_logs_nothing(world: SimpleNamespace,
+                                                                            caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.WARNING)
+    poll_id = await seed(world)
+    world.state.overrides[f"DELETE {reaction_path(U1)}"] = Override(404, b'{"code":"X","message":"x"}')
+    await world.post.remove_reaction(poll_id, POLL_SCHEDULE_EMOJI, U1)
+    assert [r.getMessage() for r in caplog.records].count("poll_reaction_remove_failed") == 0
+
+
+async def test_remove_reaction_logs_another_failure_with_poll_id_and_reason_only(world: SimpleNamespace,
+                                                                                caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.WARNING)
+    poll_id = await seed(world)
+    world.state.overrides[f"DELETE {reaction_path(U1)}"] = Override(500, b'{"code":"X","message":"x"}')
+    await world.post.remove_reaction(poll_id, POLL_SCHEDULE_EMOJI, U1)
+    [record] = [r for r in caplog.records if r.getMessage() == "poll_reaction_remove_failed"]
+    assert getattr(record, FIELDS_ATTR) == {"poll_id": poll_id, "reason": "http_500"}
+
+
+def reaction_path(user_id: str) -> str:
+    """The reaction DELETE path for the calendar on the poll message, as the fake keys it (the decoded emoji)."""
+    return f"/api/v1/channels/{CHANNEL}/messages/{POLL_MSG}/reactions/{POLL_SCHEDULE_EMOJI}/{user_id}"
+
+
 # AC9.1: the games channel is refused before any REST call --------------------------------------------
 
 async def test_send_poll_refuses_the_games_channel_before_any_request(world: SimpleNamespace) -> None:

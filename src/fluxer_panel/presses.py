@@ -40,7 +40,7 @@ PLAY_NOW_EMOJI = "\U0001F64B"      # the person raising a hand
 SESSION_EMOJI = "\U0001F4C5"       # the calendar: proposes a session
 POLL_EMOJI = "\U0001F5F3\ufe0f"    # the ballot box: starts a time poll
 RUNOFF_EMOJI = "\U0001F501"        # the repeat button: starts a runoff on a closed poll
-# On a poll message, \ud83d\udcc5 and \ud83d\udd01 are the poll's actions, compared without U+FE0F. They are not presses.
+# On a poll message, the calendar (U+1F4C5) and the repeat button (U+1F501) are the poll's actions. They are not presses.
 POLL_ACTION_EMOJI = frozenset({SESSION_EMOJI, RUNOFF_EMOJI})
 
 SurfaceKind = Literal["card", "copy", "play_now", "session"]

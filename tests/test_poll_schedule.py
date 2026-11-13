@@ -18,8 +18,8 @@ import pytest
 
 from fluxer_client import events
 from fluxer_client.roles import RoleCache
-from fluxer_client.rest import FluxerREST
-from fluxer_panel import cards, polls, render, sessions, text
+from fluxer_client.rest import FluxerREST, encode_emoji
+from fluxer_panel import cards, poll_members, polls, render, sessions, text
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
@@ -256,11 +256,11 @@ def session_posts(state: FakeFluxerState) -> list[Any]:
     return [r for r in state.requests if r.method == "POST" and r.path == POLL_POSTS]
 
 
-def reaction_removals(state: FakeFluxerState) -> list[tuple[str, str]]:
-    """(emoji, user id) for each reaction DELETE on the poll message, in order."""
+def reaction_removals(state: FakeFluxerState, message: str = POLL_MSG) -> list[tuple[str, str]]:
+    """(emoji, user id) for each reaction DELETE on a poll message (the closed approval poll's by default), in order."""
     out = []
     for r in state.requests:
-        if r.method == "DELETE" and f"/messages/{POLL_MSG}/reactions/" in r.path:
+        if r.method == "DELETE" and f"/messages/{message}/reactions/" in r.path:
             out.append((unquote(r.path.split("/")[-2]), r.path.split("/")[-1]))
     return out
 
@@ -606,3 +606,129 @@ async def test_a_runoff_with_exactly_fifteen_minutes_to_run_starts(world: World)
     runoff = await runoff_of(world, parent)
     assert runoff is not None
     assert runoff.closes_at == ONE - 3600
+
+
+# Review fixes: the variation selector, a closed runoff, the presser's refusals and the texts ---------------------
+
+async def fill_sessions(world: World, proposers: tuple[str, ...]) -> None:
+    """One upcoming session per proposer, each at its own time, so the card and proposer counts are as given."""
+    def fill(conn: Any) -> None:
+        for index, proposer in enumerate(proposers):
+            sessions.add(conn, card_id=world.card_id, guild_id=GUILD, channel_id=PLAY, message_id=f"98{index:02d}",
+                         starts_at=ONE + index * DAY, ends_at=ONE + index * DAY + 3600, proposer_id=proposer, now=NOW)
+
+    await world.db.run(fill)
+
+
+async def test_a_schedule_sent_with_the_variation_selector_is_removed_under_that_spelling_and_still_schedules(
+        world: World) -> None:
+    await closed_winner(world)
+
+    await react(world, STARTER, SESSION + "\ufe0f")
+
+    [(_session_id, proposer, starts_at, _message)] = await sessions_all(world)
+    assert (proposer, starts_at) == (STARTER, ONE)
+    [segment] = [r.path.split("/")[-2] for r in world.state.requests
+                 if r.method == "DELETE" and f"/messages/{POLL_MSG}/reactions/" in r.path
+                 and r.path.endswith(f"/{STARTER}")]
+    assert segment == SESSION + "\ufe0f"             # the fake records the decoded path
+    assert "%EF%B8%8F" in encode_emoji(segment)      # and this is the spelling sent on the wire
+
+
+async def test_a_runoff_reaction_on_a_closed_runoff_is_removed_and_starts_nothing(world: World) -> None:
+    parent = await closed_three_way(world)
+    members(world.state, STARTER, VOTER_A, VOTER_G)
+    await react(world, ADMIN, RUNOFF)
+    runoff = await runoff_of(world, parent)
+    assert runoff is not None
+    await reply(world, STARTER, "a")
+    world.clock.now = runoff.closes_at
+    await world.jobs.run()
+    await world.post.drain()
+    assert (await stored(world, runoff.id)).state == "closed"
+    posts_before = len(session_posts(world.state))
+
+    await react(world, STARTER, RUNOFF, message=runoff.message_id)
+
+    assert await runoff_of(world, runoff.id) is None
+    assert len(session_posts(world.state)) == posts_before
+    assert (RUNOFF, STARTER) in reaction_removals(world.state, runoff.message_id)
+
+
+async def test_an_admin_runoff_while_the_card_has_an_open_poll_links_that_poll_to_the_admin_only(
+        world: World) -> None:
+    parent = await closed_three_way(world)
+    members(world.state, STARTER, VOTER_A, VOTER_G)
+    open_message = "5302"
+    await store(world, starts=[THREE + DAY], users=(STARTER,), message=open_message)
+
+    await react(world, ADMIN, RUNOFF)
+
+    assert await runoff_of(world, parent) is None
+    assert dm_contents(world.state, ADMIN) == [text.POLL_ALREADY_OPEN.format(
+        link=link_to(world, PLAY, open_message))]
+    assert dm_contents(world.state, STARTER) == []
+    assert (RUNOFF, ADMIN) in reaction_removals(world.state)
+
+
+async def test_an_admin_runoff_when_the_member_list_cannot_be_read_says_try_later_to_the_admin_only(
+        world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    parent = await closed_three_way(world)
+
+    async def unavailable(*_args: Any, **_kwargs: Any) -> list[str]:
+        raise poll_members.MembersUnavailable
+
+    monkeypatch.setattr(poll_members, "role_holders", unavailable)
+
+    await react(world, ADMIN, RUNOFF)
+
+    assert await runoff_of(world, parent) is None
+    assert dm_contents(world.state, ADMIN) == [text.POLL_TRY_LATER]
+    assert dm_contents(world.state, STARTER) == []
+
+
+@pytest.mark.parametrize("world", [{"instance_url": False}], indirect=True)
+async def test_without_an_instance_url_the_schedule_text_names_no_link(world: World) -> None:
+    await closed_winner(world)
+
+    await react(world, STARTER, SESSION)
+
+    for user in (STARTER, VOTER_A, VOTER_B):
+        assert dm_contents(world.state, user) == [text.POLL_SCHEDULED_DM_NO_LINK.format(card="Lobby")]
+
+
+@pytest.mark.parametrize("world", [{"instance_url": False}], indirect=True)
+async def test_without_an_instance_url_the_runoff_texts_name_no_link(world: World) -> None:
+    parent = await closed_three_way(world)
+    members(world.state, STARTER, VOTER_A, VOTER_G)
+
+    await react(world, ADMIN, RUNOFF)
+    assert dm_contents(world.state, ADMIN) == [text.POLL_RUNOFF_STARTED_NO_LINK]
+
+    await react(world, ADMIN, RUNOFF)
+    assert dm_contents(world.state, ADMIN)[-1] == text.POLL_RUNOFF_EXISTS_NO_LINK
+    assert await runoff_of(world, parent) is not None
+
+
+async def test_an_admin_scheduling_when_the_starter_is_at_the_session_cap_is_told_about_the_starter(
+        world: World) -> None:
+    await closed_winner(world)
+    await fill_sessions(world, (STARTER, STARTER, STARTER))
+
+    await react(world, ADMIN, SESSION)
+
+    assert dm_contents(world.state, ADMIN) == [text.POLL_STARTER_AT_CAP.format(card="Lobby")]
+    assert dm_contents(world.state, STARTER) == []
+    assert len(await sessions_all(world)) == 3
+    assert session_posts(world.state) == []
+
+
+async def test_an_admin_scheduling_when_the_card_is_at_its_cap_gets_the_card_text(world: World) -> None:
+    await closed_winner(world)
+    await fill_sessions(world, (VOTER_A, VOTER_A, VOTER_A, VOTER_B, VOTER_B, VOTER_B, VOTER_C, VOTER_C, VOTER_C, VOTER_D))
+
+    await react(world, ADMIN, SESSION)
+
+    assert dm_contents(world.state, ADMIN) == [text.SESSION_CAP["card"].format(card="Lobby")]
+    assert len(await sessions_all(world)) == 10
+    assert session_posts(world.state) == []

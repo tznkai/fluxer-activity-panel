@@ -232,8 +232,10 @@ class PollFlow:
         """A 📅 or 🔁 added to a poll message. Presses has already checked that the message is this poll's, so the poll's
         own stored ids are used for every call. The presser's reaction is removed first, whatever happens. Only the
         starter or an admin acts, and the action runs under the poll's own lock."""
-        name = emoji.replace("️", "")
-        await self._poll_post.remove_reaction(poll_id, name, user_id)
+        # The reaction is removed under the spelling the gateway reported (Fluxer stores U+FE0F when a client sends it).
+        # The stripped name is only for comparing the action.
+        name = emoji.replace("\ufe0f", "")
+        await self._poll_post.remove_reaction(poll_id, emoji, user_id)
         poll = await self._db.run(lambda c: polls.get(c, poll_id))
         if poll is None or poll.state != "closed":
             return
@@ -279,7 +281,11 @@ class PollFlow:
         published = await self._session_flow.publish(view.poll.card_id, view.poll.starter_id, winner.starts_at,
                                                      maybe=voters, notify_proposer=False)
         if published.reply is not None:
-            await self._dm(presser, published.reply)
+            reply = published.reply
+            if published.cap == "proposer" and presser != view.poll.starter_id:
+                # The cap is the starter's, not the presser's: an admin is not told that they have sessions.
+                reply = text.POLL_STARTER_AT_CAP.format(card=render.escape(view.card_title))
+            await self._dm(presser, reply)
             return self._refused_poll(poll_id, "schedule", "publish")
         linked = await self._db.run(lambda c: polls.set_session_if_unset(c, poll_id, published.session_id))
         if not linked:   # cannot happen under the poll's lock; logged so that a stray session is visible

@@ -326,7 +326,8 @@ class SessionFlow:
             try:
                 await self._db.run(lambda c: sessions.check_caps(c, card_id, proposer_id))
             except sessions.SessionCapReached as exc:
-                return Published(reply=text.SESSION_CAP[exc.kind].format(card=render.escape(fresh.title)))
+                return Published(reply=text.SESSION_CAP[exc.kind].format(card=render.escape(fresh.title)),
+                                 cap=exc.kind)
             length = self._config.session_length_seconds
             provisional = sessions.provisional(card_id=card_id, guild_id=guild_id, channel_id=channel_id,
                                                starts_at=slot, ends_at=slot + length, proposer_id=proposer_id,
@@ -357,7 +358,8 @@ class SessionFlow:
                 log_event(log, "session_store_failed", level=logging.WARNING, card_id=card_id,
                           reason=type(exc).__name__)
                 if isinstance(exc, sessions.SessionCapReached):
-                    return Published(reply=text.SESSION_CAP[exc.kind].format(card=render.escape(fresh.title)))
+                    return Published(reply=text.SESSION_CAP[exc.kind].format(card=render.escape(fresh.title)),
+                                     cap=exc.kind)
                 return Published(reply=text.SESSION_POST_FAILED)
         # After the lock: the three RSVP seeds, the footer edit, the proposer's jump link, and a poller kick.
         try:
@@ -412,3 +414,4 @@ class Published:
     channel_id: str | None = None
     message_id: str | None = None
     reply: str | None = None
+    cap: str | None = None         # the SESSION_CAP kind ("proposer" or "card") when the reply is a cap

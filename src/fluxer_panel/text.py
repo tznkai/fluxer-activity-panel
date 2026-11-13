@@ -418,6 +418,8 @@ POLL_POST_FAILED = "I couldn't post that poll. Try again later."
 POLL_LEFT_OUT = "{n} members with the follow role were not sent a ballot, because the poll is capped."
 POLL_NO_ROLE = "This card has no follow role, so only you were sent a ballot."
 POLL_TOO_LATE = "That time is less than an hour away, so no session was scheduled."
+POLL_STARTER_AT_CAP = ("The poll's starter already has the most upcoming sessions allowed for {card}, so I can't "
+                       "schedule this one.")
 POLL_SCHEDULED_DM = "The time poll for {card} is scheduled: {link}"
 POLL_SCHEDULED_DM_NO_LINK = "The time poll for {card} is scheduled. Its session is in the card's session channel."
 POLL_RUNOFF_NEEDS_TWO = ("Fewer than two usable times have votes, so there is no runoff. Press the calendar (\U0001F4C5) "
