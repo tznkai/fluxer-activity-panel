@@ -354,3 +354,53 @@ NEXT_SESSION = "<t:{ts}:F> (<t:{ts}:R>) · {going} going"
 NEXT_SESSION_OPEN = "Open"
 OUTSIDE_NEXT_SESSION = "Next session: <t:{ts}:F> · {going} going"
 CARD_DM_HINT = "Pressing a reaction sends you a DM. Allow DMs from this server's members to get the reply."
+# Polls: the poll message, its closed form and the ballot. Card titles are escaped with `render.escape` before they are
+# placed. The instruction blocks take the time examples and the zone through placeholders, so the examples are not
+# repeated here.
+POLL_TITLE = "Time poll: {card}"
+POLL_OPTION_LINE = "{letter}. <t:{ts}:F> ({votes})"
+POLL_VOTES = {"one": "1 vote", "other": "{n} votes"}
+POLL_MORE = "+{k} more"
+POLL_FIELD_CLOSES = "Closes"
+POLL_CLOSES = "<t:{ts}:F> · <t:{ts}:R>"
+POLL_FIELD_LEADER = "Leader"
+POLL_LEADER = "{letter}. <t:{ts}:F> ({votes})"
+POLL_NO_LEADER = "No votes yet."
+POLL_FIELD_ANSWERED = "Answered"
+POLL_ANSWERED = "{n} of {m} answered"
+POLL_REACHED = " · {r} of {m} reached"
+POLL_FIELD_NOTE = "Note"
+POLL_RELETTERED = "Options were re-lettered <t:{ts}:R>."
+POLL_FOOTER = "Poll {n} · reply to the bot's DM to vote"
+POLL_FIELD_STATUS = "Status"
+POLL_STATE = {"open": "Open", "closed": "Closed"}
+POLL_FIELD_RESULT = "Result"
+POLL_WINNER = "Winner: {letter}. <t:{ts}:F>"
+POLL_NO_WINNER = "No winner."
+POLL_ROUND = "Round {n}: {counts}."
+POLL_ROUND_COUNT = "{letter}: {votes}"
+POLL_ROUND_SEP = ", "
+POLL_DROPPED = " {letter} was dropped."
+POLL_FIELD_SESSION = "Session"
+POLL_SESSION_LINK = "Open the session"
+# The ballot.
+POLL_BALLOT_HEAD = "Time poll for {card}."
+POLL_BALLOT_HEAD_RUNOFF = "Runoff for {card}."
+POLL_BALLOT_MORE = "+{k} more options in the poll message: {link}"
+POLL_LINK_LABEL = "Open the poll"
+POLL_HOW_APPROVAL = (
+    "Pick by letter, like `a, c`.\n"
+    "Or add your own time in {zone}. {examples}\n"
+    "Mix both, like `a, fri 20:00`. `all` picks every time shown here. `clear` removes your picks.\n"
+    "Each reply replaces your earlier answer."
+)
+POLL_HOW_RUNOFF = (
+    "Rank the times you can make, favourite first, like `b, a, c`. Rank as many as you like.\n"
+    "`clear` removes your ranking.\n"
+    "Each reply replaces your earlier answer."
+)
+POLL_YOUR_PICKS = "Your picks: {letters}"
+POLL_NOT_ANSWERED = "You haven't answered yet."
+POLL_CLOSES_LINE = "Closes <t:{ts}:F> (<t:{ts}:R>)."
+POLL_BALLOT_CLOSED = "This poll is closed: {link}"
+POLL_BALLOT_REMOVED = "This poll was removed."

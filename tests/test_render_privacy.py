@@ -25,6 +25,7 @@ from fluxer_panel.cards import ChannelLink
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.poller import Poller
+from fluxer_panel.polls import Poll, PollOption, PollView, Vote
 from fluxer_panel.resolver import CardStatus, StatusKind
 from fluxer_panel.rsvp import Counts
 from fluxer_panel.sessions import Session
@@ -40,7 +41,8 @@ PRESSER = "646464"          # the person who raised a play-now post
 NAME = "SENTINEL NAME 9d2c"
 SENTINELS = (REQUESTER, FOLLOWER, PRESSER, NAME)
 
-RENDERERS = ("board_message", "card_message", "outside_text", "play_now_message", "render_embed", "session_message")
+RENDERERS = ("board_message", "card_message", "outside_text", "play_now_message", "render_embed", "render_poll_ballot",
+             "render_poll_message", "session_message")
 RENDER_PREFIXES = ("render_", "board_", "card_", "play_now_", "session_")
 
 TOKEN = "render-privacy-token"
@@ -100,6 +102,17 @@ def member(user_id: str, roles: list[str]) -> dict[str, Any]:
     return {"user": {"id": user_id, "username": NAME}, "nick": NAME, "roles": roles}
 
 
+def poll_view() -> PollView:
+    """A poll whose voters are the sentinel ids, so a rendering that read a voter would show it."""
+    poll = Poll(id=7, card_id=1, guild_id=GUILD, channel_id=GAMES, message_id="5020", starter_id=ADMIN, kind="approval",
+                parent_poll_id=None, state="open", created_at=1, closes_at=1_800_086_400, closed_at=None, ballot_size=6,
+                pending_ballot_size=None, sorted_at=None, outcome=None, winner_option_id=None, session_id=None)
+    options = (PollOption(1, 7, 0, 1_800_003_600, "offered"), PollOption(2, 7, 1, 1_800_007_200, "offered"))
+    votes = (Vote(REQUESTER, 1, None), Vote(FOLLOWER, 2, None), Vote(PRESSER, 1, None))
+    return PollView(poll=poll, card_title=TITLE, options=options, votes=votes, recipients=3, answered=3, reached=3,
+                    session_link=None)
+
+
 def config_for() -> Config:
     return Config.from_env({"FLUXER_TOKEN": TOKEN, "SESSION_TIME_ZONE": "UTC", "FLUXER_INSTANCE_URL": URL, "ADMIN_USER_IDS": ADMIN,
                             "GAMES_CHANNEL_ID": GAMES, "POLL_INTERVAL_SECONDS": "3600"})
@@ -138,6 +151,9 @@ async def test_every_rendering_with_the_sentinel_data_is_free_of_ids_and_names(d
                           location_text=None, seats=None, recurrence=None, series_id=42, next_posted=False,
                           state="upcoming", closed_at=None, moved=False, headsup_sent=False, created_at=1),
             Counts(going=1, maybe=0, waiting=0), effective_location=None, effective_seats=None, instance_url=URL),
+        "render_poll_message": render.render_poll_message(poll_view(), instance_url=URL),
+        "render_poll_ballot": render.render_poll_ballot(poll_view(), user_id=FOLLOWER, zone_name="UTC",
+                                                        instance_url=URL),
     }
     # the ended and the unknown-count forms of the play-now message are renderings too
     ended = render.play_now_message(card, role_id=ROLE, playing=None, ended=True, instance_url=URL)

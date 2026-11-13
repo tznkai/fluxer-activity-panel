@@ -11,17 +11,18 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from fluxer_client.ids import require_snowflake
-from fluxer_panel import text
+from fluxer_panel import poll_count, poll_letters, text
 from fluxer_panel.cards import Address, Card, ChannelLink
 from fluxer_panel.resolver import CardStatus, StatusKind, status_label
 
 if TYPE_CHECKING:  # type-only: sessions imports render at runtime in a later phase, so these must not be runtime imports
     from fluxer_panel.rsvp import Counts
+    from fluxer_panel.polls import PollOption, PollView
     from fluxer_panel.sessions import Session
 
 ZWJ = "\u200d"  # zero-width joiner, written as an escape so no invisible character sits in the source
@@ -75,6 +76,12 @@ BOARD_CHAR_LIMIT = 6000
 # (`_fit_budget`) shortens first_time, then description, then join, each only as far as needed.
 EMBED_MAX_FIELDS = 25
 EMBED_CHAR_LIMIT = 6000
+
+# The poll message's option list and a ballot, each in UTF-16 units (`units`). Fluxer documents at least 4000 characters
+# for bot messages and the default for users is unknown, so 2000 is the safe bound for both.
+POLL_LIST_LIMIT = 2000
+POLL_BALLOT_LIMIT = 2000
+POLL_BALLOT_CARD_LIMIT = 120   # a ballot's card title, escaped and fitted
 
 
 def neutralise(s: str) -> str:
@@ -500,3 +507,152 @@ def _fit_session_budget(embed: dict[str, Any], holders: list[dict[str, Any]]) ->
         shortened = fit(current, max(units(current) - over, 1))
         holder["value"] = shortened
         over -= units(current) - units(shortened)
+
+
+# The poll message and the ballot. Pure: a PollView in, a payload out. They show counts and times only, never who voted.
+
+def _letters(options: Sequence[PollOption]) -> dict[int, str]:
+    return {option.id: poll_letters.letter(option.position) for option in options}
+
+
+def _counted(view: PollView) -> list[tuple[str, int]]:
+    """The (user, option) pairs that count: every vote on an approval poll, the first choices on a runoff."""
+    return [(vote.user_id, vote.option_id) for vote in view.votes if not view.poll.is_runoff or vote.rank == 1]
+
+
+def _votes_text(n: int) -> str:
+    return text.POLL_VOTES["one"] if n == 1 else text.POLL_VOTES["other"].format(n=n)
+
+
+def _option_line(option: PollOption, letter: str, count: int) -> str:
+    return text.POLL_OPTION_LINE.format(letter=letter, ts=option.starts_at, votes=_votes_text(count))
+
+
+def _lines_within(lines: Sequence[str], *, cap: int, limit: int, more: Callable[[int], str]) -> str:
+    """The leading lines that fit `limit` units, at most `cap` of them, then `more(k)` for the k left out. A line is
+    kept whole or left out. The `more` line is reserved at the full count, which is never shorter than the real one."""
+    if len(lines) <= cap and sum(units(line) + 1 for line in lines) - 1 <= limit:
+        return "\n".join(lines)
+    reserve = units(more(len(lines))) + 1
+    used = 0
+    shown = 0
+    for line in lines[:cap]:
+        cost = units(line) + 1
+        if used + cost + reserve > limit:
+            break
+        used += cost
+        shown += 1
+    return "\n".join([*lines[:shown], more(len(lines) - shown)])
+
+
+def _closed_description(view: PollView, letters: dict[int, str], rounds: poll_count.Rounds | None) -> list[str]:
+    """The closed form's lines: a runoff's rounds, or an approval poll's options that were usable at close, in rank order."""
+    if view.poll.is_runoff:
+        if rounds is None:
+            return []
+        lines: list[str] = []
+        for index, round_ in enumerate(rounds.rounds, start=1):
+            counts = text.POLL_ROUND_SEP.join(
+                text.POLL_ROUND_COUNT.format(letter=letters[option_id], votes=_votes_text(count))
+                for option_id, count in round_.counts)
+            line = text.POLL_ROUND.format(n=index, counts=counts)
+            if round_.dropped is not None:
+                line += text.POLL_DROPPED.format(letter=letters[round_.dropped])
+            lines.append(line)
+        return lines
+    by_id = {option.id: option for option in view.options}
+    usable = poll_count.usable(view.options, now=view.poll.closed_at or 0)
+    ranked = poll_count.approval(usable, _counted(view))
+    return [_option_line(by_id[option_id], letters[option_id], count) for option_id, count in ranked]
+
+
+def render_poll_message(view: PollView, *, instance_url: str | None,
+                        rounds: poll_count.Rounds | None = None) -> dict[str, Any]:
+    """The public poll message: one embed, counts only. `rounds` is given for a closed runoff."""
+    poll = view.poll
+    letters = _letters(view.options)
+    by_id = {option.id: option for option in view.options}
+    closed = poll.state == "closed"
+    embed: dict[str, Any] = {
+        "title": fit(text.POLL_TITLE.format(card=escape(view.card_title)), LIMITS["title"]),
+        "color": NEUTRAL,
+    }
+    if closed:
+        lines = _closed_description(view, letters, rounds)
+    else:
+        counts = dict(poll_count.approval(view.options, _counted(view)))
+        lines = [_option_line(option, letters[option.id], counts[option.id]) for option in view.options]
+    if lines:
+        embed["description"] = _lines_within(lines, cap=len(lines), limit=POLL_LIST_LIMIT,
+                                             more=lambda k: text.POLL_MORE.format(k=k))
+
+    fields: list[dict[str, Any]] = []
+
+    def add(name: str, value: str) -> None:
+        fields.append({"name": name, "value": value, "inline": False})
+
+    if closed:
+        add(text.POLL_FIELD_STATUS, text.POLL_STATE["closed"])
+        if poll.outcome == "winner" and poll.winner_option_id in by_id:
+            winner = by_id[poll.winner_option_id]
+            add(text.POLL_FIELD_RESULT, text.POLL_WINNER.format(letter=letters[winner.id], ts=winner.starts_at))
+        elif poll.outcome == "none":
+            add(text.POLL_FIELD_RESULT, text.POLL_NO_WINNER)
+    else:
+        add(text.POLL_FIELD_CLOSES, text.POLL_CLOSES.format(ts=poll.closes_at))
+        ranked = poll_count.ranked_with_votes(view.options, _counted(view))
+        if ranked:
+            leader_id, leader_votes = ranked[0]
+            leader = by_id[leader_id]
+            add(text.POLL_FIELD_LEADER, text.POLL_LEADER.format(letter=letters[leader_id], ts=leader.starts_at,
+                                                               votes=_votes_text(leader_votes)))
+        else:
+            add(text.POLL_FIELD_LEADER, text.POLL_NO_LEADER)
+    answered = text.POLL_ANSWERED.format(n=view.answered, m=view.recipients)
+    if view.reached < view.recipients:
+        answered += text.POLL_REACHED.format(r=view.reached, m=view.recipients)
+    add(text.POLL_FIELD_ANSWERED, answered)
+    if view.session_link is not None and instance_url is not None:
+        add(text.POLL_FIELD_SESSION, jump_link(text.POLL_SESSION_LINK, instance_url, *view.session_link))
+    if poll.sorted_at is not None:
+        add(text.POLL_FIELD_NOTE, text.POLL_RELETTERED.format(ts=poll.sorted_at))
+    embed["fields"] = fields
+    embed["footer"] = {"text": text.POLL_FOOTER.format(n=poll.id)}
+    return {"embeds": [embed], "allowed_mentions": {"parse": []}}
+
+
+def render_poll_ballot(view: PollView, *, user_id: str, zone_name: str,
+                       instance_url: str | None) -> dict[str, Any]:
+    """One recipient's ballot DM: {"content": ..., "allowed_mentions": {"parse": []}}. The option list gives way first
+    when the ballot is too long, and the instructions, the picks and the close time are always kept whole."""
+    poll = view.poll
+    if poll.outcome == "removed":
+        return {"content": text.POLL_BALLOT_REMOVED, "allowed_mentions": {"parse": []}}
+    letters = _letters(view.options)
+    position = {option.id: option.position for option in view.options}
+    head = (text.POLL_BALLOT_HEAD_RUNOFF if poll.is_runoff else text.POLL_BALLOT_HEAD).format(
+        card=fit(escape(view.card_title), POLL_BALLOT_CARD_LIMIT))
+    mine = sorted((vote for vote in view.votes if vote.user_id == user_id),
+                  key=lambda vote: (vote.rank is None, vote.rank or 0, position[vote.option_id]))
+    picks = ", ".join(letters[vote.option_id] for vote in mine)
+    picks_line = text.POLL_YOUR_PICKS.format(letters=fit(picks, 400)) if mine else text.POLL_NOT_ANSWERED
+    link = (jump_link(text.POLL_LINK_LABEL, instance_url, poll.guild_id, poll.channel_id, poll.message_id)
+            if instance_url is not None else text.POLL_LINK_LABEL)
+    if poll.state == "closed":
+        return {"content": "\n".join([head, text.POLL_BALLOT_CLOSED.format(link=link), picks_line]),
+                "allowed_mentions": {"parse": []}}
+
+    instructions = (text.POLL_HOW_RUNOFF if poll.is_runoff
+                    else text.POLL_HOW_APPROVAL.format(zone=zone_name, examples=text.SESSION_TIME_EXAMPLE))
+    tail = [instructions, picks_line]
+    if poll.sorted_at is not None:
+        tail.append(text.POLL_RELETTERED.format(ts=poll.sorted_at))
+    tail.append(text.POLL_CLOSES_LINE.format(ts=poll.closes_at))
+    counts = dict(poll_count.approval(view.options, _counted(view)))
+    option_lines = [_option_line(option, letters[option.id], counts[option.id]) for option in view.options]
+    # The option list takes what the fixed parts leave of the limit; the head and the tail are one newline apart each.
+    fixed = "\n".join([head, *tail])
+    budget = POLL_BALLOT_LIMIT - units(fixed) - 1
+    block = _lines_within(option_lines, cap=poll.ballot_size, limit=budget,
+                          more=lambda k: text.POLL_BALLOT_MORE.format(k=k, link=link))
+    return {"content": "\n".join([head, block, *tail]), "allowed_mentions": {"parse": []}}

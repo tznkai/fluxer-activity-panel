@@ -288,3 +288,36 @@ def set_session_if_unset(conn: sqlite3.Connection, poll_id: int, session_id: int
     cur = conn.execute("UPDATE polls SET session_id = ? WHERE id = ? AND outcome = 'winner' AND session_id IS NULL",
                        (session_id, poll_id))
     return cur.rowcount == 1
+
+
+@dataclass(frozen=True)
+class PollView:
+    """Everything a poll renderer needs, read in one transaction. The ids in it are for links and checks only."""
+    poll: Poll
+    card_title: str
+    options: tuple[PollOption, ...]                  # position order
+    votes: tuple[Vote, ...]
+    recipients: int                                  # ballot rows
+    answered: int                                    # ballots with answered = 1
+    reached: int                                     # ballots with a DM message id
+    session_link: tuple[str, str, str] | None        # (guild_id, channel_id, message_id) of the scheduled session
+
+
+def view(conn: sqlite3.Connection, poll_id: int) -> PollView | None:
+    poll = get(conn, poll_id)
+    if poll is None:
+        return None
+    title_row = conn.execute("SELECT title FROM cards WHERE id = ?", (poll.card_id,)).fetchone()
+    if title_row is None:
+        return None
+    recipients, answered, reached = conn.execute(
+        "SELECT COUNT(*), COALESCE(SUM(answered), 0), COUNT(dm_message_id) FROM poll_ballots WHERE poll_id = ?",
+        (poll_id,)).fetchone()
+    session_link = None
+    if poll.session_id is not None:
+        row = conn.execute("SELECT guild_id, channel_id, message_id FROM sessions WHERE id = ?",
+                           (poll.session_id,)).fetchone()
+        session_link = tuple(row) if row is not None else None
+    return PollView(poll=poll, card_title=title_row[0], options=tuple(options(conn, poll_id)),
+                    votes=tuple(votes(conn, poll_id)), recipients=recipients, answered=answered, reached=reached,
+                    session_link=session_link)

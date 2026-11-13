@@ -453,3 +453,37 @@ async def test_set_session_if_unset_is_true_once_and_only_for_a_winner(db: Datab
     loser = await _poll(db, other_card, message_id="5002")
     await db.run(lambda c: polls.close_if_open(c, loser, now=5, outcome="none", winner_option_id=None))
     assert await db.run(lambda c: polls.set_session_if_unset(c, loser, session)) is False
+
+
+# AC4.3 (the read): one transaction gives the poll view the renderers need ----------------------------
+
+async def test_view_counts_the_ballots_and_votes_and_reads_the_session_link(db: Database) -> None:
+    card = await _card(db)
+    poll_id = await _poll(db, card, recipients=("1002", "1003", "1004"))
+    first, second = await _option_ids(db, poll_id)
+    assert await db.run(lambda c: polls.replace_picks_if_open(c, poll_id, "1002", [first], ranked=False))
+    await db.run(lambda c: polls.set_ballot_message(c, poll_id, "1002", channel_id="9100", message_id="9101"))
+    assert await db.run(lambda c: polls.close_if_open(c, poll_id, now=5, outcome="winner", winner_option_id=first))
+    session = await db.run(lambda c: c.execute(
+        "INSERT INTO sessions (card_id, guild_id, channel_id, message_id, starts_at, ends_at, proposer_id, created_at) "
+        "VALUES (?, '3001', '3002', '9001', 10, 20, '1001', 1)", (card,)).lastrowid)
+    assert await db.run(lambda c: polls.set_session_if_unset(c, poll_id, session))
+
+    view = await db.run(lambda c: polls.view(c, poll_id))
+    assert view is not None
+    assert view.card_title == "t"
+    assert [option.id for option in view.options] == [first, second]
+    assert [(vote.user_id, vote.option_id) for vote in view.votes] == [("1002", first)]
+    assert (view.recipients, view.answered, view.reached) == (3, 1, 1)
+    assert view.session_link == ("3001", "3002", "9001")
+
+
+async def test_view_of_a_missing_poll_is_none(db: Database) -> None:
+    assert await db.run(lambda c: polls.view(c, 999)) is None
+
+
+async def test_view_without_a_session_has_no_link(db: Database) -> None:
+    card = await _card(db)
+    poll_id = await _poll(db, card)
+    view = await db.run(lambda c: polls.view(c, poll_id))
+    assert view is not None and view.session_link is None and view.reached == 0
