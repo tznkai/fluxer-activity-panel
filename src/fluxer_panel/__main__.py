@@ -30,6 +30,8 @@ from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.interactions import Interactions
 from fluxer_panel.logs import log_event, setup_logging
 from fluxer_panel.pacer import ChannelPacer
+from fluxer_panel.poll_close import PollCloser
+from fluxer_panel.poll_commands import PollCommands
 from fluxer_panel.poll_flow import PollFlow
 from fluxer_panel.poll_post import PollPost
 from fluxer_panel.poller import Poller
@@ -110,6 +112,11 @@ async def run(config: Config, db: Database) -> None:
             poll_post = PollPost(db=db, rest=rest, config=config, pacer=pacer, identity=identity, backoff=backoff)
             poll_flow = PollFlow(db=db, rest=rest, config=config, locks=card_ctx.locks, poll_post=poll_post,
                                  backoff=backoff, games_guild=games_guild, kick=poller.kick)
+            # The poll close path (one place every close goes through) and the `!poll` commands, which share the card
+            # locks and the poll post with the flow.
+            poll_closer = PollCloser(db=db, locks=card_ctx.locks, poll_post=poll_post)
+            poll_commands = PollCommands(db=db, rest=rest, config=config, locks=card_ctx.locks, poll_post=poll_post,
+                                         poll_flow=poll_flow, closer=poll_closer, kick=poller.kick)
             # The timed session jobs (ends, the weekly series, the heads-up) run on each tick, and their next due time
             # shortens the poller's wait.
             session_jobs = SessionJobs(db=db, rest=rest, config=config, locks=card_ctx.locks, session_post=session_post,
@@ -131,7 +138,7 @@ async def run(config: Config, db: Database) -> None:
             # Every DM passes the router first: the non-admin path is rate limited, and admin heads still reach admin.handle.
             dm_router = DmRouter(config=config, rest=rest, card_ctx=card_ctx, limiter=limiter,
                                  session_flow=session_flow, session_commands=session_commands.handle,
-                                 poll_flow=poll_flow)
+                                 poll_flow=poll_flow, poll_commands=poll_commands.handle)
             bot = Bot(rest=rest, config=config, roles=roles, card_ctx=card_ctx,
                       on_message_delete=poller.on_message_delete, presses=presses, identity=identity,
                       on_games_message=poller.on_games_message, dm_router=dm_router,

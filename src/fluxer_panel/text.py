@@ -421,3 +421,23 @@ POLL_NOT_RECIPIENT = "You weren't sent a ballot for this poll."
 POLL_WHICH = "You have more than one open poll ({polls}). Reply with `!poll vote <poll> <reply>` to pick one."
 POLL_FULL = "This poll has no room for another time. Pick from the options shown."
 POLL_FORMAT = "Pick letters, like `a, c`, or type times, or both."
+
+# `!poll` in DMs. A poll is named by its number or its message link; a duration is a number and m, h or d.
+POLL_USAGE = ("Commands: `!poll list`, `!poll vote <poll> <reply>`, `!poll sort <poll>`, `!poll shown <poll> <n>`, "
+              "`!poll extend <poll> [duration]`, `!poll close <poll>`, `!poll help`. A poll is named by its number "
+              "or its message link. A duration is a number and m, h or d, like `90m`, `12h` or `2d`.")
+POLL_UNKNOWN = "I couldn't find that poll. Give its number or its message link."
+POLL_NOT_ALLOWED = "Only the poll's starter or an admin can change it."
+POLL_NOT_OPEN = "That poll is closed, so nothing changed."
+POLL_SORTED = ("The options are re-lettered by votes, then soonest. The poll message and every ballot are updated, "
+               "and any pending ballot size now applies.")
+POLL_SHOWN_PENDING = "The ballot will show {n} options at the next sort. Nothing has changed yet."
+POLL_SHOWN_RANGE = "The number of options shown must be from 1 to 20."
+POLL_EXTENDED = "The poll now closes <t:{ts}:F> (<t:{ts}:R>)."
+POLL_EXTEND_CAP = "That would make the poll run longer than a poll may run, so nothing changed."
+POLL_CLOSED_DONE = "The poll is closed."
+POLL_LIST_EMPTY = "You have no polls to show."
+POLL_LIST_LINE = "{n}. {card} · {state} · {when}{link}"
+POLL_LIST_LINK = " · {link}"
+POLL_LIST_OPEN_AT = "closes <t:{ts}:F>"
+POLL_LIST_CLOSED_AT = "closed <t:{ts}:F>"

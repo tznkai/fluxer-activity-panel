@@ -4,10 +4,10 @@
 which a non-admin's DM reaches any command code.
 
 The order is fixed. A guild message goes to `admin.handle`, which ignores what is not a command and refuses the rest. A
-bot author or a non-snowflake author goes there too, and is refused and logged as before. Then a `!session` command
-takes the rate-limited non-admin path. An admin head (`!admin`, `!card`, `!request`) goes to `admin.handle`, which
-authorizes it. Anything else goes to the session flow, when that user has a draft; failing that, to the poll flow, when
-that user has an open poll ballot. Both are rate limited the same way."""
+bot author or a non-snowflake author goes there too, and is refused and logged as before. Then a `!session` or a `!poll`
+command takes the rate-limited non-admin path. An admin head (`!admin`, `!card`, `!request`) goes to `admin.handle`,
+which authorizes it. Anything else goes to the session flow, when that user has a draft; failing that, to the poll flow,
+when that user has an open poll ballot. Both are rate limited the same way."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 NON_ADMIN_LIMIT = 5      # DM commands, replies and DM reactions per window, per non-admin user
 NON_ADMIN_WINDOW = 60.0  # seconds
 
-SessionHandler = Callable[[str, MessageCreate], Awaitable[None]]   # (argument string, event)
+CommandHandler = Callable[[str, MessageCreate], Awaitable[None]]   # (argument string, event)
 
 
 class DraftReplies(Protocol):
@@ -90,11 +90,11 @@ class NonAdminLimiter:
             del self._hits[user_id]
 
 
-def _session_head(content: str, prefix: str) -> str | None:
-    """The argument string after '<prefix>session' when the message is that command, else None. The same rule as
+def _head(content: str, prefix: str, word: str) -> str | None:
+    """The argument string after '<prefix><word>' when the message is that command, else None. The same rule as
     `admin.parse_head`: the command word must be the whole message or be followed by a space."""
     text = content.strip()
-    full = f"{prefix}session"
+    full = f"{prefix}{word}"
     if text == full:
         return ""
     if text.startswith(full + " "):
@@ -104,8 +104,8 @@ def _session_head(content: str, prefix: str) -> str | None:
 
 class DmRouter:
     def __init__(self, *, config: Config, rest: FluxerREST, card_ctx: CardContext | None, limiter: NonAdminLimiter,
-                 session_flow: DraftReplies | None = None, session_commands: SessionHandler | None = None,
-                 poll_flow: PollReplies | None = None) -> None:
+                 session_flow: DraftReplies | None = None, session_commands: CommandHandler | None = None,
+                 poll_flow: PollReplies | None = None, poll_commands: CommandHandler | None = None) -> None:
         self._config = config
         self._rest = rest
         self._card_ctx = card_ctx
@@ -113,6 +113,7 @@ class DmRouter:
         self._session_flow = session_flow
         self._session_commands = session_commands
         self._poll_flow = poll_flow
+        self._poll_commands = poll_commands
 
     async def route(self, event: MessageCreate) -> None:
         if event.guild_id is not None:
@@ -121,12 +122,19 @@ class DmRouter:
         if event.author_is_bot or not is_snowflake(event.author_id):
             await admin.handle(event, self._config, self._rest, self._card_ctx)   # refused and logged, as before
             return
-        head = _session_head(event.content, self._config.prefix)
+        head = _head(event.content, self._config.prefix, "session")
         if head is not None:
             if not self._limiter.admit(event.author_id):
                 return
             if self._session_commands is not None:
                 await self._session_commands(head, event)
+            return
+        poll_head = _head(event.content, self._config.prefix, "poll")
+        if poll_head is not None:
+            if not self._limiter.admit(event.author_id):
+                return
+            if self._poll_commands is not None:
+                await self._poll_commands(poll_head, event)
             return
         if admin.parse_head(event.content, self._config.prefix) is not None:
             await admin.handle(event, self._config, self._rest, self._card_ctx)   # admin heads: unchanged

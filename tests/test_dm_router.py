@@ -138,9 +138,9 @@ def panel_records(caplog: pytest.LogCaptureFixture, event: str) -> list[logging.
 
 def make_router(rest: FluxerREST, card_ctx: CardContext | None, limiter: NonAdminLimiter, *,
                 recorder: Recorder | None = None, flow: StubFlow | None = None,
-                polls: StubPolls | None = None) -> DmRouter:
+                polls: StubPolls | None = None, poll_commands: Recorder | None = None) -> DmRouter:
     return DmRouter(config=make_config(), rest=rest, card_ctx=card_ctx, limiter=limiter, session_flow=flow,
-                    session_commands=recorder, poll_flow=polls)
+                    session_commands=recorder, poll_flow=polls, poll_commands=poll_commands)
 
 
 @pytest.fixture
@@ -484,3 +484,62 @@ async def test_an_admin_is_never_limited_on_poll_replies(harness) -> None:
     for _ in range(NON_ADMIN_LIMIT + 2):
         await router.route(message("a", author=ADMIN))
     assert len(polls.replies) == NON_ADMIN_LIMIT + 2
+
+
+# `!poll` commands: the same rate-limited path as `!session`, and ahead of the draft and ballot replies ----------
+
+async def test_a_poll_command_from_a_non_admin_reaches_the_poll_commands_with_its_argument_string(harness) -> None:
+    _, rest, card_ctx = harness
+    poll_commands = Recorder()
+    router = make_router(rest, card_ctx, NonAdminLimiter(make_config(), clock=Clock()), poll_commands=poll_commands)
+    await router.route(message("!poll vote 1 a, c"))
+    assert poll_commands.calls == [("vote 1 a, c", NON_ADMIN)]
+
+
+async def test_a_bare_poll_reaches_the_poll_commands_with_no_args(harness) -> None:
+    _, rest, card_ctx = harness
+    poll_commands = Recorder()
+    router = make_router(rest, card_ctx, NonAdminLimiter(make_config(), clock=Clock()), poll_commands=poll_commands)
+    await router.route(message("!poll"))
+    assert poll_commands.calls == [("", NON_ADMIN)]
+
+
+async def test_a_word_that_only_starts_with_poll_is_not_a_poll_command(harness) -> None:
+    _, rest, card_ctx = harness
+    poll_commands = Recorder()
+    router = make_router(rest, card_ctx, NonAdminLimiter(make_config(), clock=Clock()), poll_commands=poll_commands)
+    await router.route(message("!pollster vote 1 a"))
+    assert poll_commands.calls == []
+
+
+async def test_a_user_with_a_draft_and_an_open_ballot_sends_poll_vote_to_the_command_and_not_the_draft(harness) -> None:
+    # AC3.8: a reply goes to the draft, and the ballot can still be answered with `!poll vote`.
+    _, rest, card_ctx = harness
+    flow, polls, poll_commands = StubFlow(drafts=(NON_ADMIN,)), StubPolls(open_for=(NON_ADMIN,)), Recorder()
+    router = make_router(rest, card_ctx, NonAdminLimiter(make_config(), clock=Clock()), flow=flow, polls=polls,
+                         poll_commands=poll_commands)
+    await router.route(message("!poll vote 1 a"))
+    assert poll_commands.calls == [("vote 1 a", NON_ADMIN)]
+    assert flow.replies == []
+    assert polls.replies == []
+
+
+async def test_six_poll_commands_in_a_minute_give_five_calls_and_a_silent_drop(harness) -> None:
+    _, rest, card_ctx = harness
+    poll_commands = Recorder()
+    router = make_router(rest, card_ctx, NonAdminLimiter(make_config(), clock=Clock()), poll_commands=poll_commands)
+    for _ in range(NON_ADMIN_LIMIT + 1):
+        await router.route(message("!poll list"))
+    assert len(poll_commands.calls) == NON_ADMIN_LIMIT
+
+
+async def test_poll_commands_and_session_commands_share_one_budget(harness) -> None:
+    _, rest, card_ctx = harness
+    recorder, poll_commands = Recorder(), Recorder()
+    router = make_router(rest, card_ctx, NonAdminLimiter(make_config(), clock=Clock()), recorder=recorder,
+                         poll_commands=poll_commands)
+    for _ in range(3):
+        await router.route(message("!session list"))
+    for _ in range(3):
+        await router.route(message("!poll list"))
+    assert len(recorder.calls) + len(poll_commands.calls) == NON_ADMIN_LIMIT

@@ -17,10 +17,10 @@ Paths are relative to this directory.
 - `src/fluxer_client/rest.py:102` `self._headers = {"Authorization": f"Bot {token}"}` — the only place REST sends the token. It goes in a header, never in a URL or a log line.
 - `src/fluxer_client/gateway.py:135` `"token": self.token, "session_id"` — the resume frame (op 6) carries the token.
 - `src/fluxer_client/gateway.py:173` `"token": self.token,` — the identify frame (op 2) carries the token.
-- `src/fluxer_panel/__main__.py:198` `print(f"Configuration error: {exc}"` — one of the two panel prints (the other is the usage line below). It writes to stderr a configuration message, which names variables and never values.
-- `src/fluxer_panel/__main__.py:193` `print(USAGE, file=sys.stderr)` — the second panel print, for a bad command line. It writes the fixed `USAGE` text to stderr, which names no values.
-- `src/fluxer_panel/__main__.py:200` `setup_logging(config.log_level, [s for s in (config.token, config.pterodactyl_api_key) if s])` — the token and the Pterodactyl key are handed to the redaction filter before anything can log.
-- `src/fluxer_panel/__main__.py:215` `last resort: log (redacted) and exit 1` — the last-resort catch-all logs through the redacting handler and returns 1. No raw traceback reaches stderr.
+- `src/fluxer_panel/__main__.py:205` `print(f"Configuration error: {exc}"` — one of the two panel prints (the other is the usage line below). It writes to stderr a configuration message, which names variables and never values.
+- `src/fluxer_panel/__main__.py:200` `print(USAGE, file=sys.stderr)` — the second panel print, for a bad command line. It writes the fixed `USAGE` text to stderr, which names no values.
+- `src/fluxer_panel/__main__.py:207` `setup_logging(config.log_level, [s for s in (config.token, config.pterodactyl_api_key) if s])` — the token and the Pterodactyl key are handed to the redaction filter before anything can log.
+- `src/fluxer_panel/__main__.py:222` `last resort: log (redacted) and exit 1` — the last-resort catch-all logs through the redacting handler and returns 1. No raw traceback reaches stderr.
 
 ## Logging
 
@@ -51,6 +51,7 @@ Paths are relative to this directory.
 - `src/fluxer_panel/admin.py:56` `if not authorize(event, config):` — every admin subcommand passes through this check in `handle`.
 - `src/fluxer_panel/admin.py:57` `log_event(log, "admin_denied"` — a refusal is logged with the user and channel ids only.
 - `src/fluxer_panel/bot.py:65` `if msg.author_id == self.user_id:` — the bot skips its own messages, so its replies cannot loop. Every other message goes to `DmRouter.route`. Guild messages, bot or non-snowflake authors and admin heads still reach `admin.handle`, where `authorize` refuses a command from a bot or a guild channel.
+- `src/fluxer_panel/poll_commands.py:158` `return event.author_id == poll.starter_id or admin.authorize(event, self._config)` — a poll change (sort, shown, extend, close) needs the poll's starter or an admin. A `!poll vote` is a ballot reply and needs neither.
 
 ## Role assignment
 
@@ -118,11 +119,11 @@ Paths are relative to this directory.
 - `src/fluxer_panel/purge.py:99` `def write_status(` — the status file is written atomically and holds only timestamps and counts, and the deferred count.
 - `src/fluxer_panel/purge.py:120` `await db.checkpoint()` — a WAL checkpoint after each run. A checkpoint failure after the commit is reported as `ok: false`, though the rows may already be gone.
 - `src/fluxer_panel/purge.py:148` `log.exception("purge_loop_error")` — the per-iteration catch-all. A failing iteration is logged, and the loop goes on.
-- `src/fluxer_panel/__main__.py:143` `purge_task = asyncio.create_task(purge_loop(` — the purge task and the poller start only once the gateway task exists, so a stop that wins discovery never starts either.
-- `src/fluxer_panel/__main__.py:144` `scrub=session_post.scrub,` — the `run` purge gets the session scrubber. The `purge` subcommand passes none, so it defers due sessions instead of deleting them.
-- `src/fluxer_panel/__main__.py:162` `gw_task.cancel()` — `run()`'s finally cancels the gateway task first, so the session never closes under a live reconnect.
-- `src/fluxer_panel/__main__.py:167` `poller_task.cancel()` — the card poller is cancelled and awaited after the gateway task and before the purge task, so no card write is in flight when the session closes.
-- `src/fluxer_panel/__main__.py:174` `purge_task.cancel()` — the purge task is cancelled and awaited on every exit, after the poller.
+- `src/fluxer_panel/__main__.py:150` `purge_task = asyncio.create_task(purge_loop(` — the purge task and the poller start only once the gateway task exists, so a stop that wins discovery never starts either.
+- `src/fluxer_panel/__main__.py:151` `scrub=session_post.scrub,` — the `run` purge gets the session scrubber. The `purge` subcommand passes none, so it defers due sessions instead of deleting them.
+- `src/fluxer_panel/__main__.py:169` `gw_task.cancel()` — `run()`'s finally cancels the gateway task first, so the session never closes under a live reconnect.
+- `src/fluxer_panel/__main__.py:174` `poller_task.cancel()` — the card poller is cancelled and awaited after the gateway task and before the purge task, so no card write is in flight when the session closes.
+- `src/fluxer_panel/__main__.py:181` `purge_task.cancel()` — the purge task is cancelled and awaited on every exit, after the poller.
 - `src/fluxer_panel/migrations/0008_sessions.sql:11` `REFERENCES cards(id) ON DELETE RESTRICT` — a card that still has sessions cannot be deleted.
 - `src/fluxer_panel/migrations/0008_sessions.sql:23` `state IN ('upcoming', 'ended', 'cancelled')` — the session states the purge reads.
 - `src/fluxer_panel/migrations/0008_sessions.sql:29` `CHECK ((state = 'upcoming') = (closed_at IS NULL))` — a session has a close time exactly when it is no longer upcoming, so `closed_at` is the purge's clock.
@@ -290,7 +291,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/poller.py:783` `cards.set_hash_if(c, card_id` — the rendered hash is stored only if the message is still the same one, so a delete during an edit is not written back.
 - `src/fluxer_panel/poller.py:54` `_DELETED_CAP = 256` — the remembered deletes are bounded. The oldest entries are evicted, which covers the window between a send and its commit.
 - `src/fluxer_panel/poller.py:797` `self._deleted[(channel_id, message_id)] = None` — a repeated delete keeps its place, so eviction is by insertion order.
-- `src/fluxer_panel/__main__.py:167` `poller_task.cancel()` — the poller is cancelled and awaited before the purge task, so no card write is in flight when the session closes.
+- `src/fluxer_panel/__main__.py:174` `poller_task.cancel()` — the poller is cancelled and awaited before the purge task, so no card write is in flight when the session closes.
 
 - `src/fluxer_panel/poller.py:580` `log_event(log, "board_sync_failed"` — a failed board post or edit is logged with the exception type only, and the next tick retries it. No title or status is logged.
 - `src/fluxer_panel/poller.py:612` `board.set_hash_if(c, channel_id` — the board hash is stored only while the board still holds that message, so a delete during an edit is not written back.
@@ -325,8 +326,8 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/purge.py:81` `await scrub(session)` — the scrub edits the message to its closed form without the location, while the row still exists.
 - `src/fluxer_panel/purge.py:83` `"session_scrub_failed"` — a failed scrub is logged with the session id and the exception type only.
 - `src/fluxer_panel/purge.py:86` `_purge_tx(conn, now, session_ids=session_ids` — the delete runs for every due id after the loop, even when a scrub failed. The delete re-checks the due rule, so a row that changed since it was read is kept.
-- `src/fluxer_panel/__main__.py:144` `scrub=session_post.scrub,` — the `run` purge is the only caller that gets the scrubber.
-- `src/fluxer_panel/__main__.py:184` `scrub=None,` — the `purge` subcommand passes no scrubber, so due sessions stay in place and are reported as deferred.
+- `src/fluxer_panel/__main__.py:151` `scrub=session_post.scrub,` — the `run` purge is the only caller that gets the scrubber.
+- `src/fluxer_panel/__main__.py:191` `scrub=None,` — the `purge` subcommand passes no scrubber, so due sessions stay in place and are reported as deferred.
 
 ## Waitlist promotion
 
@@ -357,12 +358,12 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 
 ## Non-admin DM path
 
-- `src/fluxer_panel/dm_router.py:118` `if event.guild_id is not None:` — a guild message goes to `admin.handle`, which refuses a command and gives no reply. Nothing from a guild channel reaches the session path.
-- `src/fluxer_panel/dm_router.py:121` `if event.author_is_bot or not is_snowflake(event.author_id):` — a bot or non-snowflake author goes to `admin.handle`, which refuses it and logs it.
+- `src/fluxer_panel/dm_router.py:119` `if event.guild_id is not None:` — a guild message goes to `admin.handle`, which refuses a command and gives no reply. Nothing from a guild channel reaches the session path.
+- `src/fluxer_panel/dm_router.py:122` `if event.author_is_bot or not is_snowflake(event.author_id):` — a bot or non-snowflake author goes to `admin.handle`, which refuses it and logs it.
 - `src/fluxer_panel/dm_router.py:64` `def admit(self, user_id: str) -> bool:` — `NonAdminLimiter.admit` allows 5 commands, replies or DM reactions per 60 seconds per non-admin user.
 - `src/fluxer_panel/dm_router.py:65` `if user_id in self._config.admin_user_ids:` — admins are exempt from the limit.
-- `src/fluxer_panel/dm_router.py:126` `if not self._limiter.admit(event.author_id):` — a `!session` command from a non-admin is rate limited before it is parsed.
-- `src/fluxer_panel/dm_router.py:131` `if admin.parse_head(event.content, self._config.prefix) is not None:` — admin heads (`!admin`, `!card`, `!request`) go to `admin.handle` unchanged, and `authorize` checks them there.
+- `src/fluxer_panel/dm_router.py:127` `if not self._limiter.admit(event.author_id):` — a `!session` command from a non-admin is rate limited before it is parsed.
+- `src/fluxer_panel/dm_router.py:139` `if admin.parse_head(event.content, self._config.prefix) is not None:` — admin heads (`!admin`, `!card`, `!request`) go to `admin.handle` unchanged, and `authorize` checks them there.
 - `src/fluxer_panel/session_flow.py:223` `if not self._limiter.admit(user):` — a 📅 reaction in a DM uses the same limiter.
 - `src/fluxer_panel/session_commands.py:137` `return event.author_id == session.proposer_id or admin.authorize(event, self._config)` — a session change needs the proposer or an admin.
 
