@@ -431,6 +431,62 @@ channel ID.
 - Result (web): not yet run.
 - Result (mobile): not yet run.
 
+## Live poll checks
+
+- Plan only, not yet run. The operator runs each check by hand, in the private test guild with a second test account,
+  and records the result on the `Result` lines. Nothing from the real instance is recorded in this file.
+- Use placeholders only: `<card>` is a card's slug, `<n>` a poll number, `<user>` a member's id, and `<t:…>` a
+  timestamp. Emoji are written as Unicode code points, as in the sections above.
+
+### Member list shape (run first)
+
+- Steps: with the bot's token, `GET /guilds/<guild>/members?limit=2`, then the same with `&after=<last user id>`, until a
+  page comes back shorter than 2. The bot reads with a page of 1000, so this run is the same request at a small size.
+  Use a bot that has no permission beyond its usual ones.
+- Expected: each page is an array of members. Each member has `user.id` as a digit string, and `user.bot` is present or
+  absent (say which). `roles` is an array of role id strings. The ids ascend from page to page. The last page is short
+  and has no error. The bot with no extra permission gets the list, not a 403.
+- Note: if the list is a 403 for a bot without extra permissions, record the permission that made it work. The poll
+  start depends on this read, so a 403 means no poll can start in that community.
+- Result (web): not yet run.
+- Result (mobile): not yet run.
+
+### Ballot edits on web and mobile
+
+- Steps: with two test accounts, A and B, both on the follow role, A starts a poll with 🗳️ on a live card. Read B's
+  ballot on the web and on mobile. B replies `a`, then `fri 20:00` to add a time. Read the poll message and A's ballot
+  after each reply.
+- Expected: both ballots are edited in place, with no new direct message. The counts and the new time appear on the poll
+  message. `<t:…:F>` for the new time renders in each viewer's own time zone. The edit shows on mobile without reopening
+  the direct message.
+- Note: record whether the mobile client shows the edit on the open conversation or only after it is reopened.
+- Result (web): not yet run.
+- Result (mobile): not yet run.
+
+### A 24 h close
+
+- Steps: start a poll with the default `POLL_LENGTH_SECONDS` (86400). Let account A answer and leave account B unanswered.
+  Let the time pass, and note the close time from the poll message.
+- Expected: the poll closes within one poller tick of its close time. The poll message shows the winner, and each
+  ballot says the poll is closed. 📅 and 🔁 appear on the poll message. B got the halfway reminder once (about 12 hours
+  in), and A got none, since A had answered.
+- Note: this check spans a day. Leave the bot running, and read the result the next day.
+- Result (web): not yet run.
+- Result (mobile): not yet run.
+
+### A runoff
+
+- Steps: restart the bot with `POLL_LENGTH_SECONDS=1800` and `POLL_MAX_LENGTH_SECONDS=3600`, so the runoff's own close is
+  short. Use a card whose poll offers three times at least three hours away, and let three voters pick a time each, one
+  per time, so the poll has a winner. Close it with `!poll close <n>` as the starter. Press 🔁 on the closed poll as the
+  starter. Rank the three times on two of the runoff's recipients, so that the first round has no majority: for example,
+  one ranks `a` first and the other ranks `b` first.
+- Expected: the runoff opens, and its ballots reach the two accounts. The runoff closes before its earliest candidate
+  time, with two rounds shown in the closed message. Its message has 📅 only. Pressing 📅 schedules a session in the
+  card's session channel, with the starter as proposer and the voters for the winner as maybe.
+- Result (web): not yet run.
+- Result (mobile): not yet run.
+
 ## First cards
 
 Three cards were run against the test community, all three checked on web and mobile:
