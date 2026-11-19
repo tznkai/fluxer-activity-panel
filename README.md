@@ -3,6 +3,7 @@
 
 # Fluxer activity panel
 
+
 This project holds two Python packages under `src/`:
 
 - `fluxer_client`: a panel-agnostic Fluxer client with REST, gateway, role cache
@@ -11,6 +12,12 @@ This project holds two Python packages under `src/`:
 
 Configuration comes from environment variables. See `.env.example` for the names. The code
 never loads `.env`; the operator sources it in the shell.
+
+## Human to Huamn
+
+Hi, human author here. I wrote this section of the README myself so you don't have get through Claudese to understand what's happening. This project tries to solve two problems I have with the games I serve on my homelab: how do players see what games are available, and how do I encourage people to get together and play? My solution is a Fluxer bot that reports important game details to cards in Fluxer communities and uses push notifications and scheduling to help drive players towards more games. This solution is me-shaped, it's built for the games I serve, the players I and my family play with, and using the chat service I self-host. 
+
+Outside of this section of the README, including the rest of this file, this project, was directed by K.Chen through iterative instruction and testing, orchestrated by Claude Code using Opus 5.5, and audited and coded by various Claude models of that generation. The Fluxer client was carried over from my green-oaks-bot project, which was coded the same way except springing off of my own previous work. This presents certain risks to you. Your best way to alleviate those risks is what it always is with free and open source software: audit the code yourself, and fork as required.
 
 ## Bot setup
 
@@ -618,10 +625,3 @@ That is not a refusal and does not quarantine anything.
 - Every card message is edited once after the upgrade, to carry the new footer and field rules.
 - The `purge` subcommand defers sessions (`sessions_deferred`, status file schema 2) and leaves them in place. The
   running bot scrubs and deletes them.
-
-## How this was developed
-
-This project was coded using Claude Code, orchestrated by Opus 5.5 with Haiku 5.5 subagents writing much of the code,
-under instructions from K. Chen. Its Fluxer client was carried over from his earlier green-oaks-bot project, which was
-built the same way. As with all free and open source projects, the user's ultimate protections lie in the ability to
-examine the code and the right to fork it.
