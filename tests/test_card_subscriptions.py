@@ -703,7 +703,8 @@ async def test_subscribe_local_with_a_channel_stores_the_mode_and_the_local_chan
     sub = await stored(far_world, card.id, FAR_COPY)
     assert sub is not None
     assert (sub.mode, sub.local_channel_id, sub.guild_id) == ("local", FAR_LOCAL, FAR)
-    # The role step adds its own line after these (test_card_sub_modes covers it), so only the leading lines are compared.
+    # The role step adds its own line after these (test_card_sub_modes covers it), so only the leading lines are
+    # compared.
     assert far_world.last_reply().splitlines()[:3] == [text.SUBSCRIBED, text.SUBSCRIPTION_MODE_SET.format(
         channel_id=FAR_COPY, mode="local"), text.SUBSCRIPTION_LOCAL_CHANNEL_SET.format(channel_id=FAR_LOCAL)]
 
@@ -755,6 +756,49 @@ async def test_both_mode_is_refused_on_a_copy_in_the_games_community(far_world: 
     await far_world.run(f"!card subscribe mc {GUILD} {CHANNELS[0]} mode=both")
     assert far_world.last_reply() == text.SUBSCRIPTION_MODE_IN_GAMES
     assert await sub_rows(far_world, card.id) == []
+
+
+def fail_games_lookup(world: World) -> None:
+    world.state.overrides[f"GET {channel_path(GAMES_CHANNEL)}"] = Override(500, b'{"code": "X", "message": "boom"}')
+
+
+async def test_local_mode_on_a_new_row_is_refused_when_the_games_lookup_fails(far_world: World) -> None:
+    card = await make_card(far_world)
+    fail_games_lookup(far_world)
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local")
+    assert far_world.last_reply() == text.SUBSCRIPTION_GAMES_LOOKUP_FAILED
+    assert await sub_rows(far_world, card.id) == []
+    assert far_world.state.requests_to(channel_path(FAR_COPY)) == []
+    # The failure is not kept: once the lookup answers, the same command goes through.
+    del far_world.state.overrides[f"GET {channel_path(GAMES_CHANNEL)}"]
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local")
+    sub = await stored(far_world, card.id, FAR_COPY)
+    assert sub is not None and sub.mode == "local"
+
+
+async def test_both_mode_on_an_existing_redirect_row_is_refused_when_the_games_lookup_fails(
+        far_world: World) -> None:
+    card = await make_card(far_world)
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY}")
+    before = await stored(far_world, card.id, FAR_COPY)
+    assert before is not None and before.mode == "redirect"
+    fail_games_lookup(far_world)
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=both")
+    assert far_world.last_reply() == text.SUBSCRIPTION_GAMES_LOOKUP_FAILED
+    rows = await sub_rows(far_world, card.id)
+    assert len(rows) == 1
+    assert await stored(far_world, card.id, FAR_COPY) == before
+
+
+async def test_local_mode_succeeds_when_no_games_channel_is_configured(world: World) -> None:
+    card = await make_card(world)
+    world.state.guilds[FAR] = {"id": FAR}
+    world.state.channels[FAR_COPY] = {"id": FAR_COPY, "type": 0, "guild_id": FAR, "name": "copy"}
+    world.ctx.games_guild = GamesGuild(world.rest, world.config)
+    await world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local")
+    sub = await stored(world, card.id, FAR_COPY)
+    assert sub is not None and sub.mode == "local"
+    assert world.last_reply().splitlines()[0] == text.SUBSCRIBED
 
 
 async def test_a_channel_of_another_community_is_refused_and_nothing_changes(far_world: World) -> None:

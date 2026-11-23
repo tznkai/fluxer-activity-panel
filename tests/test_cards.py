@@ -17,6 +17,7 @@ from fluxer_panel.cards import (
     ChannelLink,
     FollowRole,
     FollowRoleTaken,
+    SubscriptionMissing,
     Location,
     ManagerRef,
     ProbeRef,
@@ -613,6 +614,15 @@ async def test_clear_follow_role_returns_the_old_value_and_removes_it(db: Databa
 
 async def _subscribe(db: Database, card_id: int, channel_id: str = "2001") -> int:
     return await db.run(lambda c: subscriptions.add(c, card_id, GUILD, channel_id))
+
+
+async def test_set_subscription_role_on_a_removed_subscription_raises_and_stores_nothing(db: Database) -> None:
+    card_id = await _create(db)
+    sub_id = await _subscribe(db, card_id)
+    await db.run(lambda c: subscriptions.remove_by_id(c, sub_id))
+    with pytest.raises(SubscriptionMissing):
+        await db.run(lambda c: cards.set_subscription_role(c, sub_id, "3001"))
+    assert await db.run(lambda c: c.execute("SELECT COUNT(*) FROM subscription_follow_role").fetchone()) == (0,)
 
 
 async def test_set_subscription_role_round_trips_and_overwrites(db: Database) -> None:

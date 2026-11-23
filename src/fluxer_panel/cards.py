@@ -66,6 +66,10 @@ class FollowRoleTaken(Exception):
     """Another card or subscription already has this role as its follow role."""
 
 
+class SubscriptionMissing(Exception):
+    """The subscription was removed, so it has no row to store a follow role on."""
+
+
 @dataclass(frozen=True)
 class Address:
     host: str
@@ -455,9 +459,12 @@ def get_subscription_role(conn: sqlite3.Connection, sub_id: int) -> FollowRole |
 
 
 def set_subscription_role(conn: sqlite3.Connection, sub_id: int, role_id: str) -> None:
-    """Stores a subscription's follow role. Raises FollowRoleTaken, and stores nothing, when any card or another
-    subscription has this role. UNIQUE only holds within one table, so the cross-table check is here.
-    The check and the write run in the caller's transaction."""
+    """Stores a subscription's follow role. Raises SubscriptionMissing when the subscription row is gone, and
+    FollowRoleTaken, storing nothing in either case, when any card or another subscription has this role. UNIQUE only
+    holds within one table, so the cross-table check is here. The checks and the write run in the caller's
+    transaction."""
+    if conn.execute("SELECT 1 FROM card_subscription WHERE id = ?", (sub_id,)).fetchone() is None:
+        raise SubscriptionMissing()
     taken = conn.execute(
         "SELECT 1 FROM card_follow_role WHERE role_id = ? "
         "UNION ALL SELECT 1 FROM subscription_follow_role WHERE role_id = ? AND sub_id <> ?",

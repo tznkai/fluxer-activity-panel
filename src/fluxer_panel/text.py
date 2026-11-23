@@ -192,6 +192,7 @@ UNSUBSCRIBED_COPY_LEFT = ("Unsubscribed, but I couldn't remove the copy in <#{ch
                           "Delete it by hand.")
 SUBSCRIPTION_MODE_IN_GAMES = ("Copies in the games community always point at the card, so they can't be local or "
                               "both.")
+SUBSCRIPTION_GAMES_LOOKUP_FAILED = "I couldn't check the games community. Try again in a minute."
 SUBSCRIPTION_NEEDS_SCOPE = "channel= and role= only work with mode=local or mode=both."
 SUBSCRIPTION_CHANNEL_IS_GAMES = "That's the games channel. Sessions, polls and play-now posts never go there."
 SUBSCRIPTION_MODE_SET = "Copy in <#{channel_id}> is now {mode}."
@@ -214,6 +215,7 @@ SUBSCRIPTION_ROLE_REASON = {
     "mentionable_failed": "I couldn't create or change the role there (I need Manage Roles, ranked above it).",
     "lookup_failed": "I couldn't reach Fluxer to check that role. Try again in a minute.",
     "no_bot_id": "Try again in a moment.",
+    "missing_subscription": "That channel was unsubscribed before its follow role was set.",
 }
 SUBSCRIPTIONS_HEADING = "Subscribed channels:"
 # `!card show` lines: the mode after each channel, and for a local or both copy the channel it posts in and its role.

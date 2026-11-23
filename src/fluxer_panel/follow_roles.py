@@ -22,7 +22,7 @@ import aiohttp
 from fluxer_client.ids import is_snowflake
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
 from fluxer_client.roles import RoleCache
-from fluxer_panel import cards
+from fluxer_panel import cards, subscriptions
 from fluxer_panel.cards import Card, FollowRole
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
@@ -201,8 +201,9 @@ def _ensured(target: RoleTarget, result: EnsureResult) -> EnsureResult:
     return result
 
 
-async def _store(deps: FollowDeps, target: RoleTarget, guild_id: str, role_id: str) -> bool:
-    """Stores the role on the target. False when another card or subscription already has it (the store's own check).
+async def _store(deps: FollowDeps, target: RoleTarget, guild_id: str, role_id: str) -> str | None:
+    """Stores the role on the target. Returns None when stored, else the refusal reason: "taken" when another card or
+    subscription already has it (the store's own check), "missing_subscription" when the subscription was removed.
     A subscription's role lives in the subscription's community, so guild_id is stored only for the card."""
     card, sub_id = target.card, target.sub_id
     try:
@@ -211,8 +212,10 @@ async def _store(deps: FollowDeps, target: RoleTarget, guild_id: str, role_id: s
         else:
             await deps.db.run(lambda c: cards.set_subscription_role(c, sub_id, role_id))
     except cards.FollowRoleTaken:
-        return False
-    return True
+        return "taken"
+    except cards.SubscriptionMissing:
+        return "missing_subscription"
+    return None
 
 
 async def ensure_follow_role(deps: FollowDeps, guild_id: str, card: Card, *,
@@ -233,6 +236,10 @@ async def ensure_follow_role(deps: FollowDeps, guild_id: str, card: Card, *,
 
 async def _role_step(deps: FollowDeps, guild_id: str, target: RoleTarget, role_id: str | None,
                      bot_id: str) -> EnsureResult:
+    # The role step runs after the card lock is released, so the subscription may have been removed since it was
+    # written.
+    if target.sub_id is not None and await deps.db.run(lambda c: subscriptions.get_by_id(c, target.sub_id)) is None:
+        return _ensured(target, EnsureResult(Ensured.REFUSED, reason="missing_subscription"))
     try:
         roles = await deps.rest.get_roles(guild_id)
         bot_roles = _role_ids(await deps.rest.get_member(guild_id, bot_id))
@@ -275,8 +282,8 @@ async def _adopt(deps: FollowDeps, guild_id: str, target: RoleTarget, role: Mapp
             return EnsureResult(Ensured.FAILED, reason="mentionable_failed")
         if not _mentionable(updated):
             return EnsureResult(Ensured.FAILED, reason="mentionable_failed")
-    if not await _store(deps, target, guild_id, role_id):
-        return EnsureResult(Ensured.REFUSED, reason="taken")
+    if refused := await _store(deps, target, guild_id, role_id):
+        return EnsureResult(Ensured.REFUSED, reason=refused)
     return EnsureResult(Ensured.ADOPTED, role_id=role_id)
 
 
@@ -297,15 +304,15 @@ async def _create(deps: FollowDeps, guild_id: str, target: RoleTarget, name: str
         return EnsureResult(Ensured.FAILED, reason="mentionable_failed")
     if not _mentionable(updated):
         return EnsureResult(Ensured.FAILED, reason="mentionable_failed")
-    if not await _store(deps, target, guild_id, role_id):
-        return EnsureResult(Ensured.REFUSED, reason="taken")
+    if refused := await _store(deps, target, guild_id, role_id):
+        return EnsureResult(Ensured.REFUSED, reason=refused)
     return EnsureResult(Ensured.CREATED, role_id=role_id)
 
 
 async def _set(deps: FollowDeps, guild_id: str, target: RoleTarget, role_id: str, roles: list[Mapping[str, Any]],
                bot_roles: frozenset[str]) -> EnsureResult:
     role = next((r for r in roles if str(r.get("id")) == role_id), None)
-    if role is None:   # Fluxer lists only the games community's roles, so another community's role is missing too
+    if role is None:   # roles is the target community's list, so a role from any other community is missing too
         return EnsureResult(Ensured.REFUSED, reason="missing")
     if role_id == guild_id:
         return EnsureResult(Ensured.REFUSED, reason="everyone")
@@ -315,6 +322,6 @@ async def _set(deps: FollowDeps, guild_id: str, target: RoleTarget, role_id: str
         return EnsureResult(Ensured.REFUSED, reason="not_mentionable")
     if not manageable(role, roles, bot_roles, guild_id):
         return EnsureResult(Ensured.REFUSED, reason="hierarchy")
-    if not await _store(deps, target, guild_id, role_id):
-        return EnsureResult(Ensured.REFUSED, reason="taken")
+    if refused := await _store(deps, target, guild_id, role_id):
+        return EnsureResult(Ensured.REFUSED, reason=refused)
     return EnsureResult(Ensured.SET, role_id=role_id)

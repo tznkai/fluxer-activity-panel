@@ -304,6 +304,11 @@ def test_subscription_options_with_no_options_is_empty() -> None:
     assert card_fields.subscription_options(["1001", "2001"]) == (["1001", "2001"], card_fields.SubOptions())
 
 
+def test_subscription_option_keys_and_mode_value_are_case_insensitive() -> None:
+    rest, opts = card_fields.subscription_options(["MODE=Local", "Channel=2002", "ROLE=3001"])
+    assert (rest, opts) == ([], card_fields.SubOptions(mode="local", channel="2002", role="3001"))
+
+
 def test_subscription_options_accept_each_mode() -> None:
     for mode in ("redirect", "local", "both"):
         assert card_fields.subscription_options([f"mode={mode}"]) == ([], card_fields.SubOptions(mode=mode))

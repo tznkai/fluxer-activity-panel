@@ -756,11 +756,15 @@ def _is_scoped(mode: str) -> bool:
     return mode in subscriptions.LOCAL_MODES
 
 
-async def _in_games_community(ctx: CardContext, guild_id: str) -> bool:
-    """Whether a copy in `guild_id` is in the games community. Without a games lookup, no copy is."""
-    if ctx.games_guild is None:
+async def _in_games_community(ctx: CardContext, guild_id: str) -> bool | None:
+    """Whether a copy in `guild_id` is in the games community: True, False, or None when a games channel is set but its
+    community can't be read (no lookup, or the lookup failed), so it is unknown. With no games channel, no copy is."""
+    if ctx.config.games_channel_id is None:
         return False
-    return await ctx.games_guild.get() == guild_id
+    games_guild_id = await ctx.games_guild.get() if ctx.games_guild is not None else None
+    if games_guild_id is None:
+        return None
+    return games_guild_id == guild_id
 
 
 async def _scope_end_counts(ctx: CardContext, card_id: int, sub: subscriptions.Subscription | None) -> dict[int, int]:
@@ -801,8 +805,12 @@ async def _subscribe_locked(ctx: CardContext, card: cards.Card, actor: str, guil
         return text.SUBSCRIPTION_ALREADY, None
     current_mode = existing.mode if existing is not None else "redirect"
     mode = opts.mode or current_mode
-    if _is_scoped(mode) and await _in_games_community(ctx, guild_id):
-        return text.SUBSCRIPTION_MODE_IN_GAMES, None
+    if _is_scoped(mode):
+        in_games = await _in_games_community(ctx, guild_id)
+        if in_games is None:
+            return text.SUBSCRIPTION_GAMES_LOOKUP_FAILED, None
+        if in_games:
+            return text.SUBSCRIPTION_MODE_IN_GAMES, None
     if mode == "redirect" and (opts.channel is not None or opts.role is not None):
         return text.SUBSCRIPTION_NEEDS_SCOPE, None
     local_channel = None
@@ -891,7 +899,8 @@ async def _role_step_for_sub(ctx: CardContext, card: cards.Card, guild_id: str, 
     if res.reason in ("taken", "duplicate_name"):
         return text.SUBSCRIPTION_ROLE_ASK
     reasons = text.SUBSCRIPTION_ROLE_REASON
-    return text.SUBSCRIPTION_ROLE_FAILED.format(reason=reasons.get(res.reason or "lookup_failed", reasons["lookup_failed"]))
+    reason = reasons.get(res.reason or "lookup_failed", reasons["lookup_failed"])
+    return text.SUBSCRIPTION_ROLE_FAILED.format(reason=reason)
 
 
 def _mirrors_left_line(channels: tuple[str, ...]) -> str:

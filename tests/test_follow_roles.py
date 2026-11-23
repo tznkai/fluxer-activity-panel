@@ -705,6 +705,30 @@ async def test_sub_set_refuses_a_role_above_the_bot_or_with_permissions(fake, de
     assert writes(state) == []
 
 
+async def test_sub_role_step_for_a_removed_subscription_is_refused_before_any_request(fake, deps, db) -> None:
+    state, _ = fake
+    card = await make_card(db, "alpha")
+    sub_id = await make_sub(db, card)
+    await db.run(lambda c: subscriptions.remove_by_id(c, sub_id))
+
+    result = await ensure_follow_role(deps, FAR, card, sub_id=sub_id)
+
+    assert result == EnsureResult(Ensured.REFUSED, reason="missing_subscription")
+    assert writes(state) == []
+    assert state.requests_to(f"/api/v1/guilds/{FAR}/roles") == []
+
+
+async def test_store_into_a_subscription_removed_during_the_role_step_stores_nothing(fake, deps, db) -> None:
+    card = await make_card(db, "alpha")
+    sub_id = await make_sub(db, card)
+    await db.run(lambda c: subscriptions.remove_by_id(c, sub_id))
+
+    reason = await follow_roles._store(deps, follow_roles.RoleTarget(card, sub_id), FAR, FAR_OTHER_ROLE)
+
+    assert reason == "missing_subscription"
+    assert await db.run(lambda c: cards.get_subscription_role(c, sub_id)) is None
+
+
 async def test_sub_create_403_is_failed_and_stores_nothing(fake, deps, db) -> None:
     state, _ = fake
     add_far_community(state)
