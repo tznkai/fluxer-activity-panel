@@ -24,6 +24,7 @@ GUILD = "1001"
 OTHER_GUILD = "1009"
 GAMES_CHANNEL = "2100"
 CHANNELS = tuple(str(2000 + n) for n in range(1, 7))   # 2001 to 2006: text channels in GUILD
+CAP_CHANNELS = tuple(str(2300 + n) for n in range(1, 22))   # 2301 to 2321: enough to fill the cap and go one over
 HASH = "c" * 64
 COPY = "5101"
 
@@ -77,6 +78,12 @@ async def games_world(db, fake, session) -> World:
     return await build(db, state, base, session, GAMES_CHANNEL_ID=GAMES_CHANNEL)
 
 
+def register_channels(world: World, channels: tuple[str, ...]) -> None:
+    """Adds text channels to the fake community, so a subscribe to each one passes its Fluxer check."""
+    for channel in channels:
+        world.state.channels[channel] = {"id": channel, "type": 0, "guild_id": GUILD, "name": "lounge"}
+
+
 async def make_card(world: World, slug: str = "mc") -> cards.Card:
     await world.run(f"!card new {slug} Minecraft Survival")
     card = await world.card(slug)
@@ -107,8 +114,11 @@ def deletes(world: World) -> list[str]:
 async def test_subscribe_by_two_ids_stores_an_active_subscription_and_kicks_the_poller(world: World) -> None:
     card = await make_card(world)
     await subscribe_by_ids(world, "mc", CHANNELS[0])
-    assert await stored(world, card.id, CHANNELS[0]) == subscriptions.Subscription(
-        card_id=card.id, guild_id=GUILD, channel_id=CHANNELS[0], message_id=None, content_hash=None, paused=False)
+    sub = await stored(world, card.id, CHANNELS[0])
+    assert sub is not None
+    assert sub == subscriptions.Subscription(
+        id=sub.id, card_id=card.id, guild_id=GUILD, channel_id=CHANNELS[0], message_id=None, content_hash=None,
+        paused=False, mode="redirect", local_channel_id=None)
     assert world.last_reply() == text.SUBSCRIBED
     assert world.kicks
 
@@ -241,16 +251,18 @@ async def test_resuming_a_paused_channel_whose_check_now_fails_leaves_it_paused(
     assert sub is not None and sub.paused is True
 
 
-async def test_a_sixth_channel_is_refused_with_the_limit(world: World) -> None:
+async def test_a_twenty_first_channel_is_refused_with_the_limit(world: World) -> None:
     card = await make_card(world)
-    for channel in CHANNELS[:5]:
+    register_channels(world, CAP_CHANNELS)
+    for channel in CAP_CHANNELS[:20]:
         await subscribe_by_ids(world, "mc", channel)
+    assert await world.db.run(lambda c: subscriptions.count(c, card.id)) == 20
     world.clear_requests()
-    await subscribe_by_ids(world, "mc", CHANNELS[5])
-    assert world.last_reply() == text.SUBSCRIPTION_LIMIT.format(limit=subscriptions.MAX_SUBSCRIPTIONS)
-    assert await stored(world, card.id, CHANNELS[5]) is None
+    await subscribe_by_ids(world, "mc", CAP_CHANNELS[20])
+    assert world.last_reply() == text.SUBSCRIPTION_LIMIT.format(limit=20)
+    assert await stored(world, card.id, CAP_CHANNELS[20]) is None
     # The cap is read before the Fluxer checks, so a full card costs no request.
-    assert world.state.requests_to(channel_path(CHANNELS[5])) == []
+    assert world.state.requests_to(channel_path(CAP_CHANNELS[20])) == []
 
 
 # unsubscribe -----------------------------------------------------------------------------------------
@@ -450,7 +462,8 @@ async def test_archive_names_the_copy_and_the_card_message_when_both_are_refused
 async def test_archive_reply_with_every_channel_left_stays_under_the_message_limit(world: World) -> None:
     """The most channels an archive can leave is the subscription cap plus the card's own message: one line each."""
     card = await make_card(world)
-    channels = CHANNELS[:subscriptions.MAX_SUBSCRIPTIONS]
+    channels = CAP_CHANNELS[:subscriptions.MAX_SUBSCRIPTIONS]
+    register_channels(world, channels)
     await publish_with_copies(world, card, channels)
     for channel in channels:
         delete_status(world, channel, copy_id(channel), 403)
