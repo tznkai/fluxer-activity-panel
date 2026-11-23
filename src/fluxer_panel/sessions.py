@@ -51,56 +51,61 @@ class Session:
     moved: bool
     headsup_sent: bool
     created_at: int
+    scope_sub_id: int | None = None   # None is the home card; otherwise the subscription the session belongs to
 
 
 _COLUMNS = ("id, card_id, guild_id, channel_id, message_id, starts_at, ends_at, proposer_id, location_text, seats, "
-            "recurrence, series_id, next_posted, state, closed_at, moved, headsup_sent, created_at")
+            "recurrence, series_id, next_posted, state, closed_at, moved, headsup_sent, created_at, scope_sub_id")
 
 
 def _load(row: tuple) -> Session:
     (session_id, card_id, guild_id, channel_id, message_id, starts_at, ends_at, proposer_id, location_text, seats,
-     recurrence, series_id, next_posted, state, closed_at, moved, headsup_sent, created_at) = row
+     recurrence, series_id, next_posted, state, closed_at, moved, headsup_sent, created_at, scope_sub_id) = row
     return Session(session_id, card_id, guild_id, channel_id, message_id, starts_at, ends_at, proposer_id,
                    location_text, seats, recurrence, series_id, bool(next_posted), state, closed_at, bool(moved),
-                   bool(headsup_sent), created_at)
+                   bool(headsup_sent), created_at, scope_sub_id)
 
 
 def _rows(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> list[Session]:
     return [_load(row) for row in conn.execute(f"SELECT {_COLUMNS} FROM sessions {sql}", params).fetchall()]
 
 
-def count_upcoming(conn: sqlite3.Connection, card_id: int, proposer_id: str | None = None) -> int:
-    if proposer_id is None:
-        row = conn.execute("SELECT COUNT(*) FROM sessions WHERE card_id = ? AND state = 'upcoming'",
-                           (card_id,)).fetchone()
-    else:
-        row = conn.execute("SELECT COUNT(*) FROM sessions WHERE card_id = ? AND state = 'upcoming' AND proposer_id = ?",
-                           (card_id, proposer_id)).fetchone()
-    return int(row[0])
+def count_upcoming(conn: sqlite3.Connection, card_id: int, proposer_id: str | None = None, *,
+                   scope_sub_id: int | None = None) -> int:
+    """Upcoming sessions of one scope (NULL is the home card), optionally of one proposer."""
+    sql = "SELECT COUNT(*) FROM sessions WHERE card_id = ? AND state = 'upcoming' AND scope_sub_id IS ?"
+    params: tuple = (card_id, scope_sub_id)
+    if proposer_id is not None:
+        sql += " AND proposer_id = ?"
+        params += (proposer_id,)
+    return int(conn.execute(sql, params).fetchone()[0])
 
 
-def check_caps(conn: sqlite3.Connection, card_id: int, proposer_id: str | None) -> None:
-    """The card cap is checked first. The proposer cap applies only when a proposer is given."""
-    if count_upcoming(conn, card_id) >= MAX_PER_CARD:
+def check_caps(conn: sqlite3.Connection, card_id: int, proposer_id: str | None, *,
+               scope_sub_id: int | None = None) -> None:
+    """The card cap is checked first. The proposer cap applies only when a proposer is given. Both count one scope."""
+    if count_upcoming(conn, card_id, scope_sub_id=scope_sub_id) >= MAX_PER_CARD:
         raise SessionCapReached("card")
-    if proposer_id is not None and count_upcoming(conn, card_id, proposer_id) >= MAX_PER_PROPOSER:
+    if proposer_id is not None and count_upcoming(conn, card_id, proposer_id,
+                                                  scope_sub_id=scope_sub_id) >= MAX_PER_PROPOSER:
         raise SessionCapReached("proposer")
 
 
 def add(conn: sqlite3.Connection, *, card_id: int, guild_id: str, channel_id: str, message_id: str,
         starts_at: int, ends_at: int, proposer_id: str, now: int, location_text: str | None = None,
         seats: int | None = None, recurrence: str | None = None, series_id: int | None = None,
-        proposer_cap: bool = True, maybe: Sequence[str] = ()) -> int:
+        proposer_cap: bool = True, maybe: Sequence[str] = (), scope_sub_id: int | None = None) -> int:
     """Inserts an upcoming session with the proposer going. Runs in the caller's transaction, so the caps and the
     insert are one step. A series' first occurrence takes its own id as its series id. Each user in `maybe` gets an
     implicit maybe row after the proposer's, in ascending id order (the proposer and repeats are ignored), and the
     states are recomputed in the same transaction. With `maybe` empty, no statement beyond the insert runs."""
-    check_caps(conn, card_id, proposer_id if proposer_cap else None)
+    check_caps(conn, card_id, proposer_id if proposer_cap else None, scope_sub_id=scope_sub_id)
     cur = conn.execute(
         "INSERT INTO sessions (card_id, guild_id, channel_id, message_id, starts_at, ends_at, proposer_id, "
-        "location_text, seats, recurrence, series_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "location_text, seats, recurrence, series_id, created_at, scope_sub_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (card_id, guild_id, channel_id, message_id, starts_at, ends_at, proposer_id, location_text, seats,
-         recurrence, series_id, now))
+         recurrence, series_id, now, scope_sub_id))
     session_id = cur.lastrowid
     conn.execute("UPDATE sessions SET series_id = ? WHERE id = ?",
                  (series_id if series_id is not None else session_id, session_id))
@@ -145,11 +150,26 @@ def upcoming_for_card(conn: sqlite3.Connection, card_id: int) -> list[Session]:
     return _rows(conn, "WHERE card_id = ? AND state = 'upcoming' ORDER BY starts_at, id", (card_id,))
 
 
-def next_for_card(conn: sqlite3.Connection, card_id: int, now: int) -> Session | None:
-    """The soonest upcoming session of the card that has not yet ended."""
-    rows = _rows(conn, "WHERE card_id = ? AND state = 'upcoming' AND ends_at > ? ORDER BY starts_at, id LIMIT 1",
-                 (card_id, now))
+def upcoming_for_scope(conn: sqlite3.Connection, card_id: int, scope_sub_id: int | None) -> list[Session]:
+    return _rows(conn, "WHERE card_id = ? AND state = 'upcoming' AND scope_sub_id IS ? ORDER BY starts_at, id",
+                 (card_id, scope_sub_id))
+
+
+def next_for_scope(conn: sqlite3.Connection, card_id: int, scope_sub_id: int | None, now: int) -> Session | None:
+    """The soonest upcoming session of one scope of the card that has not yet ended."""
+    rows = _rows(conn, "WHERE card_id = ? AND state = 'upcoming' AND ends_at > ? AND scope_sub_id IS ? "
+                       "ORDER BY starts_at, id LIMIT 1", (card_id, now, scope_sub_id))
     return rows[0] if rows else None
+
+
+def next_for_card(conn: sqlite3.Connection, card_id: int, now: int) -> Session | None:
+    """The soonest upcoming home session of the card that has not yet ended. A subscription's session never shows here."""
+    return next_for_scope(conn, card_id, None, now)
+
+
+def list_for_scope(conn: sqlite3.Connection, scope_sub_id: int) -> list[Session]:
+    """Every session of one subscription scope, in any state. The unsubscribe delete reads them."""
+    return _rows(conn, "WHERE scope_sub_id = ? ORDER BY id", (scope_sub_id,))
 
 
 def all_upcoming(conn: sqlite3.Connection) -> list[Session]:
@@ -315,17 +335,35 @@ def rsvps_of(conn: sqlite3.Connection, session_id: int) -> rsvp.Rsvps:
     return {user_id: (state, pos) for user_id, state, pos in rows}
 
 
-def add_presence(conn: sqlite3.Connection, session: Session, user_id: str, choice: str, now: int) -> bool:
+def add_presence(conn: sqlite3.Connection, session: Session, user_id: str, choice: str, now: int, *,
+                 via_sub_id: int | None = None) -> bool:
     """Adds one RSVP reaction. A user's implicit row goes first (the proposer's going, or a voter's maybe), so their
-    first real reaction replaces it and both rows never coexist. Returns False when the same reaction is already there."""
+    first real reaction replaces it and both rows never coexist. Returns False when the same reaction is already there.
+    `via_sub_id` is the mirror the reaction came through (None for the home message). When the same reaction is already
+    stored, a home reaction clears its origin and a mirror reaction leaves it alone, so home always wins."""
     conn.execute("DELETE FROM rsvp_reaction WHERE session_id = ? AND user_id = ? AND implicit = 1",
                  (session.id, user_id))
     cur = conn.execute(
-        "INSERT INTO rsvp_reaction (session_id, user_id, choice, added_at, seq, implicit) "
-        "SELECT ?, ?, ?, ?, COALESCE(MAX(seq), 0) + 1, 0 FROM rsvp_reaction WHERE session_id = ? "
+        "INSERT INTO rsvp_reaction (session_id, user_id, choice, added_at, seq, implicit, via_sub_id) "
+        "SELECT ?, ?, ?, ?, COALESCE(MAX(seq), 0) + 1, 0, ? FROM rsvp_reaction WHERE session_id = ? "
         "ON CONFLICT DO NOTHING",
-        (session.id, user_id, choice, now, session.id))
-    return cur.rowcount == 1
+        (session.id, user_id, choice, now, via_sub_id, session.id))
+    if cur.rowcount == 1:
+        return True
+    if via_sub_id is None:
+        conn.execute("UPDATE rsvp_reaction SET via_sub_id = NULL WHERE session_id = ? AND user_id = ? AND choice = ? "
+                     "AND implicit = 0", (session.id, user_id, choice))
+    return False
+
+
+def presence_via(conn: sqlite3.Connection, session_id: int, user_id: str) -> int | None:
+    """Where the user's RSVP came from: None when any of their rows came from the home message (home wins), else the
+    smallest mirror subscription id. None too when the user has no rows."""
+    origins = [row[0] for row in conn.execute(
+        "SELECT via_sub_id FROM rsvp_reaction WHERE session_id = ? AND user_id = ?", (session_id, user_id)).fetchall()]
+    if not origins or any(origin is None for origin in origins):
+        return None
+    return min(origins)
 
 
 def remove_presence(conn: sqlite3.Connection, session_id: int, user_id: str, choice: str) -> bool:
