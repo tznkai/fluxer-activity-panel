@@ -356,8 +356,8 @@ A press on the raised hand on a copy of the card in the games community posts in
 channel, and the card's play-now channel when that is a different channel. Each post gets its own reactions and
 expires on its own. The cooldown (`PLAY_NOW_COOLDOWN_SECONDS`) counts the press once, so a press inside it posts
 nothing in either channel and the presser gets a link to the latest post. If one of the two posts fails and the
-other succeeds, the one that succeeded stays and the failure is logged. A copy outside the games community shows
-the raised hand when the card has a play-now target (its own verified play-now channel, or `PLAY_NOW_CHANNEL_ID`),
+other succeeds, the one that succeeded stays and the failure is logged. A redirect copy outside the games community
+shows the raised hand when the card has a play-now target (its own verified play-now channel, or `PLAY_NOW_CHANNEL_ID`),
 and the bell when the card has a follow role, but neither works there: a press posts nothing and changes no role,
 and the presser gets a direct message pointing at the card in the games channel.
 
@@ -367,9 +367,9 @@ A card can plan sessions, posted in the card's session channel: its own verified
 `PLAY_NOW_CHANNEL_ID` when the card has none. With neither set, a press on the calendar says the card has no channel
 for sessions yet, and the calendar is not added to the card.
 
-**Proposing.** A press on the calendar (📅) on the card, or on a home copy in the games community, opens a direct
-message with up to six offered times, one per keycap. React with a keycap to pick a time, or reply with a time
-instead:
+**Proposing.** A press on the calendar (📅) on the card, on a home copy in the games community, or on a local or both
+copy, opens a direct message with up to six offered times, one per keycap.
+React with a keycap to pick a time, or reply with a time instead:
 
 ```
 sat 14:00          tomorrow 19:30          today 9:05          2026-11-14 14:00
@@ -378,8 +378,8 @@ sat 14:00          tomorrow 19:30          today 9:05          2026-11-14 14:00
 Times are 24-hour, in `SESSION_TIME_ZONE`. A weekday name means the next such day, so a weekday name for today is
 refused (write `today HH:MM`). A typed time must be in the future and at most 60 days away. The offered times come
 from `SESSION_SLOTS_WEEKDAY` and `SESSION_SLOTS_WEEKEND`, start at least an hour from now and fall within the next
-14 days. The prompt expires after 15 minutes, and a new press on the calendar replaces an open prompt. A copy outside
-the games community only points back to the card.
+14 days. The prompt expires after 15 minutes, and a new press on the calendar replaces an open prompt. A redirect copy
+outside the games community only points back to the card. A local or both copy plans its sessions in its own channel.
 
 Picking a time sends a confirmation. React ✅ to post the session. The confirmation adds a line when the proposer is
 already going to an overlapping session. A proposer may have three upcoming sessions for one card, and a card may
@@ -415,15 +415,18 @@ told.
 
 A time poll asks a card's people which of several times they can make. It is posted in the card's session channel, so
 a card needs one, as for sessions. Polls never post to the games channel.
-A local or both subscription runs its own polls in its channel, with ballots to the holders of its own role. Someone who follows a card in two places may get two ballots, one for each open poll.
+A local or both subscription runs its own polls in its channel, with ballots to the holders of its own role. Someone
+who follows a card in two places may get two ballots, one for each open poll.
 
-**Starting.** A press on the ballot box (🗳️) on the card, or on a home copy in the games community, posts the poll and
-DMs a ballot to each recipient. The poll offers up to six times, soonest first, from the same slots as 📅. The
-recipients are the starter and the holders of the card's follow role, bots excluded. When `POLL_MAX_RECIPIENTS` cuts
-the list, the holders with the highest ids are left out, and the starter is told how many. A card with no follow role
+**Starting.** A press on the ballot box (🗳️) on the card, on a home copy in the games community, or on a local or both
+copy, posts that scope's poll and DMs a ballot to each recipient. The poll offers up to six times, soonest first, from
+the same slots as 📅. The recipients are the starter and the holders of that scope's follow role (the card's, or a local
+or both copy's own), bots excluded. When `POLL_MAX_RECIPIENTS` cuts
+the list, the holders with the highest ids are left out, and the starter is told how many. A scope with no follow role
 sends a ballot only to the starter, and the starter is told that too. If the member list cannot be read, the start is
-refused with a direct message, and nothing is posted. A card has one open poll at a time: a second press links the open
-one. A press on a copy outside the games community only points back to the card.
+refused with a direct message, and nothing is posted. A scope has one open poll at a time (the home scope, or each local
+or both copy): a second press in the same scope links the open one. A redirect copy outside the games community only
+points back to the card.
 
 **Voting.** A ballot is a direct message to the bot. Its first line names the poll, as `Time poll 7 for <card>.` or
 `Runoff 8 for <card>.`, so a voter with several ballots can tell them apart. Reply with letters, like `a, c`, to pick times. Or type a time in

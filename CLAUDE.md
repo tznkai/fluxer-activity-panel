@@ -275,8 +275,9 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   open or on the value it expects, in one transaction. A vote is parsed and written in the same transaction
   (`_vote_tx`).
 - `poll_reply`, `poll_count` and `poll_letters` are pure (no database, REST or logging).
-- A poll posts to the channel from `interactions.target_channel_id`, the rule sessions share: the card's verified
-  play-now channel, else `PLAY_NOW_CHANNEL_ID`. `PollPost` requires the bot `identity`, because unseeding removes the
+- A poll posts to the channel from `scope.scope_target`, the rule sessions share: home is the card's verified
+  play-now channel, else `PLAY_NOW_CHANNEL_ID`; a local or both scope is its local channel, else its copy's channel.
+  `PollPost` requires the bot `identity`, because unseeding removes the
   bot's own reactions.
 - Letters come from positions; only `!poll sort` moves positions; votes point at option ids. A poll has at most 702
   options (`polls.MAX_OPTIONS`), and a typed time that would exceed that refuses the whole reply (`POLL_FULL`).
@@ -319,8 +320,8 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   after posting it, never after an edit, and on reconcile it checks each stored card message and copy. It adds only the
   emoji that are missing and never removes one. Wanted: the wake emoji (U+25B6 U+FE0F) always; the follow emoji (bell,
   U+1F514) when the card has a follow role; the play-now emoji (U+1F64B) when the surface has a play-now target. The calendar (U+1F4C5) is wanted when the
-  surface has a session channel: a card or a home copy, never a far copy or a play-now post
-  (`seeding.has_session_channel`). A card
+  surface has a session channel: a card or a home copy, and a local or both copy too (its scope has its own channel),
+  never a redirect far copy or a play-now post (`seeding.has_session_channel` with `sub`). A card
   message is always at home, and a copy is at home when its community is the games channel's. A card message's play-now
   target is its own verified play-now channel or `PLAY_NOW_CHANNEL_ID`; a home copy always has one, and a copy elsewhere
   has one when the card does. A copy elsewhere carries the bell and the raised hand too, but a press there makes no

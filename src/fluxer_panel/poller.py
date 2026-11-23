@@ -62,9 +62,9 @@ _STALE_BOARD_CAP = 10
 class _Evaluated:
     """One card's outcome for this tick. `embed` is None when the evaluation failed: such a card is not published, and
     the board lists it with the dash, as a card with no status. `far_embed` is the same card with the next session's
-    link left out, for a copy outside the games community. `scope_embeds` holds, by subscription id, the far embed of
-    each local or both subscription, showing that scope's own next session. A subscription missing from it gets
-    `far_embed`."""
+    link left out, for a redirect copy outside the games community. `scope_embeds` holds, by subscription id, the embed
+    of each local or both subscription, showing that scope's own next session with its link into the copy's community.
+    A subscription missing from it gets `far_embed`."""
     card: cards.Card
     status: CardStatus | None
     embed: dict[str, Any] | None
@@ -760,6 +760,9 @@ class Poller:
         for sub in subs:
             home = games_guild is not None and sub.guild_id == games_guild
             copy_rendered, copy_payload = (rendered, payload) if home else (far_rendered, far_payload)
+            # A local or both copy with its own entry shows that scope's next session, and its jump link points into the
+            # copy's own community (see sessions.scope_session_view), not the card's. The payload still comes from
+            # render.card_message, so its allowed_mentions is parse-empty.
             if sub.is_scope and sub.id in scope_payloads:
                 copy_rendered, copy_payload = scope_payloads[sub.id]
             try:
