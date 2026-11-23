@@ -275,6 +275,7 @@ class SessionJobs:
         except Exception as exc:  # noqa: BLE001 - the message keeps the provisional form until a later edit
             log_event(log, "session_edit_failed", level=logging.WARNING, session_id=posted.session_id,
                       reason=type(exc).__name__)
+        await self._session_post.sync_mirrors(posted.session_id)   # a no-op when the edit above already synced them
         self._kick()
         log_event(log, "session_recurred", session_id=posted.session_id, card_id=posted.card_id)
 

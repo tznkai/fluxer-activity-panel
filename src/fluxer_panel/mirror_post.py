@@ -70,7 +70,17 @@ class MirrorPost:
         self._refuse(mirror.channel_id)
         if mirror.content_hash == digest:
             return mirror.message_id
-        return await self._edit(sub, mirror, payload, digest)
+        return await self._edit(mirror, payload, digest)
+
+    async def edit_stored(self, mirror: mirrors.Mirror, payload: dict[str, Any]) -> str | None:
+        """Edits a mirror that is already stored, whatever the subscription's mode now is (the purge scrub uses it).
+        Same rules as `sync`: a 404 drops the row, a failure is logged and the row stays. Returns the message id, or
+        None when the row was dropped."""
+        self._refuse(mirror.channel_id)
+        digest = body_hash(payload)
+        if mirror.content_hash == digest:
+            return mirror.message_id
+        return await self._edit(mirror, payload, digest)
 
     async def delete(self, mirror: mirrors.Mirror) -> bool:
         """Deletes the message and the row. 404 counts as deleted. 403 logs and returns False (row deleted)."""
@@ -107,8 +117,7 @@ class MirrorPost:
             return None
         return message_id
 
-    async def _edit(self, sub: Subscription, mirror: mirrors.Mirror, payload: dict[str, Any],
-                    digest: str) -> str | None:
+    async def _edit(self, mirror: mirrors.Mirror, payload: dict[str, Any], digest: str) -> str | None:
         # An edit never re-pings, so it always sends empty allowed_mentions.
         try:
             await self._rest.edit_message(mirror.channel_id, mirror.message_id, embeds=payload["embeds"],
@@ -116,10 +125,11 @@ class MirrorPost:
         except Exception as exc:  # noqa: BLE001 - the row stays unless the message is gone
             if _is_not_found(exc):
                 await self._db.run(lambda c: mirrors.delete_if(c, mirror.id, mirror.message_id))
-                log_event(log, "mirror_dropped", level=logging.INFO, sub_id=sub.id, mirror_id=mirror.id,
+                log_event(log, "mirror_dropped", level=logging.INFO, sub_id=mirror.sub_id, mirror_id=mirror.id,
                           channel_id=mirror.channel_id, message_id=mirror.message_id, kind=mirror.kind)
                 return None
-            self._log_failed(sub_id=sub.id, channel_id=mirror.channel_id, kind=mirror.kind, reason=_reason(exc),
+            self._log_failed(sub_id=mirror.sub_id, channel_id=mirror.channel_id, kind=mirror.kind,
+                             reason=_reason(exc),
                              mirror_id=mirror.id, message_id=mirror.message_id)
             return mirror.message_id
         # Compare-and-set: a row deleted while the edit was in flight is not written back.
