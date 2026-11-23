@@ -448,7 +448,19 @@ def next_session_views(conn: sqlite3.Connection, card: Card, now: int
     session = next_for_card(conn, card.id, now)
     if session is None:
         return None, None
-    near = render.NextSession(starts_at=session.starts_at, going=counts_of(conn, session.id).going,
+    near = _next_view(conn, card, session)
+    return near, replace(near, jump=None)
+
+
+def scope_session_view(conn: sqlite3.Connection, card: Card, sub_id: int, now: int) -> render.NextSession | None:
+    """The next session of one subscription scope, as that scope's copy shows it, with the jump link to the session's
+    message. The session lives in the subscription's own community, so the link stays inside it. None when the scope has
+    no upcoming session that has not ended."""
+    session = next_for_scope(conn, card.id, sub_id, now)
+    return None if session is None else _next_view(conn, card, session)
+
+
+def _next_view(conn: sqlite3.Connection, card: Card, session: Session) -> render.NextSession:
+    return render.NextSession(starts_at=session.starts_at, going=counts_of(conn, session.id).going,
                               jump=(session.guild_id, session.channel_id, session.message_id),
                               has_location=effective_location(session, card) is not None)
-    return near, replace(near, jump=None)

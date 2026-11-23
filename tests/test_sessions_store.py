@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from fluxer_panel import rsvp, sessions, subscriptions
+from fluxer_panel import cards, rsvp, sessions, subscriptions
 from fluxer_panel.db import Database
 from fluxer_panel.sessions import SessionCapReached
 
@@ -613,3 +613,50 @@ async def test_presence_via_of_a_user_with_no_rows_is_none(db: Database) -> None
     card = await _card(db)
     session_id = await _add(db, card)
     assert await db.run(lambda c: sessions.presence_via(c, session_id, "1009")) is None
+
+
+# Per-scope next-session view (AC4.1) ---------------------------------------------------------------
+
+async def _give_slug(db: Database, card_id: int) -> None:
+    """cards.get_by_id reads only a card with a slug, so the view's card needs one."""
+    await db.run(lambda c: c.execute("UPDATE cards SET slug = 'game' WHERE id = ?", (card_id,)))
+
+async def test_scope_session_view_shows_only_its_own_scope_and_links_into_its_community(db: Database) -> None:
+    card = await _card(db)
+    await _give_slug(db, card)
+    sub_id = await db.run(lambda c: subscriptions.add(c, card, "3009", "3010"))
+    await _add(db, card, starts_in=1 * HOUR)                                # a home session, sooner
+    local_message = str(next(_MESSAGE_IDS))
+
+    def add_local(c: sqlite3.Connection) -> int:
+        return sessions.add(c, card_id=card, guild_id="3009", channel_id="3011", message_id=local_message,
+                            starts_at=NOW + 2 * HOUR, ends_at=NOW + 3 * HOUR, proposer_id="1001", now=NOW,
+                            scope_sub_id=sub_id)
+
+    await db.run(add_local)
+
+    def views(c: sqlite3.Connection) -> tuple[Any, Any]:
+        loaded = cards.get_by_id(c, card)
+        assert loaded is not None
+        return (sessions.scope_session_view(c, loaded, sub_id, NOW),
+                sessions.scope_session_view(c, loaded, sub_id + 1, NOW))
+
+    local_view, other_view = await db.run(views)
+    assert local_view is not None
+    assert local_view.starts_at == NOW + 2 * HOUR
+    assert local_view.jump == ("3009", "3011", local_message)
+    assert other_view is None
+
+
+async def test_scope_session_view_is_none_when_the_scope_has_no_upcoming_session(db: Database) -> None:
+    card = await _card(db)
+    await _give_slug(db, card)
+    sub_id = await db.run(lambda c: subscriptions.add(c, card, "3009", "3010"))
+    await _add(db, card, starts_in=1 * HOUR)
+
+    def view(c: sqlite3.Connection) -> Any:
+        loaded = cards.get_by_id(c, card)
+        assert loaded is not None
+        return sessions.scope_session_view(c, loaded, sub_id, NOW)
+
+    assert await db.run(view) is None
