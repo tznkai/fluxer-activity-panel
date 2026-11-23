@@ -19,7 +19,7 @@ import pytest
 from fluxer_client import events
 from fluxer_client.roles import RoleCache
 from fluxer_client.rest import FluxerREST, encode_emoji
-from fluxer_panel import cards, poll_members, polls, render, sessions, text
+from fluxer_panel import cards, poll_members, polls, render, sessions, subscriptions, text
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
@@ -182,11 +182,13 @@ def members(state: FakeFluxerState, *user_ids: str) -> None:
 
 
 async def store(world: World, *, starts: list[int], users: tuple[str, ...], kind: str = "approval",
-                parent: int | None = None, message: str = POLL_MSG) -> int:
+                parent: int | None = None, message: str = POLL_MSG, scope: int | None = None,
+                channel: str = PLAY, guild: str = GUILD) -> int:
     def tx(conn: Any) -> int:
-        poll_id = polls.create(conn, card_id=world.card_id, guild_id=GUILD, channel_id=PLAY, message_id=message,
+        poll_id = polls.create(conn, card_id=world.card_id, guild_id=guild, channel_id=channel, message_id=message,
                                starter_id=STARTER, kind=kind, parent_poll_id=parent, now=NOW, closes_at=CLOSES,
-                               ballot_size=6, options=[(s, "offered") for s in starts], recipients=list(users))
+                               ballot_size=6, options=[(s, "offered") for s in starts], recipients=list(users),
+                               scope_sub_id=scope)
         assert poll_id is not None
         return poll_id
 
@@ -888,3 +890,61 @@ async def test_a_runoff_that_closed_with_no_winner_still_blocks_its_parent_from_
     count = await world.db.run(lambda c: c.execute("SELECT COUNT(*) FROM polls WHERE parent_poll_id = ?",
                                                    (parent,)).fetchone()[0])
     assert count == 1
+
+
+# AC2.5: a local copy's winner and runoff stay in its own scope -----------------------------------------------
+
+OTHER_GUILD = "2002"     # a far community
+FAR = "3400"             # the local copy's own channel, in OTHER_GUILD
+FAR_LOCAL = "3600"       # the subscription's local channel, in OTHER_GUILD
+LOCAL_POLL_MSG = "5302"  # the local poll's message, in FAR_LOCAL
+
+
+async def add_scope(world: World) -> int:
+    world.state.channels[FAR_LOCAL] = {"id": FAR_LOCAL, "guild_id": OTHER_GUILD, "type": 0}
+    world.state.messages[(FAR_LOCAL, LOCAL_POLL_MSG)] = {"embeds": []}
+
+    def tx(conn: Any) -> int:
+        sub_id = subscriptions.add(conn, world.card_id, OTHER_GUILD, FAR)
+        assert subscriptions.set_mode_if(conn, sub_id, "redirect", "local")
+        subscriptions.set_local_channel(conn, sub_id, FAR_LOCAL)
+        return sub_id
+
+    return await world.db.run(tx)
+
+
+async def closed_local_winner(world: World, sub_id: int) -> int:
+    """A local approval poll that closed at CLOSES with ONE the winner (A and B) and TWO second (C)."""
+    poll_id = await store(world, starts=[ONE, TWO], users=(STARTER, VOTER_A, VOTER_B, VOTER_C), scope=sub_id,
+                          channel=FAR_LOCAL, guild=OTHER_GUILD, message=LOCAL_POLL_MSG)
+    await vote(world, poll_id, VOTER_A, [ONE])
+    await vote(world, poll_id, VOTER_B, [ONE])
+    await vote(world, poll_id, VOTER_C, [TWO])
+    await close_at_closes(world, poll_id)
+    return poll_id
+
+
+async def test_a_local_polls_winner_becomes_a_session_in_its_own_channel_and_scope(world: World) -> None:
+    sub_id = await add_scope(world)
+    poll_id = await closed_local_winner(world, sub_id)
+
+    await world.flow.on_poll_reaction(poll_id, STARTER, SESSION, FAR_LOCAL, LOCAL_POLL_MSG)
+
+    [(session_id, proposer, starts_at, _message_id)] = await sessions_all(world)
+    assert (proposer, starts_at) == (STARTER, ONE)
+    session = await world.db.run(lambda c: sessions.get(c, session_id))
+    assert session is not None and session.scope_sub_id == sub_id and session.channel_id == FAR_LOCAL
+    assert (await stored(world, poll_id)).session_id == session_id
+    local_posts = f"/api/v1/channels/{FAR_LOCAL}/messages"
+    assert [r for r in world.state.requests if r.method == "POST" and r.path == local_posts]
+
+
+async def test_a_local_runoff_opens_in_the_same_scope_and_channel(world: World) -> None:
+    sub_id = await add_scope(world)
+    parent = await closed_local_winner(world, sub_id)
+
+    await world.flow.on_poll_reaction(parent, STARTER, RUNOFF, FAR_LOCAL, LOCAL_POLL_MSG)
+
+    runoff = await runoff_of(world, parent)
+    assert runoff is not None
+    assert (runoff.kind, runoff.scope_sub_id, runoff.channel_id) == ("runoff", sub_id, FAR_LOCAL)

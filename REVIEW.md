@@ -94,9 +94,9 @@ Paths are relative to this directory.
 
 - `src/fluxer_panel/presses.py:178` `if event.guild_id is None or event.user_id == self._identity.user_id or event.user_is_bot:` — DM reactions, the bot's own reactions and another bot's reactions never reach the press adapter.
 - `src/fluxer_panel/presses.py:194` `in POLL_ACTION_EMOJI:` — 📅 and 🔁 on a poll message go to the poll flow before the kill switch and the rate limits, and only an add counts; a removal reaches nothing, because the poll flow removes the presser's reaction.
-- `src/fluxer_panel/poll_flow.py:246` `if user_id != poll.starter_id and not admin.is_admin_id(user_id, self._config):` — a 📅 or 🔁 on a poll message acts only for the poll's starter or a listed admin; anyone else's is removed and does nothing.
-- `src/fluxer_panel/poll_flow.py:283` `runoff = await self._db.run(lambda c: polls.child_of(c, poll_id))` — 📅 on a poll refuses when a runoff was started from it, checked under the poll's lock, so 📅 and 🔁 on one poll cannot both act.
-- `src/fluxer_panel/poll_flow.py:325` `if view.poll.session_id is not None:` — 🔁 refuses when the winner is already scheduled, checked under the same lock as the 📅 path's check above it.
+- `src/fluxer_panel/poll_flow.py:258` `if user_id != poll.starter_id and not admin.is_admin_id(user_id, self._config):` — a 📅 or 🔁 on a poll message acts only for the poll's starter or a listed admin; anyone else's is removed and does nothing.
+- `src/fluxer_panel/poll_flow.py:295` `runoff = await self._db.run(lambda c: polls.child_of(c, poll_id))` — 📅 on a poll refuses when a runoff was started from it, checked under the poll's lock, so 📅 and 🔁 on one poll cannot both act.
+- `src/fluxer_panel/poll_flow.py:338` `if view.poll.session_id is not None:` — 🔁 refuses when the winner is already scheduled, checked under the same lock as the 📅 path's check above it.
 - `src/fluxer_panel/presses.py:211` `if found is None or not found.switched_on:` — the kill switch, the global one and the card's own, is read before any rate limit, so a switched-off surface absorbs nothing and counts nothing.
 - `src/fluxer_panel/presses.py:260` `if last is not None and now - last < self._config.press_user_window_seconds:` — the per-user window. A repeated press from one user inside it is absorbed.
 - `src/fluxer_panel/presses.py:268` `if len(times) >= self._config.press_card_burst:` — the per-card burst limit. A card's presses past the burst are absorbed.
@@ -371,7 +371,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/dm_router.py:151` `if not self._limiter.admit(event.author_id):` — a `!session` command from a non-admin is rate limited before it is parsed.
 - `src/fluxer_panel/dm_router.py:156` `poll_head = _head(event.content, self._config.prefix, "poll")` — a `!poll` command from a non-admin is admitted through the same non-admin limiter as `!session` (the admit call is the next branch), before it is parsed or reaches the poll commands.
 - `src/fluxer_panel/dm_router.py:163` `if admin.parse_head(event.content, self._config.prefix) is not None:` — admin heads (`!admin`, `!card`, `!request`) go to `admin.handle` unchanged, and `authorize` checks them there.
-- `src/fluxer_panel/session_flow.py:237` `if not self._limiter.admit(user):` — a 📅 reaction in a DM uses the same limiter.
+- `src/fluxer_panel/session_flow.py:225` `if not self._limiter.admit(user):` — a 📅 reaction in a DM uses the same limiter.
 - `src/fluxer_panel/session_commands.py:147` `return event.author_id == session.proposer_id or admin.authorize(event, self._config)` — a session change needs the proposer or an admin.
 
 ## DM backoff
@@ -380,7 +380,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/notify.py:34` `and not bypass and backoff.blocked(user_id):` — the skip. It is logged as `user_dm_skipped` with reason `backoff`, and no request is made.
 - `src/fluxer_panel/notify.py:28` `bypass: bool = False)` — the promotion, cancel, move and series-stopped DMs, and the wake request close DMs (ready, expired and cleared), pass `bypass`, so they go out even while the user is in backoff.
 - `src/fluxer_panel/notify.py:18` `async def dm_admins(` — admin DMs never take the backoff path, so an admin is always told.
-- `src/fluxer_panel/session_flow.py:174` `if self._backoff.blocked(user):` — a 📅 start is refused while the proposer is in backoff, before any DM is sent.
+- `src/fluxer_panel/session_flow.py:162` `if self._backoff.blocked(user):` — a 📅 start is refused while the proposer is in backoff, before any DM is sent.
 
 ## What the polls prompt got wrong
 

@@ -17,13 +17,12 @@ from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
 from zoneinfo import ZoneInfo
 
 from fluxer_client import events
 from fluxer_client.ids import is_snowflake
 from fluxer_client.rest import FluxerREST
-from fluxer_panel import cards, notify, render, rsvp, scope, session_time, sessions, subscriptions, text
+from fluxer_panel import cards, notify, render, rsvp, scope, session_time, sessions, text
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.cards import Card
 from fluxer_panel.config import Config
@@ -60,17 +59,6 @@ class Draft:
     confirm_message_id: str | None = None
     candidate: int | None = None
     scope_sub_id: int | None = None   # None is the home card; otherwise the local or both subscription
-
-
-def _scope_of(conn: Any, card: Card, scope_sub_id: int | None) -> scope.Scope | None:
-    """The scope a session belongs to, read inside the caller's transaction. None when the subscription is gone, paused
-    or no longer local or both: the copy no longer runs its own sessions."""
-    if scope_sub_id is None:
-        return scope.home_scope(card, None)
-    sub = subscriptions.get_by_id(conn, scope_sub_id)
-    if sub is None or sub.paused or not sub.is_scope:
-        return None
-    return scope.scope_for_sub(conn, card, sub)
 
 
 def _local(now: float, zone: ZoneInfo) -> datetime:
@@ -328,7 +316,7 @@ class SessionFlow:
         card = await self._read_card(card_id)
         if card is None or card.state != "live":
             return Published(reply=text.SESSION_POST_FAILED)
-        resolved = await self._db.run(lambda c: _scope_of(c, card, scope_sub_id))
+        resolved = await self._db.run(lambda c: scope.scope_of(c, card, scope_sub_id))
         if resolved is None:
             return Published(reply=text.SESSION_SCOPE_GONE)
         target, _ = await scope.checked_target(self._rest, self._config, card, resolved,
@@ -341,7 +329,7 @@ class SessionFlow:
             fresh = await self._read_card(card_id)
             if fresh is None or fresh.state != "live":
                 return Published(reply=text.SESSION_POST_FAILED)
-            fresh_scope = await self._db.run(lambda c: _scope_of(c, fresh, scope_sub_id))
+            fresh_scope = await self._db.run(lambda c: scope.scope_of(c, fresh, scope_sub_id))
             if fresh_scope is None:
                 return Published(reply=text.SESSION_SCOPE_GONE)
             if scope.scope_target(fresh, self._config, fresh_scope) != channel_id:

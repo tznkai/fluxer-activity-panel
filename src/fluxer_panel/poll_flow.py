@@ -21,14 +21,13 @@ from fluxer_client.events import MessageCreate
 from fluxer_client.ids import is_snowflake
 from fluxer_client.rest import FluxerREST
 from fluxer_panel import (
-    admin, cards, notify, poll_count, poll_letters, poll_members, poll_reply, polls, render, session_flow, text)
+    admin, cards, notify, poll_count, poll_letters, poll_members, poll_reply, polls, render, scope, session_flow, text)
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.cards import Card
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.dm_backoff import DmBackoff
 from fluxer_panel.games import GamesGuild
-from fluxer_panel.interactions import card_target, target_channel_id
 from fluxer_panel.logs import log_event
 from fluxer_panel.poll_post import PollPost
 from fluxer_panel.presses import RUNOFF_EMOJI, SESSION_EMOJI, Press
@@ -132,7 +131,8 @@ class PollFlow:
         card = await self._db.run(lambda c: cards.get_by_id(c, press.card_id))
         if card is None or card.state != "live":
             return self._refused(press.card_id, "card")
-        if not press.surface.home_community:
+        resolved = await self._db.run(lambda c: scope.resolve_scope(c, card, press.surface, None))
+        if resolved is scope.ELSEWHERE:
             await self._elsewhere(user, card)
             return self._refused(card.id, "elsewhere")
         if self._backoff.blocked(user):
@@ -140,11 +140,11 @@ class PollFlow:
         now = int(self._clock())
         starts = session_flow.offered_slot_times(self._config, now)
         await self._open_poll(card.id, starter_id=user, presser_id=user, kind="approval", parent_poll_id=None,
-                              options=[(starts_at, "offered") for starts_at in starts])
+                              options=[(starts_at, "offered") for starts_at in starts], scope_sub_id=resolved.sub_id)
 
     async def _open_poll(self, card_id: int, *, starter_id: str, presser_id: str, kind: str,
                          parent_poll_id: int | None, options: Sequence[tuple[int, str]],
-                         closes_at: int | None = None) -> int | None:
+                         closes_at: int | None = None, scope_sub_id: int | None = None) -> int | None:
         """Posts the poll message and stores the poll with its options and one ballot per recipient, under the card's
         lock. The ballots, the notes and the poller's kick come after it. Every refusal is DMed to the presser and
         logged. `closes_at` is the close time, or None for now plus the poll length. Returns the new poll's id, or None
@@ -152,19 +152,24 @@ class PollFlow:
         card = await self._db.run(lambda c: cards.get_by_id(c, card_id))
         if card is None or card.state != "live":
             return self._refused(card_id, "card")
-        target, reason = await card_target(self._rest, self._config, card, failed_event="poll_target_failed")
+        resolved = await self._db.run(lambda c: scope.scope_of(c, card, scope_sub_id))
+        if resolved is None:
+            await self._dm(presser_id, text.POLL_SCOPE_GONE)
+            return self._refused(card.id, "scope")
+        target, reason = await scope.checked_target(self._rest, self._config, card, resolved,
+                                                    failed_event="poll_target_failed")
         if target is None:
             await self._dm(presser_id, text.POLL_NO_CHANNEL)
             return self._refused(card.id, reason or "no_channel")
         channel_id, guild_id = target
-        existing = await self._db.run(lambda c: polls.open_for_card(c, card.id))
+        existing = await self._db.run(lambda c: polls.open_for_scope(c, card.id, scope_sub_id))
         if existing is not None:
             await self._already_open(presser_id, existing)
             return self._refused(card.id, "open")
 
         now = int(self._clock())
         closes = now + self._config.poll_length_seconds if closes_at is None else closes_at
-        found = await self._recipients(card, starter_id)
+        found = await self._recipients(card, starter_id, resolved)
         if found is None:
             await self._dm(presser_id, text.POLL_TRY_LATER)
             return self._refused(card.id, "members")
@@ -172,10 +177,17 @@ class PollFlow:
 
         async with self._locks.get(card.id):
             fresh = await self._db.run(lambda c: cards.get_by_id(c, card.id))
-            if fresh is None or fresh.state != "live" or target_channel_id(fresh, self._config) != channel_id:
+            if fresh is None or fresh.state != "live":
                 await self._dm(presser_id, text.POLL_POST_FAILED)
                 return self._refused(card.id, "card_changed")
-            again = await self._db.run(lambda c: polls.open_for_card(c, card.id))
+            fresh_scope = await self._db.run(lambda c: scope.scope_of(c, fresh, scope_sub_id))
+            if fresh_scope is None:
+                await self._dm(presser_id, text.POLL_SCOPE_GONE)
+                return self._refused(card.id, "scope")
+            if scope.scope_target(fresh, self._config, fresh_scope) != channel_id:
+                await self._dm(presser_id, text.POLL_POST_FAILED)
+                return self._refused(card.id, "card_changed")
+            again = await self._db.run(lambda c: polls.open_for_scope(c, card.id, scope_sub_id))
             if again is not None:
                 await self._already_open(presser_id, again)
                 return self._refused(card.id, "open")
@@ -202,7 +214,7 @@ class PollFlow:
                     polls.create, card_id=card.id, guild_id=guild_id, channel_id=channel_id, message_id=message_id,
                     starter_id=starter_id, kind=kind, parent_poll_id=parent_poll_id, now=now,
                     closes_at=closes, ballot_size=self._config.poll_ballot_size,
-                    options=list(options), recipients=recipients.user_ids))
+                    options=list(options), recipients=recipients.user_ids, scope_sub_id=scope_sub_id))
             except Exception as exc:  # noqa: BLE001 - with no row the message would never close: it is deleted
                 await self._poll_post.delete_unstored(channel_id, message_id)
                 log_event(log, "poll_store_failed", level=logging.WARNING, card_id=card.id,
@@ -211,7 +223,7 @@ class PollFlow:
                 return self._refused(card.id, "store")
             if poll_id is None:   # another poll won the race after the check: the provisional message goes
                 await self._poll_post.delete_unstored(channel_id, message_id)
-                stored = await self._db.run(lambda c: polls.open_for_card(c, card.id))
+                stored = await self._db.run(lambda c: polls.open_for_scope(c, card.id, scope_sub_id))
                 if stored is not None:
                     await self._already_open(presser_id, stored)
                 return self._refused(card.id, "open")
@@ -291,7 +303,8 @@ class PollFlow:
             return self._refused_poll(poll_id, "schedule", "too_late")
         voters = sorted({vote.user_id for vote in view.votes if vote.option_id == winner.id}, key=int)
         published = await self._session_flow.publish(view.poll.card_id, view.poll.starter_id, winner.starts_at,
-                                                     maybe=voters, notify_proposer=False)
+                                                     maybe=voters, notify_proposer=False,
+                                                     scope_sub_id=view.poll.scope_sub_id)
         if published.reply is not None:
             reply = published.reply
             if published.cap == "proposer" and presser != view.poll.starter_id:
@@ -349,7 +362,7 @@ class PollFlow:
         runoff_id = await self._open_poll(view.poll.card_id, starter_id=view.poll.starter_id, presser_id=presser,
                                           kind="runoff", parent_poll_id=poll_id,
                                           options=[(option.starts_at, "offered") for option in top],
-                                          closes_at=closes_at)
+                                          closes_at=closes_at, scope_sub_id=view.poll.scope_sub_id)
         if runoff_id is None:
             return
         await self._poll_post.unseed_closed(poll_id)
@@ -441,10 +454,11 @@ class PollFlow:
 
     # Helpers ---------------------------------------------------------------------------------------------------
 
-    async def _recipients(self, card: Card, starter: str) -> tuple[poll_members.Recipients, bool] | None:
-        """The starter and the follow-role holders, capped; with a flag for whether the card has a follow role. None when
-        the member list could not be read, so nothing is posted."""
-        role = await self._db.run(lambda c: cards.get_follow_role(c, card.id))
+    async def _recipients(self, card: Card, starter: str, resolved: scope.Scope
+                          ) -> tuple[poll_members.Recipients, bool] | None:
+        """The starter and the holders of the scope's follow role, capped; with a flag for whether the scope has a
+        follow role. The holders are read from the role's own community. None when the member list could not be read."""
+        role = resolved.role
         if role is None:
             return poll_members.Recipients(user_ids=(starter,), left_out=0), False
         try:

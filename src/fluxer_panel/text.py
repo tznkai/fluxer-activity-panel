@@ -446,6 +446,7 @@ POLL_REMINDER_DM = ("There's still time to answer the time poll for {card}: {lin
 POLL_ELSEWHERE = "Polls are started on the card itself: {link}"
 POLL_ELSEWHERE_NO_LINK = "Polls are started on the card itself, in the games channel."
 POLL_NO_CHANNEL = "This card has no channel for polls yet."
+POLL_SCOPE_GONE = "That copy no longer runs its own polls, so nothing was opened."
 POLL_ALREADY_OPEN = "This card already has an open poll: {link}"
 POLL_ALREADY_OPEN_NO_LINK = "This card already has an open poll."
 POLL_TRY_LATER = "I couldn't read the member list. Please try again later."

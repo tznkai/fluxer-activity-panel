@@ -70,6 +70,17 @@ def resolve_scope(conn: sqlite3.Connection, card: Card, surface: Surface, games_
     return ELSEWHERE
 
 
+def scope_of(conn: sqlite3.Connection, card: Card, sub_id: int | None) -> Scope | None:
+    """The scope that owns a session, poll or play-now post, read inside the caller's transaction: home for None. None
+    when the subscription is gone, paused or no longer local or both, so its copy no longer runs its own objects."""
+    if sub_id is None:
+        return home_scope(card, None)
+    sub = subscriptions.get_by_id(conn, sub_id)
+    if sub is None or sub.paused or not sub.is_scope:
+        return None
+    return scope_for_sub(conn, card, sub)
+
+
 def scope_target(card: Card, config: Config, scope: Scope) -> str | None:
     """Home: the card's verified play-now channel, else PLAY_NOW_CHANNEL_ID (no REST call). Subscription: its
     local_channel_id, else the copy's own channel."""

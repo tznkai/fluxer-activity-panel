@@ -415,6 +415,7 @@ told.
 
 A time poll asks a card's people which of several times they can make. It is posted in the card's session channel, so
 a card needs one, as for sessions. Polls never post to the games channel.
+A local or both subscription runs its own polls in its channel, with ballots to the holders of its own role. Someone who follows a card in two places may get two ballots, one for each open poll.
 
 **Starting.** A press on the ballot box (🗳️) on the card, or on a home copy in the games community, posts the poll and
 DMs a ballot to each recipient. The poll offers up to six times, soonest first, from the same slots as 📅. The
