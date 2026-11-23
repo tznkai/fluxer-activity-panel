@@ -12,7 +12,7 @@ from __future__ import annotations
 import itertools
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from fluxer_client.ids import is_snowflake
@@ -425,25 +425,53 @@ class Interactions:
             return None
 
     async def expire_play_now(self) -> None:
-        """Ends each play-now message whose expiry has passed (AC4.10): one recount, one edit to the ended wording, then one
-        bulk removal of its reactions. The recount runs before the card's lock, so the reactor reads never hold it. Each
-        message is expired once, under its card's lock, and its removal runs after the lock is released. A failure on one
-        message is logged, and the other due messages still end."""
+        """Ends each play-now message whose expiry has passed (AC4.10). The reactor counts are read before the card's
+        lock, so no reactor read holds it. Each message is expired once, under its card's lock, and its reactions are
+        removed after the lock is released. A failure on one message is logged, and the other due messages still end."""
         now = int(self._clock())
         for pn in await self._db.run(lambda c: play_now.due(c, now)):
-            expired = False
             try:
-                playing = await self._count_for_end(pn)
+                counts = await self.count_play_now([pn])
                 async with self._locks.get(pn.card_id):
-                    expired = await self._expire(pn.id)
-                    if expired:
-                        self._recount_applied.pop(pn.message_id, None)   # an ended message keeps no recount ticket
-                        await self._end_message(pn, playing)
+                    ended = await self.end_play_now_locked([pn], counts)
             except Exception as exc:  # noqa: BLE001 - one message's failure must not stop the others
                 log_event(log, "play_now_expire_failed", level=logging.WARNING, card_id=pn.card_id,
                           **_failure_fields(exc))
-            if expired:
-                await self._remove_all_reactions(pn)
+                ended = []
+            await self.clear_play_now_reactions(ended)
+
+    async def count_play_now(self, rows: Iterable[play_now.PlayNow]) -> dict[int, int]:
+        """The reactor counts that ended messages will show, keyed by play-now id. Call before taking the card lock. A
+        row whose count cannot be read has no entry, and its ended message leaves the count line out."""
+        counts: dict[int, int] = {}
+        for pn in rows:
+            playing = await self._count_for_end(pn)
+            if playing is not None:
+                counts[pn.id] = playing
+        return counts
+
+    async def end_play_now_locked(self, rows: Iterable[play_now.PlayNow],
+                                  counts: Mapping[int, int]) -> list[play_now.PlayNow]:
+        """Expires each row that is still live and edits its message to the ended wording, with the count from `counts`
+        (no REST read here, so it is safe under the lock). Returns the rows this call expired: their reactions are
+        removed by clear_play_now_reactions after the lock is released. The caller holds the card's lock."""
+        ended: list[play_now.PlayNow] = []
+        for pn in rows:
+            try:
+                if not await self._expire(pn.id):
+                    continue
+                ended.append(pn)
+                self._recount_applied.pop(pn.message_id, None)   # an ended message keeps no recount ticket
+                await self._end_message(pn, counts.get(pn.id))
+            except Exception as exc:  # noqa: BLE001 - one row's failure must not stop the others
+                log_event(log, "play_now_expire_failed", level=logging.WARNING, card_id=pn.card_id,
+                          **_failure_fields(exc))
+        return ended
+
+    async def clear_play_now_reactions(self, rows: Iterable[play_now.PlayNow]) -> None:
+        """Removes every reaction from each ended message. Call after the card's lock is released."""
+        for pn in rows:
+            await self._remove_all_reactions(pn)
 
     async def _expire(self, play_now_id: int) -> bool:
         """Expires one row if it is still live. Returns whether this call expired it."""

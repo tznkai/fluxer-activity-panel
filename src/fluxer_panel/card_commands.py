@@ -32,6 +32,7 @@ from fluxer_panel.sources.registry import PROBES, Sources, known_manager_kinds, 
 if TYPE_CHECKING:
     # wake.py imports CardLocks from this module, so the wake requests are named for type checking only.
     # session_commands imports CardLocks and chunks from this module too, so it is named for type checking only.
+    from fluxer_panel.interactions import Interactions
     from fluxer_panel.poll_close import PollCloser
     from fluxer_panel.session_commands import SessionCommands
     from fluxer_panel.wake import WakeRequests
@@ -98,6 +99,7 @@ class CardContext:
     wake: WakeRequests | None = None
     session_commands: SessionCommands | None = None
     poll_closer: PollCloser | None = None     # `!card archive` closes the card's open poll through it
+    play_now_ender: Interactions | None = None   # ends a subscription's play-now posts (scope_cleanup)
 
 
 @dataclass(frozen=True)

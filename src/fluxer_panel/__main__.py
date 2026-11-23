@@ -140,6 +140,7 @@ async def run(config: Config, db: Database) -> None:
                                         roles=roles, kick=poller.kick, wake=wake, status_of=poller.status_of,
                                         session_post=session_post, backoff=backoff, session_flow=session_flow,
                                         poll_flow=poll_flow)
+            card_ctx.play_now_ender = interactions   # ending a subscription's scope ends its play-now posts
             poller.set_interactions(interactions)   # each tick ends the play-now messages that are due
             presses = Presses(db=db, rest=rest, config=config, handler=interactions, games_guild=games_guild,
                               pacer=pacer, identity=identity, backoff=backoff)
