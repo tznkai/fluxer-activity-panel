@@ -51,6 +51,21 @@ def add(conn: sqlite3.Connection, *, sub_id: int, channel_id: str, message_id: s
     return int(cur.lastrowid)
 
 
+def store_if_both(conn: sqlite3.Connection, *, sub_id: int, channel_id: str, message_id: str, kind: Kind,
+                  object_id: int, content_hash: str | None) -> int | None:
+    """Stores a mirror only while its subscription is an active `both` copy, the rule `subscriptions.list_both` reads
+    by. A mirror posted after the copy left `both` (or was paused) is refused, so it can never outlive its copy. Returns
+    the new row's id, or None when nothing was stored. A second mirror of the same object in the same subscription
+    raises IntegrityError, as `add` does."""
+    column = _OBJECT_COLUMN[kind]
+    cur = conn.execute(
+        f"INSERT INTO mirror_message (sub_id, channel_id, message_id, content_hash, {column}) "
+        "SELECT ?, ?, ?, ?, ? WHERE EXISTS "
+        "(SELECT 1 FROM card_subscription WHERE id = ? AND mode = 'both' AND paused = 0)",
+        (sub_id, channel_id, message_id, content_hash, object_id, sub_id))
+    return int(cur.lastrowid) if cur.rowcount == 1 else None
+
+
 def get(conn: sqlite3.Connection, kind: Kind, object_id: int, sub_id: int) -> Mirror | None:
     column = _OBJECT_COLUMN[kind]
     row = conn.execute(f"SELECT {_COLUMNS} FROM mirror_message WHERE {column} = ? AND sub_id = ?",

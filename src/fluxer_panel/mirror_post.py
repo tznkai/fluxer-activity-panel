@@ -3,7 +3,8 @@
 """Every REST call on a mirror message: a home session, poll or play-now post re-posted in a both subscription's
 channel. It posts when no row is stored, edits only when the content hash changed, and forgets a mirror on a 404.
 A 403 or another failure is logged and the row is kept, so the home object and the other mirrors are unaffected.
-The poller never back-fills a mirror, so a dropped one stays gone until its object is fanned out again."""
+A dropped or failed mirror comes back only when its object is first published or its copy enters `both` again. The
+poller and later edits never repost it (decision 5)."""
 
 from __future__ import annotations
 
@@ -117,11 +118,14 @@ class MirrorPost:
             return None
         message_id = sent["id"]
         try:
-            await self._db.run(lambda c: mirrors.add(c, sub_id=sub.id, channel_id=channel_id, message_id=message_id,
-                                                     kind=kind, object_id=object_id, content_hash=digest))
+            stored = await self._db.run(lambda c: mirrors.store_if_both(
+                c, sub_id=sub.id, channel_id=channel_id, message_id=message_id, kind=kind, object_id=object_id,
+                content_hash=digest))
         except sqlite3.IntegrityError:
-            # A row already holds this object in this subscription, or the object is gone. The message just sent is
-            # removed, as the poller removes a message deleted before its id was stored.
+            stored = None   # a row already holds this object in this subscription
+        if stored is None:
+            # No row was stored: the copy left `both` after the targets were read, or a concurrent post won. The message
+            # just sent is removed, as the poller removes a message deleted before its id was stored.
             await self._remove_unstored(channel_id, message_id)
             self._log_failed(sub_id=sub.id, channel_id=channel_id, kind=kind, reason="row_refused",
                              message_id=message_id)

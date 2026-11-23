@@ -5,6 +5,7 @@ the games-channel guard, the delete path, and the log rule. Every mirror post an
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sqlite3
 from collections.abc import AsyncIterator
@@ -259,3 +260,61 @@ async def test_no_log_record_carries_a_user_id(world: SimpleNamespace, caplog: p
     for record in records:
         assert "user_id" not in getattr(record, FIELDS_ATTR, {})
 
+
+
+async def wait_gated(world: SimpleNamespace, key: str) -> None:
+    """Waits until a request on `key` has reached its gate, so the test can act while it is held."""
+    for _ in range(1000):
+        if key in world.state.gated:
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError("the request never reached its gate")
+
+
+def refused_reasons(caplog: pytest.LogCaptureFixture) -> list[object]:
+    return [fields.get("reason") for fields in logged(caplog, "mirror_failed")]
+
+
+async def test_a_copy_that_leaves_both_during_the_post_gets_no_row_and_its_message_is_removed(
+        world: SimpleNamespace, caplog: pytest.LogCaptureFixture) -> None:
+    # The post is held in flight; the copy leaves `both` after the targets were read and before the row is stored.
+    gate_key = f"POST {POST_PATH}"
+    gate = asyncio.Event()
+    world.state.gates[gate_key] = gate
+    caplog.set_level(logging.WARNING)
+    try:
+        task = asyncio.create_task(post_for(world, world.sub_a, CHANNEL_A))
+        await wait_gated(world, gate_key)
+        assert await world.db.run(lambda c: subscriptions.set_mode_if(c, world.sub_a, "both", "local"))
+    finally:
+        gate.set()
+    result = await asyncio.wait_for(task, timeout=5)
+    assert result is None
+    assert await stored(world, world.sub_a) is None
+    [sent] = [key for key in world.state.messages if key[0] == CHANNEL_A]
+    assert sent in world.state.deleted
+    assert "row_refused" in refused_reasons(caplog)
+
+
+async def test_a_row_stored_by_a_concurrent_post_wins_and_the_sent_message_is_removed(
+        world: SimpleNamespace, caplog: pytest.LogCaptureFixture) -> None:
+    # Another path stores this object's row while the post is in flight: the store fails on the unique row, so the
+    # message just sent is removed and the stored row is left as it is.
+    gate_key = f"POST {POST_PATH}"
+    gate = asyncio.Event()
+    world.state.gates[gate_key] = gate
+    caplog.set_level(logging.WARNING)
+    try:
+        task = asyncio.create_task(post_for(world, world.sub_a, CHANNEL_A))
+        await wait_gated(world, gate_key)
+        await world.db.run(lambda c: mirrors.add(c, sub_id=world.sub_a, channel_id=CHANNEL_A, message_id="7777",
+                                                 kind="session", object_id=world.session, content_hash=None))
+    finally:
+        gate.set()
+    result = await asyncio.wait_for(task, timeout=5)
+    assert result is None
+    row = await stored(world, world.sub_a)
+    assert row is not None and row.message_id == "7777"
+    [sent] = [key for key in world.state.messages if key[0] == CHANNEL_A]
+    assert sent in world.state.deleted
+    assert "row_refused" in refused_reasons(caplog)
