@@ -1754,6 +1754,40 @@ async def test_open_requests_show_on_the_card_its_copy_and_the_board(world: Worl
     assert "Asleep · Requested · 2" in json.dumps(board_edits[-1].payload, ensure_ascii=False)
 
 
+# Shared status in copies of every mode (AC4.3) -----------------------------------------------------
+
+REDIRECT_COPY = "3303"          # a redirect copy in the far community
+LOCAL_COPY = "3304"             # a local copy in the same far community
+
+
+def set_local(conn: Any, card_id: int, channel: str) -> None:
+    sub = subscriptions.get(conn, card_id, channel)
+    assert sub is not None and subscriptions.set_mode_if(conn, sub.id, "redirect", "local")
+
+
+async def test_a_status_change_gives_a_local_copy_the_same_status_text_as_a_redirect_copy(
+        world: World, poller: Poller, db: Database):
+    world.panel.servers[SERVER].current_state = "offline"
+    card_id = await seed(db, "alpha", title="Alpha", manager=cards.ManagerRef("pterodactyl", SERVER))
+    await subscribe_in(db, card_id, REDIRECT_COPY, FAR_GUILD)
+    await subscribe_in(db, card_id, LOCAL_COPY, FAR_GUILD)
+    await db.run(lambda c: set_local(c, card_id, LOCAL_COPY))
+    await poller.tick()
+    asleep = fields_of(copy_posts(world.fluxer, LOCAL_COPY)[0].payload["embeds"][0])[text.FIELD_STATUS]
+    assert asleep == text.STATUS_ASLEEP
+
+    world.panel.servers[SERVER].current_state = "running"
+    await poller.tick()
+
+    [redirect_edit] = copy_patches(world.fluxer, REDIRECT_COPY)
+    [local_edit] = copy_patches(world.fluxer, LOCAL_COPY)
+    redirect_status = fields_of(redirect_edit.payload["embeds"][0])[text.FIELD_STATUS]
+    local_status = fields_of(local_edit.payload["embeds"][0])[text.FIELD_STATUS]
+    assert redirect_status != asleep
+    assert local_status == redirect_status
+    assert_card_writes_safe(world.fluxer)
+
+
 async def test_a_suspended_server_shows_no_requested_suffix(world: World, poller: Poller, db: Database):
     world.panel.servers[SERVER].is_suspended = True
     card_id = await seed(db, "alpha", title="Alpha", manager=cards.ManagerRef("pterodactyl", SERVER))
