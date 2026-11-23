@@ -509,3 +509,49 @@ async def test_a_startup_reconcile_with_a_404_mirror_drops_that_mirror(world: Si
         404, b'{"code": "UNKNOWN_MESSAGE", "message": "Unknown Message"}')
     await world.interactions.reconcile_sessions()
     assert await mirror_row(world, world.sub_b, session_id) is None
+
+
+# The startup reconcile carries a user over when their only RSVP is on a mirror that answers 403 (the bot cannot read
+# it).
+
+FORBIDDEN_BODY = b'{"code": "MISSING_PERMISSIONS", "message": "Missing Permissions"}'
+
+
+async def test_a_user_whose_only_going_is_on_a_403_mirror_is_still_going_after_the_startup_reconcile(
+        world: SimpleNamespace) -> None:
+    session_id = await publish(world)
+    mirror_id = await mirror_message(world, world.sub_b, session_id)
+    set_going(world, FAR_B, mirror_id, [FAR_USER])
+    await world.presses.on_reaction(reaction(FAR_USER, FAR_B, mirror_id))
+    assert await origin(world, session_id, FAR_USER) == world.sub_b
+    world.state.overrides[mirror_reactors_path(FAR_B, mirror_id)] = Override(403, FORBIDDEN_BODY)
+    await world.interactions.reconcile_sessions()
+    assert FAR_USER in await going(world, session_id)
+    assert await origin(world, session_id, FAR_USER) == world.sub_b
+
+
+async def test_a_home_only_user_whose_home_reaction_is_gone_is_removed_by_the_same_reconcile(
+        world: SimpleNamespace) -> None:
+    session_id = await publish(world)
+    home_id = await home_message(world, session_id)
+    mirror_id = await mirror_message(world, world.sub_b, session_id)
+    set_going(world, HOME, home_id, [HOME_ONLY_USER])
+    await world.presses.on_reaction(reaction(HOME_ONLY_USER, HOME, home_id))
+    set_going(world, HOME, home_id, [QUIET_FAR_USER])          # HOME_ONLY_USER un-reacted; another user reacted
+    world.state.overrides[mirror_reactors_path(FAR_B, mirror_id)] = Override(403, FORBIDDEN_BODY)
+    await world.interactions.reconcile_sessions()
+    assert HOME_ONLY_USER not in await going(world, session_id)
+    assert QUIET_FAR_USER in await going(world, session_id)
+
+
+async def test_a_user_who_reacted_on_both_is_unaffected_by_a_403_mirror(world: SimpleNamespace) -> None:
+    session_id = await publish(world)
+    home_id = await home_message(world, session_id)
+    mirror_id = await mirror_message(world, world.sub_b, session_id)
+    set_going(world, FAR_B, mirror_id, [FAR_USER])
+    await world.presses.on_reaction(reaction(FAR_USER, FAR_B, mirror_id))
+    set_going(world, HOME, home_id, [FAR_USER])                # also on the readable home message
+    world.state.overrides[mirror_reactors_path(FAR_B, mirror_id)] = Override(403, FORBIDDEN_BODY)
+    await world.interactions.reconcile_sessions()
+    assert FAR_USER in await going(world, session_id)
+    assert await origin(world, session_id, FAR_USER) is None

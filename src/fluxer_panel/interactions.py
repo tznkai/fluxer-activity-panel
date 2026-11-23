@@ -739,7 +739,8 @@ class Interactions:
 
     async def _reconcile_session(self, listed: Session) -> None:
         try:
-            mirror_readings = await self._read_mirror_reactions(listed)   # before the card lock, as no reactor read is under it
+            # Before the card lock, as no reactor read is under it.
+            mirror_readings, forbidden = await self._read_mirror_reactions(listed)
         except _ReactorsUnreadable as exc:
             log_event(log, "session_reconcile_skipped", level=logging.WARNING, session_id=listed.id, **exc.fields)
             return
@@ -759,7 +760,8 @@ class Interactions:
                 card = cards.get_by_id(c, s.card_id)
                 if card is None:
                     return None
-                if not sessions.reconcile_presence(c, s, readings, now, via=via):
+                carried_readings, carried_via = _carry_forbidden(c, s.id, readings, via, forbidden)
+                if not sessions.reconcile_presence(c, s, carried_readings, now, via=carried_via):
                     return s, card, None
                 return s, card, sessions.recompute(c, s, sessions.effective_seats(s, card), now)
 
@@ -789,21 +791,26 @@ class Interactions:
             readings[choice] = await self._reactor_ids(channel_id, message_id, emoji)
         return readings
 
-    async def _read_mirror_reactions(self, listed: Session) -> list[tuple[int, dict[rsvp.Choice, set[str]]]]:
-        """The RSVP reactors on each mirror of the session, as (subscription id, readings). A mirror that answers 404 is
-        dropped and one that answers 403 is left out, so neither skips the session. Any other failure raises
-        _ReactorsUnreadable, and the whole session is skipped, as for the home message."""
+    async def _read_mirror_reactions(self, listed: Session
+                                     ) -> tuple[list[tuple[int, dict[rsvp.Choice, set[str]]]], frozenset[int]]:
+        """The RSVP reactors on each readable mirror of the session, as (subscription id, readings), and the ids of the
+        mirrors that answer 403 (`forbidden`). A mirror that answers 404 is dropped, and one that answers 403 is left
+        out, so neither skips the session. Any other failure raises _ReactorsUnreadable, and the whole session is
+        skipped, as for the home message."""
         rows = await self._db.run(lambda c: mirrors.for_object(c, "session", listed.id))
         readings: list[tuple[int, dict[rsvp.Choice, set[str]]]] = []
+        forbidden: set[int] = set()
         for row in sorted(rows, key=lambda r: r.sub_id):
             try:
                 per_choice = await self._read_message_reactions(row.channel_id, row.message_id)
             except _ReactorsUnreadable as exc:
                 if await self._mirror_holds_nothing(row, exc):
+                    if exc.status == 403:
+                        forbidden.add(row.sub_id)
                     continue
                 raise
             readings.append((row.sub_id, per_choice))
-        return readings
+        return readings, frozenset(forbidden)
 
     async def _mirror_holds_nothing(self, row: mirrors.Mirror, exc: _ReactorsUnreadable) -> bool:
         """Whether an unreadable mirror is treated as holding no reaction. A 404 means its message is gone, so its row
@@ -849,6 +856,25 @@ class Interactions:
                 raise _ReactorsUnreadable({"reason": "reactors_stalled"})
             after = cursor
         raise _ReactorsUnreadable({"reason": "reactors_truncated"})
+
+
+def _carry_forbidden(conn: Any, session_id: int, readings: dict[rsvp.Choice, set[str]], via: dict[str, int | None],
+                     forbidden: frozenset[int]) -> tuple[dict[rsvp.Choice, set[str]], dict[str, int | None]]:
+    """The readings and origins for the startup reconcile, with the presence of users a 403 mirror may still hold
+    carried over. A stored real RSVP whose origin is a forbidden mirror, and which no readable message shows, stays as
+    it is: the bot cannot read that mirror, so it cannot tell that the user left. Every other row is reconciled as
+    read."""
+    if not forbidden:
+        return readings, via
+    carried: dict[rsvp.Choice, set[str]] = {choice: set(users) for choice, users in readings.items()}
+    origins = dict(via)
+    shown = {user_id for users in readings.values() for user_id in users}
+    for user_id, choice, sub_id in sessions.presence_from_subs(conn, session_id, forbidden):
+        if user_id in shown:
+            continue
+        carried.setdefault(choice, set()).add(user_id)
+        origins[user_id] = sub_id
+    return carried, origins
 
 
 def _merge_readings(home: dict[rsvp.Choice, set[str]],

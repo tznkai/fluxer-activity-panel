@@ -10,7 +10,7 @@ expects, so a second command or a late event cannot undo a change that already h
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
@@ -375,6 +375,19 @@ def remove_presence(conn: sqlite3.Connection, session_id: int, user_id: str, cho
 
 
 RECONCILE_ORDER: tuple[rsvp.Choice, ...] = ("going", "maybe", "no")
+
+
+def presence_from_subs(conn: sqlite3.Connection, session_id: int, sub_ids: Iterable[int]) -> list[tuple[str, str, int]]:
+    """The real RSVP rows of a session whose origin is one of the given mirror subscriptions, as (user id, choice,
+    subscription id), in user id order."""
+    ids = sorted(sub_ids)
+    if not ids:
+        return []
+    marks = ",".join("?" * len(ids))
+    rows = conn.execute(
+        f"SELECT user_id, choice, via_sub_id FROM rsvp_reaction WHERE session_id = ? AND implicit = 0 "
+        f"AND via_sub_id IN ({marks})", (session_id, *ids)).fetchall()
+    return sorted(((user_id, choice, sub_id) for user_id, choice, sub_id in rows), key=lambda row: int(row[0]))
 
 
 def set_presence_via(conn: sqlite3.Connection, session_id: int, user_id: str, via_sub_id: int | None) -> None:
