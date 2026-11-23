@@ -16,7 +16,7 @@ from fluxer_panel.cards import Card
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.dm_backoff import DmBackoff
-from fluxer_panel.interactions import GamesChannelRefused
+from fluxer_panel.games_guard import GamesChannelRefused
 from fluxer_panel.logs import log_event
 from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.rsvp import Counts

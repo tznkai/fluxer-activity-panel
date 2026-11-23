@@ -26,6 +26,7 @@ from fluxer_panel.db import Database
 from fluxer_panel.dm_backoff import DmBackoff
 from fluxer_panel.follow_roles import Toggle
 from fluxer_panel.games import BotIdentity, GamesGuild
+from fluxer_panel.games_guard import GamesChannelRefused
 from fluxer_panel.logs import log_event
 from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.presses import PLAY_NOW_EMOJI, WAKE_EMOJI, Action, Press, Surface
@@ -33,7 +34,7 @@ from fluxer_panel.resolver import CardStatus, StatusKind
 from fluxer_panel.seeding import Seeder
 from fluxer_panel.wake import WakeRequests
 
-if TYPE_CHECKING:   # type-only: session_post imports GamesChannelRefused from this module
+if TYPE_CHECKING:   # type-only imports: they would otherwise be circular
     from fluxer_panel.poll_flow import PollFlow
     from fluxer_panel.session_flow import SessionFlow
     from fluxer_panel.session_post import SessionPost
@@ -46,10 +47,6 @@ MAX_REACTOR_PAGES = 20   # the most pages one count reads: at most 2000 reactors
 # The RSVP reactions the startup reconcile reads, with the choice each one stands for.
 _RSVP_READINGS: tuple[tuple[str, rsvp.Choice], ...] = (
     (rsvp.GOING_EMOJI, "going"), (rsvp.MAYBE_EMOJI, "maybe"), (rsvp.NO_EMOJI, "no"))
-
-
-class GamesChannelRefused(Exception):
-    """A play-now message was aimed at the games channel. Raised before any REST call (AC4.5)."""
 
 
 def play_now_mentions(role_id: str | None) -> dict[str, Any]:
