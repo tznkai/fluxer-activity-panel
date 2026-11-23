@@ -416,7 +416,7 @@ async def test_a_card_wide_cancel_under_the_lock_posts_no_new_mirror(world: Simp
 
 
 async def test_a_mirror_dropped_on_a_404_is_not_posted_again_by_a_later_edit(world: SimpleNamespace) -> None:
-    """Decision 5: a mirror the copy's members deleted stays gone. Later edits of the home session (an RSVP, the end)
+    """A mirror the copy's members deleted stays gone. Later edits of the home session (an RSVP, the end)
     edit the mirrors that are stored and post none, so only a mode change back into both posts it again."""
     session_id = await publish(world)
     row = await mirror_row(world, world.sub_b, session_id)

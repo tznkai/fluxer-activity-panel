@@ -314,7 +314,7 @@ async def test_a_far_ballot_has_no_link_once_its_mirror_is_gone(world: World) ->
     assert "https://" not in text
 
 
-# Decision 3: the scheduled DM links the voter's own session mirror ------------------------------------------
+# The scheduled DM links the voter's own session mirror ------------------------------------------------------
 
 async def test_the_scheduled_dm_links_the_far_voters_session_mirror_and_the_home_voters_the_home_session(
         world: World) -> None:
