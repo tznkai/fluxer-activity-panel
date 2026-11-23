@@ -55,6 +55,7 @@ SCOPE_POLL_MSG = "5202"
 PLAY_NOW_MSG = "5301"
 MIRROR_OK = "5401"
 MIRROR_FORBIDDEN = "5402"
+MIRROR_PLAY_NOW = "5403"
 LOCATION = "Hall B"
 FORBIDDEN_DELETE = f"DELETE /api/v1/channels/{FAR_CH}/messages/{MIRROR_FORBIDDEN}"
 
@@ -241,6 +242,20 @@ async def test_end_scope_expires_its_play_now_post_and_edits_and_clears_its_reac
     assert [row.id for row in ended.play_now] == [world.play_now_id]
     assert requests(world, "PATCH", f"/{PLAY_NOW_MSG}")
     assert requests(world, "DELETE", f"/{PLAY_NOW_MSG}/reactions")
+
+
+async def test_end_scope_clears_the_reactions_of_a_play_now_mirror_whose_delete_was_refused(world: World) -> None:
+    """The mirror rows are deleted under the lock, so the play-now mirror's channel and message are read before that.
+    A refused mirror delete still leaves the mirror's reactions to clear after the lock."""
+    world.state.overrides[f"DELETE /api/v1/channels/{FAR_CH}/messages/{MIRROR_PLAY_NOW}"] = Override(
+        403, b'{"code":"MISSING_PERMISSIONS","message":"no"}')
+    await world.db.run(lambda c: mirrors.add(c, sub_id=world.sub_id, channel_id=FAR_CH, message_id=MIRROR_PLAY_NOW,
+                                            kind="play_now", object_id=world.play_now_id, content_hash=None))
+
+    ended = await end_scope(world)
+
+    assert (FAR_CH, MIRROR_PLAY_NOW) in ended.reactions
+    assert requests(world, "DELETE", f"/{MIRROR_PLAY_NOW}/reactions")
 
 
 async def test_end_scope_deletes_the_mirrors_and_keeps_a_forbidden_one_in_mirrors_left(world: World) -> None:

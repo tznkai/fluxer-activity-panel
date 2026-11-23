@@ -54,6 +54,9 @@ BOTH_COPY_MSG = "5120"
 MIRROR_SESSION_MSG = "5121"
 MIRROR_POLL_MSG = "5122"
 MIRROR_PLAY_NOW_MSG = "5123"
+REDIRECT_CH = "2131"
+REDIRECT_SESSION_MSG = "5131"
+REDIRECT_POLL_MSG = "5132"
 
 
 def clock() -> float:
@@ -275,3 +278,106 @@ async def test_archive_keeps_subscriptions_modes_and_roles_as_they_were(scenario
     both = await world.db.run(lambda c: subscriptions.get_by_id(c, scenario.both_sub))
     assert local is not None and local.mode == "local"
     assert both is not None and both.mode == "both"
+
+
+def reactions_path(channel: str, message: str) -> str:
+    return channel_path(channel, message) + "/reactions"
+
+
+def reaction_requests(world: World) -> list[tuple[int, str]]:
+    """(index, method) of every reaction request, in the order the fake received them. Reactor reads are GETs and the
+    remove-all clears are DELETEs; both live under .../reactions."""
+    return [(i, r.method) for i, r in enumerate(world.state.requests) if "/reactions" in r.path]
+
+
+async def test_archive_clears_the_reactions_of_the_home_and_scope_play_now_posts(scenario: Scenario) -> None:
+    world = scenario.world
+    await world.run("!card archive mc")
+
+    cleared = deletes(world)
+    assert reactions_path(PLAY_CH, HOME_PLAY_NOW_MSG) in cleared
+    assert reactions_path(LOCAL_CH, LOCAL_PLAY_NOW_MSG) in cleared
+
+
+async def test_a_failed_copy_delete_still_clears_the_expired_play_now_reactions_and_the_card_stays_live(
+        scenario: Scenario) -> None:
+    world = scenario.world
+    world.state.overrides[f"DELETE {channel_path(LOCAL_CH, LOCAL_COPY_MSG)}"] = Override(
+        500, b'{"code": "X", "message": "boom"}')
+    await world.run("!card archive mc")
+
+    cleared = deletes(world)
+    assert reactions_path(PLAY_CH, HOME_PLAY_NOW_MSG) in cleared
+    assert reactions_path(LOCAL_CH, LOCAL_PLAY_NOW_MSG) in cleared
+    assert world.last_reply() == text.ARCHIVE_RETRY
+    card = await world.card("mc")
+    assert card is not None and card.state == "live"
+
+
+async def test_no_reaction_request_runs_between_the_archive_lock_and_the_card_message_delete(
+        scenario: Scenario) -> None:
+    world = scenario.world
+    await world.run("!card archive mc")
+
+    requests = world.state.requests
+    card_delete = next(i for i, r in enumerate(requests)
+                       if r.method == "DELETE" and r.path == channel_path(GAMES, MAIN_MESSAGE))
+    # The first request made under the card lock: a cancel edit, a DM or a play-now edit, never a reaction request.
+    first_locked = min(i for i, r in enumerate(requests) if r.method != "GET" and "/reactions" not in r.path)
+    calls = reaction_requests(world)
+    # Non-vacuous: the reactor reads (before the lock) and the clears (after it) both happened.
+    assert any(method == "GET" for _, method in calls)
+    assert any(method == "DELETE" for _, method in calls)
+    assert first_locked < card_delete
+    for index, method in calls:
+        assert index < first_locked or index > card_delete, (index, method, first_locked, card_delete)
+
+
+async def test_a_refused_play_now_mirror_still_has_its_reactions_cleared_after_the_lock(scenario: Scenario) -> None:
+    world = scenario.world
+    refuse_delete(world, BOTH_CH, MIRROR_PLAY_NOW_MSG)
+    await world.run("!card archive mc")
+
+    assert reactions_path(BOTH_CH, MIRROR_PLAY_NOW_MSG) in deletes(world)
+    assert world.last_reply() == text.CARD_ARCHIVED_SOME_LEFT + "\n" + text.ARCHIVE_LEFT_LINE.format(channel_id=BOTH_CH)
+
+
+async def test_a_reaction_clear_answering_404_on_a_gone_mirror_is_harmless(scenario: Scenario) -> None:
+    world = scenario.world
+    world.state.overrides[f"DELETE {reactions_path(BOTH_CH, MIRROR_PLAY_NOW_MSG)}"] = Override(
+        404, b'{"code": "X", "message": "gone"}')
+    await world.run("!card archive mc")
+
+    assert world.last_reply() == text.CARD_ARCHIVED
+    card = await world.card("mc")
+    assert card is not None and card.state == "archived"
+
+
+async def test_archive_closes_and_cancels_the_objects_of_a_redirect_subscription(scenario: Scenario) -> None:
+    world = scenario.world
+    card = await world.card("mc")
+    assert card is not None
+
+    def add_redirect_objects(conn: Any) -> tuple[int, int]:
+        """A redirect copy is not a scope, but a poll and a session can still carry its scope_sub_id: the archive must
+        close and cancel them too."""
+        redirect_sub = subscriptions.add(conn, card.id, GUILD, REDIRECT_CH)
+        session_id = sessions.add(conn, card_id=card.id, guild_id=GUILD, channel_id=REDIRECT_CH,
+                                  message_id=REDIRECT_SESSION_MSG, starts_at=STARTS, ends_at=STARTS + 3600,
+                                  proposer_id=ADMIN, now=NOW, location_text="Hall C", scope_sub_id=redirect_sub)
+        poll_id = polls.create(conn, card_id=card.id, guild_id=GUILD, channel_id=REDIRECT_CH,
+                               message_id=REDIRECT_POLL_MSG, starter_id=ADMIN, kind="approval", parent_poll_id=None,
+                               now=NOW, closes_at=NOW + 86400, ballot_size=6,
+                               options=[(STARTS, "offered"), (STARTS + 3600, "offered")], recipients=[ATTENDEE],
+                               scope_sub_id=redirect_sub)
+        assert poll_id is not None
+        return session_id, poll_id
+
+    session_id, poll_id = await world.db.run(add_redirect_objects)
+    world.state.messages[(REDIRECT_CH, REDIRECT_SESSION_MSG)] = {"embeds": []}
+    world.state.messages[(REDIRECT_CH, REDIRECT_POLL_MSG)] = {"embeds": []}
+    await world.run("!card archive mc")
+
+    assert await session_state(scenario, session_id) == "cancelled"
+    poll = await poll_row(scenario, poll_id)
+    assert (poll.state, poll.outcome) == ("closed", "none")

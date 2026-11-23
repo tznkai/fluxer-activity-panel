@@ -541,11 +541,12 @@ class Interactions:
                 counts = await self.count_play_now([pn])
                 async with self._locks.get(pn.card_id):
                     ended = await self.end_play_now_locked([pn], counts)
+                    targets = await self.reaction_targets(ended)
             except Exception as exc:  # noqa: BLE001 - one message's failure must not stop the others
                 log_event(log, "play_now_expire_failed", level=logging.WARNING, card_id=pn.card_id,
                           **_failure_fields(exc))
-                ended = []
-            await self.clear_play_now_reactions(ended)
+                targets = []
+            await self.clear_reactions(targets)
 
     async def count_play_now(self, rows: Iterable[play_now.PlayNow]) -> dict[int, int]:
         """The reactor counts that ended messages will show, keyed by play-now id. Call before taking the card lock. A
@@ -561,7 +562,8 @@ class Interactions:
                                   counts: Mapping[int, int]) -> list[play_now.PlayNow]:
         """Expires each row that is still live and edits its message to the ended wording, with the count from `counts`
         (no REST read here, so it is safe under the lock). Returns the rows this call expired: their reactions are
-        removed by clear_play_now_reactions after the lock is released. The caller holds the card's lock."""
+        removed by clear_reactions after the lock is released, for the targets reaction_targets gives them. The caller
+        holds the card's lock."""
         ended: list[play_now.PlayNow] = []
         for pn in rows:
             try:
@@ -575,13 +577,20 @@ class Interactions:
                           **_failure_fields(exc))
         return ended
 
-    async def clear_play_now_reactions(self, rows: Iterable[play_now.PlayNow]) -> None:
-        """Removes every reaction from each ended message and from each of its mirrors. Call after the card's lock is
-        released."""
+    async def reaction_targets(self, rows: Iterable[play_now.PlayNow]) -> list[tuple[str, str]]:
+        """The (channel, message) pairs whose reactions an ended play-now post leaves: its own message and each stored
+        mirror of it. It reads the database only, so it is safe under the card's lock. Call it before the mirror rows
+        are deleted, because a mirror whose row is gone can no longer be named."""
+        targets: list[tuple[str, str]] = []
         for pn in rows:
-            await self._remove_reactions_at(pn.channel_id, pn.message_id)
-            for row in await self._mirror_rows(pn.id):
-                await self._remove_reactions_at(row.channel_id, row.message_id)
+            targets.append((pn.channel_id, pn.message_id))
+            targets.extend((row.channel_id, row.message_id) for row in await self._mirror_rows(pn.id))
+        return targets
+
+    async def clear_reactions(self, targets: Iterable[tuple[str, str]]) -> None:
+        """Removes every reaction from each (channel, message) of `targets`. Call after the card's lock is released."""
+        for channel_id, message_id in targets:
+            await self._remove_reactions_at(channel_id, message_id)
 
     async def _expire(self, play_now_id: int) -> bool:
         """Expires one row if it is still live. Returns whether this call expired it."""
@@ -605,6 +614,8 @@ class Interactions:
         try:
             await self._rest.remove_all_reactions(channel_id, message_id)
         except FluxerHTTPError as exc:
+            if exc.status == 404:   # the message is already gone, so it has no reactions left to remove
+                return
             log_event(log, "play_now_reactions_not_removed", level=logging.WARNING, channel_id=channel_id,
                       status=exc.status)
         except Exception as exc:  # noqa: BLE001 - one message's failed removal must not stop the others

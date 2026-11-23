@@ -282,8 +282,8 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/card_commands.py:369` `if channel.get("type") != channel_type:` — the channel must be the type its slot takes: a voice channel for the voice slot, a text channel for a text slot.
 - `src/fluxer_panel/card_commands.py:47` `TEXT_CHANNEL_TYPE = 0` — the text channel type, the same value as Discord's. It was confirmed on a live instance: `tools/live/markup_live.py` printed type 0 for the posting channel.
 - `src/fluxer_panel/card_commands.py:371` `str(channel.get("guild_id")) != guild_id` — the channel must belong to the community the admin named.
-- `src/fluxer_panel/card_commands.py:667` `cards.set_state(conn, card_id, "archived", now)` — archive keeps the card row and its slots. It clears the message and sets the state, so the card can be read again.
-- `src/fluxer_panel/card_commands.py:870` `return text.SUBSCRIPTION_NOT_IN_COMMUNITY` — a subscription is refused unless the bot is in the community. `_check_channel` answers a 403 or 404 on the community lookup with an unverified link, and a subscription never stores one.
+- `src/fluxer_panel/card_commands.py:665` `cards.set_state(conn, card_id, "archived", now)` — archive keeps the card row and its slots. It clears the message and sets the state, so the card can be read again.
+- `src/fluxer_panel/card_commands.py:868` `return text.SUBSCRIPTION_NOT_IN_COMMUNITY` — a subscription is refused unless the bot is in the community. `_check_channel` answers a 403 or 404 on the community lookup with an unverified link, and a subscription never stores one.
 
 ## Card poller
 
@@ -375,14 +375,14 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/scope.py:92` `return scope.sub.local_channel_id or scope.sub.channel_id` — a local or both copy's scope posts only in its own channel: its local channel, else the copy's own channel.
 - `src/fluxer_panel/follow_roles.py:114` `_stored(c, RoleTarget(card, sub_id))` — the bell toggle reads only the stored role of the card or of the one subscription, so it never acts on another subscription's role.
 - `src/fluxer_panel/mirror_backfill.py:34` `async def backfill_locked(` — the back-fill entry point. It mirrors a card's upcoming home sessions and open home poll into a copy that enters `both`. The poller never calls it.
-- `src/fluxer_panel/card_commands.py:898` `backfill_locked(card, sub_id)` — its only caller: the mode change to `both`, under the card lock, after the copy's channel is stored.
+- `src/fluxer_panel/card_commands.py:896` `backfill_locked(card, sub_id)` — its only caller: the mode change to `both`, under the card lock, after the copy's channel is stored.
 - `src/fluxer_panel/poll_jobs.py:121` `None if found is None else found.via_sub_id` — a reminder links the poll message that the recipient's own ballot came from: home, or their far mirror. Without a ballot it takes the home link.
-- `src/fluxer_panel/scope_cleanup.py:114` `await ctx.session_commands.scrub(session)` — unsubscribe scrubs each scoped session message before any row is deleted, so no location stays in Fluxer.
-- `src/fluxer_panel/scope_cleanup.py:118` `_delete_scope_rows_tx(c, sub_id))` — the scope's play-now, poll and session rows are deleted only after those scrubs, in one transaction.
-- `src/fluxer_panel/card_commands.py:627` `cancel_card_sessions_locked(card_id, actor, scope=sub.id)` — archive cancels each scope's upcoming sessions under the card lock, after the home ones.
-- `src/fluxer_panel/card_commands.py:632` `close_scope_poll_locked(ctx, card_id, sub.id)` — archive closes each scope's open poll with no winner.
-- `src/fluxer_panel/card_commands.py:636` `end_play_now_locked(live, counts)` — archive expires every live play-now post of every scope, and their mirrors get the end edit.
-- `src/fluxer_panel/card_commands.py:640` `delete_mirrors_locked(ctx, sub.id)` — archive deletes each subscription's mirrors before the copies and the card's message. A mirror the bot is refused (403) stays and is named in the reply.
+- `src/fluxer_panel/scope_cleanup.py:116` `await ctx.session_commands.scrub(session)` — unsubscribe scrubs each scoped session message before any row is deleted, so no location stays in Fluxer.
+- `src/fluxer_panel/scope_cleanup.py:120` `_delete_scope_rows_tx(c, sub_id))` — the scope's play-now, poll and session rows are deleted only after those scrubs, in one transaction.
+- `src/fluxer_panel/card_commands.py:625` `cancel_card_sessions_locked(card_id, actor)` — archive cancels the upcoming sessions of every scope in one call under the card lock, before any poll or message is touched. The default scope is every scope, so a redirect copy's session is cancelled too.
+- `src/fluxer_panel/card_commands.py:691` `close_locked(poll.id, outcome_override="none")` — archive closes every open poll of the card, in every scope, with no winner (`polls.open_for_card_any`). A failed close is logged and the archive goes on.
+- `src/fluxer_panel/card_commands.py:633` `end_play_now_locked(live, counts)` — archive expires every live play-now post of every scope, and their mirrors get the end edit. The reactions of each post and of its mirrors are listed before the mirror rows are deleted, and cleared after the lock.
+- `src/fluxer_panel/card_commands.py:638` `delete_mirrors_locked(ctx, sub.id)` — archive deletes each subscription's mirrors before the copies and the card's message. A mirror the bot is refused (403) stays and is named in the reply.
 
 ## Poll channel guard
 

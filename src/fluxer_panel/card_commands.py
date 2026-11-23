@@ -591,12 +591,12 @@ async def _archive(event: MessageCreate, ctx: CardContext, rest: str) -> _Result
     # The reactor counts of every live play-now post are read before the lock, so no reactor read holds it.
     live_now = await ctx.db.run(lambda c: play_now.live_for_card(c, card_id))
     counts = await ctx.play_now_ender.count_play_now(live_now) if live_now and ctx.play_now_ender is not None else {}
-    ended: list[play_now.PlayNow] = []
+    reactions: list[tuple[str, str]] = []
     async with ctx.locks.get(card_id):
-        left = await _archive_locked(event, ctx, card_id, counts, ended)
-    # The reactions of the ended play-now posts come off after the lock, whatever the archive's outcome.
-    if ended and ctx.play_now_ender is not None:
-        await ctx.play_now_ender.clear_play_now_reactions(ended)
+        left = await _archive_locked(event, ctx, card_id, counts, reactions)
+    # The reactions of the ended play-now posts and their mirrors come off after the lock, whatever the outcome.
+    if reactions and ctx.play_now_ender is not None:
+        await ctx.play_now_ender.clear_reactions(reactions)
     if left is not None:
         ctx.kick()
         await _archive_reply(ctx, event, left)
@@ -604,10 +604,11 @@ async def _archive(event: MessageCreate, ctx: CardContext, rest: str) -> _Result
 
 
 async def _archive_locked(event: MessageCreate, ctx: CardContext, card_id: int, counts: Mapping[int, int],
-                          ended: list[play_now.PlayNow]) -> list[str] | None:
+                          reactions: list[tuple[str, str]]) -> list[str] | None:
     """The archive's steps under the card's lock. Returns the channels left, in reply order. Returns None when the
-    archive did not finish (already archived, gone, or stopped by a failed delete), its reply sent here. `ended`
-    collects the play-now posts this call expired, for their reactions to be cleared after the lock."""
+    archive did not finish (already archived, gone, or stopped by a failed delete), its reply sent here. `reactions`
+    collects the (channel, message) pairs of the play-now posts this call expired and of their mirrors, whose
+    reactions are cleared after the lock is released."""
     current = await ctx.db.run(lambda c: cards.get_by_id(c, card_id))
     if current is None:  # deleted while this command waited for the lock
         await _say(ctx, event, text.NO_SUCH_CARD)
@@ -617,29 +618,26 @@ async def _archive_locked(event: MessageCreate, ctx: CardContext, card_id: int, 
         return None
     actor = event.author_id
     subs = await ctx.db.run(lambda c: subscriptions.list_for_card(c, card_id))
-    scopes = [sub for sub in subs if sub.is_scope]
     # The sessions go first, while the lock is held: the cancel edits their messages and DMs their attendees.
     # If a later step stops the archive (`_stop_archive`), the sessions stay cancelled while the card stays live.
     # That is accepted, because an admin who meant to archive does not want those sessions either.
     if ctx.session_commands is not None:
-        await ctx.session_commands.cancel_card_sessions_locked(card_id, actor, scope=None)
-        for sub in scopes:
-            await ctx.session_commands.cancel_card_sessions_locked(card_id, actor, scope=sub.id)
-    # The open polls close with no winner, under the same lock, before the messages are deleted: home first, then
-    # each scope. A paused copy's scope is included, because it can still own a poll.
-    await _close_open_poll_locked(ctx, card_id)
-    for sub in scopes:
-        await scope_cleanup.close_scope_poll_locked(ctx, card_id, sub.id)
-    # Every live play-now post of every scope expires. Its mirrors get the end edit here.
+        await ctx.session_commands.cancel_card_sessions_locked(card_id, actor)
+    # The open polls close with no winner, under the same lock, before the messages are deleted. Every scope is
+    # included: a redirect copy's scope can still own a poll, and a failed close must not leave it open.
+    await _close_open_polls_locked(ctx, card_id)
+    # Every live play-now post of every scope expires. Its mirrors get the end edit here. The reactions to clear are
+    # read now, while the mirror rows still exist.
     live = await ctx.db.run(lambda c: play_now.live_for_card(c, card_id))
     if live and ctx.play_now_ender is not None:
-        ended.extend(await ctx.play_now_ender.end_play_now_locked(live, counts))
+        ended = await ctx.play_now_ender.end_play_now_locked(live, counts)
+        reactions.extend(await ctx.play_now_ender.reaction_targets(ended))
     # The mirrors go next. A mirror the bot is refused (403) stays and is named in the reply.
     left: list[str] = []
     for sub in subs:
         left.extend(await scope_cleanup.delete_mirrors_locked(ctx, sub.id))
-    # The copies go first and the card's own message last. A copy the bot is refused (403) stays where it is and is
-    # named in the reply. Any other failure stops the archive while the card's message is still there.
+    # Then the copies, and the card's own message last. A copy the bot is refused (403) stays where it is and is named
+    # in the reply. Any other failure stops the archive while the card's message is still there.
     deleted_copies: list[tuple[str, str]] = []
     for sub in subs:
         if sub.message_id is None:
@@ -681,18 +679,18 @@ async def _archive_reply(ctx: CardContext, event: MessageCreate, left: list[str]
         await _say(ctx, event, chunk)
 
 
-async def _close_open_poll_locked(ctx: CardContext, card_id: int) -> None:
-    """Closes the card's open poll with no winner. The caller holds the card lock. A failure is logged and the archive
-    goes on: the card's messages are still deleted, and the poll stays open only if the close itself failed."""
+async def _close_open_polls_locked(ctx: CardContext, card_id: int) -> None:
+    """Closes every open poll of the card, in every scope, with no winner. The caller holds the card lock. A failed
+    close is logged per poll and the archive goes on: the card's messages are still deleted, and a poll stays open only
+    if its own close failed."""
     if ctx.poll_closer is None:
         return
-    poll = await ctx.db.run(lambda c: polls.open_for_card(c, card_id))
-    if poll is None:
-        return
-    try:
-        await ctx.poll_closer.close_locked(poll.id, outcome_override="none")
-    except Exception as exc:  # noqa: BLE001 - a poll that cannot close must not stop the archive
-        log_event(log, "poll_archive_failed", level=logging.WARNING, card_id=card_id, reason=type(exc).__name__)
+    open_polls = await ctx.db.run(lambda c: polls.open_for_card_any(c, card_id))
+    for poll in open_polls:
+        try:
+            await ctx.poll_closer.close_locked(poll.id, outcome_override="none")
+        except Exception as exc:  # noqa: BLE001 - a poll that cannot close must not stop the archive
+            log_event(log, "poll_archive_failed", level=logging.WARNING, card_id=card_id, reason=type(exc).__name__)
 
 
 class _Delete(enum.Enum):

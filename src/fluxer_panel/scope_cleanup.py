@@ -28,7 +28,8 @@ log = logging.getLogger(__name__)
 class ScopeEnded:
     sessions: int                       # cancelled
     poll_closed: bool
-    play_now: tuple[PlayNow, ...]       # ended; their reactions are cleared after the lock is released
+    play_now: tuple[PlayNow, ...]       # ended
+    reactions: tuple[tuple[str, str], ...]   # (channel, message) pairs whose reactions are cleared after the lock
     mirrors_left: tuple[str, ...]       # channel ids where a mirror delete was refused with a 403
 
 
@@ -46,16 +47,17 @@ async def end_scope_locked(ctx: CardContext, card_id: int, sub_id: int, actor: s
     poll_closed = await close_scope_poll_locked(ctx, card_id, sub_id)
     live = await ctx.db.run(lambda c: play_now.live_for_scope(c, card_id, sub_id))
     ended = await ctx.play_now_ender.end_play_now_locked(live, counts)
+    reactions = await ctx.play_now_ender.reaction_targets(ended)   # before the mirror rows are deleted below
     mirrors_left = await delete_mirrors_locked(ctx, sub_id)
     log_event(log, "scope_ended", card_id=card_id, sub_id=sub_id, count=cancelled)
     return ScopeEnded(sessions=cancelled, poll_closed=poll_closed, play_now=tuple(ended),
-                      mirrors_left=mirrors_left)
+                      reactions=tuple(reactions), mirrors_left=mirrors_left)
 
 
 async def end_scope_after_lock(ctx: CardContext, ended: ScopeEnded) -> None:
-    """Clears the reactions of the ended play-now posts. Call after the card's lock is released."""
+    """Clears the reactions of the ended play-now posts and their mirrors. Call after the card's lock is released."""
     _require_wiring(ctx)
-    await ctx.play_now_ender.clear_play_now_reactions(ended.play_now)
+    await ctx.play_now_ender.clear_reactions(ended.reactions)
 
 
 async def close_scope_poll_locked(ctx: CardContext, card_id: int, sub_id: int) -> bool:
