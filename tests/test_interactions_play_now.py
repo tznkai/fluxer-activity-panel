@@ -21,14 +21,14 @@ import pytest
 from fluxer_client import events
 from fluxer_client.rest import FluxerHTTPError, FluxerREST, ReactionUsersPage
 from fluxer_client.roles import RoleCache
-from fluxer_panel import cards, play_now, render, subscriptions, text
+from fluxer_panel import cards, play_now, render, scope, subscriptions, text
 from fluxer_panel.logs import FIELDS_ATTR
 from fluxer_panel.card_commands import CardLocks
-from fluxer_panel.cards import ChannelLink
+from fluxer_panel.cards import ChannelLink, FollowRole
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.games import BotIdentity, GamesGuild
-from fluxer_panel.interactions import GamesChannelRefused, Interactions
+from fluxer_panel.interactions import GamesChannelRefused, Interactions, _scope_role_in
 from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.presses import PLAY_NOW_EMOJI, WAKE_EMOJI, Presses
 from fluxer_panel.resolver import CardStatus, StatusKind
@@ -41,6 +41,7 @@ ADMIN = "1001"
 PRESSER = "6001"
 PRESSER_2 = "6002"
 WAKER = "6003"
+SUB_ROLE = "7002"       # the follow role of the far copy's local scope, in OTHER_GUILD
 GUILD = "2001"           # the games community
 OTHER_GUILD = "2002"
 GAMES = "3001"           # the games channel, in GUILD
@@ -48,6 +49,7 @@ COPY = "3002"            # a copy's channel, in GUILD
 FAR_COPY = "3003"        # a copy's channel, in OTHER_GUILD
 PLAY_CH = "3004"         # a card's play-now channel, in GUILD
 FAR_PLAY = "3005"        # a play-now channel in OTHER_GUILD
+FAR_PLAY_2 = "3007"      # a second play-now channel in OTHER_GUILD, for a local copy's own target
 CONFIG_PLAY = "3006"     # PLAY_NOW_CHANNEL_ID, in GUILD
 MISSING = "3999"         # a configured play-now channel the fake does not know
 BOT_ROLE = "5000"
@@ -125,6 +127,7 @@ async def fake(aiohttp_server):
         FAR_COPY: {"id": FAR_COPY, "guild_id": OTHER_GUILD, "type": 0},
         PLAY_CH: {"id": PLAY_CH, "guild_id": GUILD, "type": 0},
         FAR_PLAY: {"id": FAR_PLAY, "guild_id": OTHER_GUILD, "type": 0},
+        FAR_PLAY_2: {"id": FAR_PLAY_2, "guild_id": OTHER_GUILD, "type": 0},
         CONFIG_PLAY: {"id": CONFIG_PLAY, "guild_id": GUILD, "type": 0},
     })
     state.roles = {GUILD: [dict(EVERYONE), dict(BOT_ROLE_DATA), dict(ALPHA_DATA)]}
@@ -1073,3 +1076,123 @@ async def test_a_failed_discard_after_a_store_failure_is_logged_and_the_presser_
     await h.presses.on_reaction(play_press())
     assert dm_channel_texts(h.state, PRESSER) == [text.PRESS_FAILED]
     assert "play_now_discard_failed" in event_names(caplog)
+
+
+# Subscription scopes ----------------------------------------------------------------------------------
+
+FAR_PLAY_PATH = f"/api/v1/channels/{FAR_PLAY}/messages"
+
+
+async def make_local(h: Harness, *, channel: str | None = FAR_PLAY, role: str | None = SUB_ROLE) -> int:
+    """Makes the far copy a local scope that posts to `channel` (None: its own channel), with `role` as its follow
+    role. Returns the subscription id."""
+    def tx(conn: Any) -> int:
+        sub = subscriptions.get(conn, CARD_ID, FAR_COPY)
+        assert sub is not None
+        assert subscriptions.set_mode_if(conn, sub.id, "redirect", "local")
+        subscriptions.set_local_channel(conn, sub.id, channel)
+        if role is not None:
+            cards.set_subscription_role(conn, sub.id, role)
+        return sub.id
+
+    return await h.db.run(tx)
+
+
+def _play_now_scopes(conn) -> list[int | None]:
+    return [row[0] for row in conn.execute("SELECT scope_sub_id FROM play_now ORDER BY id").fetchall()]
+
+
+def far_press(user: str = PRESSER) -> events.ReactionAdd:
+    return play_press(user=user, channel=FAR_COPY, message=FAR_MSG, guild=OTHER_GUILD)
+
+
+async def test_a_local_copy_press_posts_once_to_its_far_channel_with_the_scope_role(harness) -> None:
+    h = await harness()
+    sub = await make_local(h)
+    await h.presses.on_reaction(far_press())
+    [post] = channel_posts(h.state)
+    assert post.path == FAR_PLAY_PATH
+    assert post.payload["allowed_mentions"] == {"parse": [], "roles": [SUB_ROLE], "replied_user": False}
+    assert post.payload["content"].endswith(f" <@&{SUB_ROLE}>")
+    assert post.payload["content"].count("<@") == 1
+    assert await h.db.run(_play_now_scopes) == [sub]
+    assert dm_channel_texts(h.state, PRESSER) == []
+
+
+async def test_a_local_copy_press_with_a_local_channel_posts_only_there(harness) -> None:
+    h = await harness(PLAY_NOW_CHANNEL_ID=CONFIG_PLAY)
+    await set_card_play_channel(h, CARD_ID, GUILD, PLAY_CH)
+    await make_local(h, channel=FAR_PLAY_2)
+    await h.presses.on_reaction(far_press())
+    assert [post.path for post in channel_posts(h.state)] == [f"/api/v1/channels/{FAR_PLAY_2}/messages"]
+
+
+async def test_a_local_copy_without_a_local_channel_posts_in_its_own_channel(harness) -> None:
+    h = await harness()
+    await make_local(h, channel=None)
+    await h.presses.on_reaction(far_press())
+    [post] = channel_posts(h.state)
+    assert post.path == f"/api/v1/channels/{FAR_COPY}/messages"
+
+
+async def test_a_local_scope_with_no_role_mentions_nobody(harness) -> None:
+    h = await harness()
+    await make_local(h, role=None)
+    await h.presses.on_reaction(far_press())
+    [post] = channel_posts(h.state)
+    assert post.payload["allowed_mentions"] == {"parse": []}
+    assert "<@" not in post.payload["content"]
+
+
+async def test_a_local_press_inside_a_home_cooldown_still_posts(harness) -> None:
+    h = await harness()
+    await set_card_play_channel(h, CARD_ID, GUILD, PLAY_CH)
+    await make_local(h)
+    await h.presses.on_reaction(play_press(user=PRESSER))
+    await h.presses.on_reaction(far_press(user=PRESSER_2))
+    assert [post.path for post in channel_posts(h.state)] == [PLAY_PATH, FAR_PLAY_PATH]
+    assert dm_channel_texts(h.state, PRESSER_2) == []
+
+
+async def test_a_home_press_inside_a_local_cooldown_still_posts(harness) -> None:
+    h = await harness()
+    await set_card_play_channel(h, CARD_ID, GUILD, PLAY_CH)
+    await make_local(h)
+    await h.presses.on_reaction(far_press(user=PRESSER))
+    await h.presses.on_reaction(play_press(user=PRESSER_2))
+    assert [post.path for post in channel_posts(h.state)] == [FAR_PLAY_PATH, PLAY_PATH]
+
+
+async def test_a_second_local_press_inside_the_local_cooldown_is_refused_by_dm(harness) -> None:
+    h = await harness()
+    await make_local(h)
+    await h.presses.on_reaction(far_press(user=PRESSER))
+    [first] = play_now_message_ids(h.state, FAR_PLAY)
+    await h.presses.on_reaction(far_press(user=PRESSER_2))
+    assert [post.path for post in channel_posts(h.state)] == [FAR_PLAY_PATH]
+    link = render.jump_link(text.JUMP_LABEL_MESSAGE, JUMP_URL, OTHER_GUILD, FAR_PLAY, first)
+    assert dm_channel_texts(h.state, PRESSER_2) == [
+        text.PLAY_NOW_COOLDOWN.format(card=render.escape(CARD_TITLE), link=link)]
+
+
+async def test_a_me_too_recount_on_a_local_post_names_only_the_scope_role(harness) -> None:
+    h = await harness()
+    await make_local(h)
+    await h.presses.on_reaction(far_press())
+    [mid] = play_now_message_ids(h.state, FAR_PLAY)
+    h.state.reactions[(FAR_PLAY, mid)][PLAY_NOW_EMOJI] = [BOT_ID, REACTOR_A]
+    await h.presses.on_reaction(press_event(PLAY_NOW_EMOJI, user=REACTOR_A, channel=FAR_PLAY, message=mid,
+                                            guild=OTHER_GUILD))
+    [edit] = [r for r in h.state.requests if r.method == "PATCH" and r.path == f"{FAR_PLAY_PATH}/{mid}"]
+    assert edit.payload["allowed_mentions"] == {"parse": []}
+    assert edit.payload["content"].endswith(f" <@&{SUB_ROLE}>")
+    assert ALPHA_ROLE not in str(edit.payload)
+    assert status_field(edit) == text.PLAY_NOW_PLAYING.format(n=2)
+
+
+def test_a_scope_role_is_mentioned_only_in_its_own_community() -> None:
+    local = scope.Scope(card_id=CARD_ID, sub=None, guild_id=GUILD, role=FollowRole(guild_id=GUILD, role_id=SUB_ROLE))
+    assert _scope_role_in(local, GUILD) == SUB_ROLE
+    assert _scope_role_in(local, OTHER_GUILD) is None
+    no_role = scope.Scope(card_id=CARD_ID, sub=None, guild_id=GUILD, role=None)
+    assert _scope_role_in(no_role, GUILD) is None

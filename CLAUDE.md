@@ -345,8 +345,9 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   DMed only when no post succeeds.
 - Play-now posts are sent only by `interactions.send_play_now`, which refuses a games-channel target before any REST
   call (`GamesChannelRefused`). `PLAY_NOW_CHANNEL_ID` must differ from `GAMES_CHANNEL_ID`, or the bot refuses to start.
-- A play-now post is the only send that may mention anyone: `interactions.play_now_mentions` allows the card's own
-  follow role only, and only when it belongs to the target's community (`_role_in`); otherwise `{"parse": []}`. Never
+- A play-now post is the only send that may mention anyone: `interactions.play_now_mentions` allows the follow role
+  of the post's own scope (the card's for a home post) only, and only when it belongs to the target's community
+  (`_scope_role_in`); otherwise `{"parse": []}`. An edit never re-pings. Never
   users, `@everyone` or another role. `REVIEW.md` anchors these lines.
 
 ## Database

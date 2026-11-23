@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 from fluxer_client.ids import is_snowflake
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
 from fluxer_client.roles import RoleCache
-from fluxer_panel import cards, follow_roles, notify, play_now, render, rsvp, scope, sessions, text
+from fluxer_panel import cards, follow_roles, notify, play_now, render, rsvp, scope, sessions, subscriptions, text
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.cards import Card
 from fluxer_panel.config import Config
@@ -58,10 +58,10 @@ def play_now_mentions(role_id: str | None) -> dict[str, Any]:
     return {"parse": [], "roles": [role_id], "replied_user": False}   # ALLOWED_PLAY_NOW (see the Phase 1 note)
 
 
-def _role_in(card: Card, guild_id: str) -> str | None:
-    """The card's follow role when it belongs to `guild_id`. A role is never mentioned in another community."""
-    follow = card.follow_role
-    return follow.role_id if follow is not None and follow.guild_id == guild_id else None
+def _scope_role_in(scope_: scope.Scope, guild_id: str) -> str | None:
+    """The scope's follow role when it belongs to `guild_id`. A role is never mentioned in another community."""
+    role = scope_.role
+    return role.role_id if role is not None and role.guild_id == guild_id else None
 
 
 def _failure_fields(exc: Exception) -> dict[str, Any]:
@@ -228,10 +228,17 @@ class Interactions:
         card = await self._db.run(lambda c: cards.get_by_id(c, press.card_id))
         if card is None or card.state != "live":
             return
-        if not press.surface.home_community:
+        # A far play-now post has no scope and is refused as before. A far copy resolves to its subscription's scope in
+        # local or both mode, and to ELSEWHERE when it is a redirect copy.
+        if press.surface.sub_id is None and not press.surface.home_community:
             await notify.dm_user(self._rest, press.user_id, text.PLAY_NOW_ELSEWHERE, backoff=self._backoff)
             return
-        targets = await self._play_now_targets(press, card)
+        games_guild = await self._games_guild.get()
+        resolved = await self._db.run(lambda c: scope.resolve_scope(c, card, press.surface, games_guild))
+        if resolved is scope.ELSEWHERE:
+            await notify.dm_user(self._rest, press.user_id, text.PLAY_NOW_ELSEWHERE, backoff=self._backoff)
+            return
+        targets = await self._play_now_targets(press, card, resolved)
         if targets is None:
             return
         status = self._status_of(card.id)
@@ -242,17 +249,19 @@ class Interactions:
         posted: list[tuple[str, str]] = []   # (channel id, message id) of each message this press posted
         failures: list[Exception] = []
         # The cooldown check and the posts share the card's lock, so two presses cannot both post (AC4.7). One press
-        # counts once for the cooldown, however many messages it posts.
+        # counts once for the cooldown, however many messages it posts. The cooldown is per scope: a local press and a
+        # home press do not cool each other down.
         async with self._locks.get(card.id):
-            last = await self._db.run(lambda c: play_now.latest_for_card(c, card.id))
+            last = await self._db.run(lambda c: play_now.latest_for_scope(c, card.id, resolved.sub_id))
             if last is not None and now - last.created_at < self._config.play_now_cooldown_seconds:
                 cooling = last
             else:
                 for channel_id, guild_id in targets:
                     try:
                         message_id = await self._send_and_store(card, channel_id, guild_id,
-                                                                _role_in(card, guild_id), press.user_id,
-                                                                offers_wake=offers_wake, now=now)
+                                                                _scope_role_in(resolved, guild_id), press.user_id,
+                                                                offers_wake=offers_wake, now=now,
+                                                                scope_sub_id=resolved.sub_id)
                     except Exception as exc:  # noqa: BLE001 - a failed target is logged; another target can still post
                         failures.append(exc)
                         self._log_target_failure(card.id, channel_id, exc)
@@ -286,10 +295,19 @@ class Interactions:
             if not isinstance(exc, GamesChannelRefused):
                 raise exc
 
-    async def _play_now_targets(self, press: Press, card: Card) -> list[tuple[str, str]] | None:
+    async def _play_now_targets(self, press: Press, card: Card,
+                                resolved: scope.Scope) -> list[tuple[str, str]] | None:
         """The (channel id, community id) pairs a press posts to, or None after the presser has been told why not.
+        A subscription scope posts once, in its own target (scope.checked_target), and never at home.
         A press on the card posts once, in the card's target: its verified play-now channel, else PLAY_NOW_CHANNEL_ID.
         A press on a home copy posts in the copy's channel, and also in the card's target when that is another channel."""
+        if resolved.sub is not None:
+            target, reason = await scope.checked_target(self._rest, self._config, card, resolved)
+            if target is None:
+                template = text.PLAY_NOW_NO_CHANNEL if reason == "no_channel" else text.PLAY_NOW_UNAVAILABLE
+                await self._dm_presser(press.user_id, template, card)
+                return None
+            return [target]
         if press.surface.kind == "copy" and press.surface.guild_id is not None:
             copy_target = (press.surface.channel_id, press.surface.guild_id)
             # The target is looked up before the cooldown check, by design: a cooled-down copy press still costs one
@@ -310,8 +328,9 @@ class Interactions:
         return await card_target(self._rest, self._config, card)
 
     async def _send_and_store(self, card: Card, channel_id: str, guild_id: str, role_id: str | None, presser_id: str,
-                              *, offers_wake: bool, now: int) -> str:
-        """Sends the play-now message and stores its row. Runs under the card's lock. Returns the new message's id."""
+                              *, offers_wake: bool, now: int, scope_sub_id: int | None = None) -> str:
+        """Sends the play-now message and stores its row in the scope. Runs under the card's lock. Returns the new
+        message's id."""
         payload = render.play_now_message(card, role_id=role_id, playing=1, ended=False,
                                           instance_url=self._config.instance_url)
         sent = await self.send_play_now(channel_id, payload, role_id)
@@ -320,7 +339,8 @@ class Interactions:
         try:
             await self._db.run(lambda c: play_now.add(c, card_id=card.id, guild_id=guild_id, channel_id=channel_id,
                                                       message_id=message_id, presser_id=presser_id,
-                                                      offers_wake=offers_wake, now=now, expires_at=expires_at))
+                                                      offers_wake=offers_wake, now=now, expires_at=expires_at,
+                                                      scope_sub_id=scope_sub_id))
         except Exception:
             # With no row the message would never expire, so it is deleted; the press then fails as any other press does.
             log_event(log, "play_now_store_failed", level=logging.WARNING, card_id=card.id)
@@ -499,12 +519,25 @@ class Interactions:
                       reason=type(exc).__name__)
 
     async def _edit_play_now(self, card: Card, pn: play_now.PlayNow, *, playing: int | None, ended: bool) -> None:
-        """Rewrites the message from the card's current render. The edit allows no mention, so it never re-pings."""
-        role_id = None if ended else _role_in(card, pn.guild_id)
+        """Rewrites the message from the card's current render. The edit allows no mention, so it never re-pings. The
+        role named in the render is the row's own scope's role, never another scope's."""
+        role_id = None if ended else await self._row_role_in(card, pn)
         payload = render.play_now_message(card, role_id=role_id, playing=playing, ended=ended,
                                           instance_url=self._config.instance_url)
         await self._rest.edit_message(pn.channel_id, pn.message_id, content=payload["content"],
                                       embeds=payload["embeds"], allowed_mentions={"parse": []})
+
+    async def _row_role_in(self, card: Card, pn: play_now.PlayNow) -> str | None:
+        """The follow role of the play-now row's scope, when it belongs to the row's community. A home row uses the
+        card's follow role. A subscription row whose subscription is gone has no role."""
+        def tx(conn: Any) -> scope.Scope | None:
+            if pn.scope_sub_id is None:
+                return scope.home_scope(card, None)
+            sub = subscriptions.get_by_id(conn, pn.scope_sub_id)
+            return None if sub is None else scope.scope_for_sub(conn, card, sub)
+
+        row_scope = await self._db.run(tx)
+        return None if row_scope is None else _scope_role_in(row_scope, pn.guild_id)
 
     async def rsvp_changed(self, session_id: int, user_id: str, choice: rsvp.Choice, added: bool) -> None:
         """An RSVP reaction was added or removed on a session message. The presence row and the states change in one
