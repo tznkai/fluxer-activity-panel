@@ -15,7 +15,7 @@ import pytest
 
 from fluxer_client.rest import FluxerREST
 from fluxer_client.roles import RoleCache
-from fluxer_panel import cards, follow_roles
+from fluxer_panel import cards, follow_roles, subscriptions
 from fluxer_panel.cards import Card, FollowRole
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
@@ -578,3 +578,142 @@ async def test_set_refuses_a_role_another_card_already_follows(fake, deps, db) -
     assert result == EnsureResult(Ensured.REFUSED, reason="taken")
     assert await stored(db, card) is None
     assert writes(state) == []
+
+
+# Subscription roles in a far community ---------------------------------------------------------------
+
+FAR = "1002"
+FAR_CHANNEL = "1100"
+FAR_BOT_ROLE = "5050"
+FAR_CREATE_PATH = f"/api/v1/guilds/{FAR}/roles"
+FAR_NEW_ROLE_PATH = f"/api/v1/guilds/{FAR}/roles/7001"
+FAR_OTHER_ROLE = "6700"
+
+
+def add_far_community(state: FakeFluxerState) -> None:
+    state.roles[FAR] = [
+        {"id": FAR, "name": "@everyone", "permissions": "0", "position": 0, "mentionable": False},
+        {"id": FAR_BOT_ROLE, "name": "bot", "permissions": "8", "position": 10, "mentionable": False},
+    ]
+    state.members[(FAR, BOT)] = {"roles": [FAR_BOT_ROLE]}
+
+
+async def make_sub(db: Database, card: Card, channel_id: str = FAR_CHANNEL) -> int:
+    return await db.run(lambda c: subscriptions.add(c, card.id, FAR, channel_id))
+
+
+async def sub_role(db: Database, sub_id: int) -> FollowRole | None:
+    return await db.run(lambda c: cards.get_subscription_role(c, sub_id))
+
+
+async def test_sub_publish_creates_a_mentionable_role_in_its_community(fake, deps, db) -> None:
+    state, _ = fake
+    add_far_community(state)
+    card = await make_card(db, "alpha")
+    sub_id = await make_sub(db, card)
+
+    result = await ensure_follow_role(deps, FAR, card, sub_id=sub_id)
+
+    assert result == EnsureResult(Ensured.CREATED, role_id="7001")
+    assert requests_of(state, "POST", FAR_CREATE_PATH)[0].payload["name"] == "card_subscription_alpha"
+    assert requests_of(state, "PATCH", FAR_NEW_ROLE_PATH)[0].payload == {"mentionable": True}
+    assert await sub_role(db, sub_id) == FollowRole(FAR, "7001")
+    assert await stored(db, card) is None
+
+
+async def test_sub_publish_adopts_a_same_named_role_in_its_community(fake, deps, db) -> None:
+    state, _ = fake
+    add_far_community(state)
+    state.roles[FAR].append({"id": "6400", "name": "card_subscription_alpha", "permissions": "0",
+                             "position": 5, "mentionable": True})
+    card = await make_card(db, "alpha")
+    sub_id = await make_sub(db, card)
+
+    result = await ensure_follow_role(deps, FAR, card, sub_id=sub_id)
+
+    assert result == EnsureResult(Ensured.ADOPTED, role_id="6400")
+    assert await sub_role(db, sub_id) == FollowRole(FAR, "6400")
+    assert requests_of(state, "POST", FAR_CREATE_PATH) == []
+    assert await stored(db, card) is None
+
+
+async def test_second_sub_clashing_with_the_first_is_taken_and_stores_nothing(fake, deps, db) -> None:
+    state, _ = fake
+    add_far_community(state)
+    card = await make_card(db, "alpha")
+    first = await make_sub(db, card, FAR_CHANNEL)
+    second = await make_sub(db, card, "1101")
+    assert (await ensure_follow_role(deps, FAR, card, sub_id=first)).outcome is Ensured.CREATED
+    writes_before = writes(state)
+
+    result = await ensure_follow_role(deps, FAR, card, sub_id=second)
+
+    assert result == EnsureResult(Ensured.REFUSED, reason="taken")
+    assert await sub_role(db, second) is None
+    assert await sub_role(db, first) == FollowRole(FAR, "7001")
+    assert writes(state) == writes_before
+
+
+async def test_two_unmanaged_same_named_roles_in_its_community_are_duplicate_name(fake, deps, db) -> None:
+    state, _ = fake
+    add_far_community(state)
+    for role_id in ("6400", "6401"):
+        state.roles[FAR].append({"id": role_id, "name": "card_subscription_alpha", "permissions": "0",
+                                 "position": 5, "mentionable": True})
+    card = await make_card(db, "alpha")
+    sub_id = await make_sub(db, card)
+
+    result = await ensure_follow_role(deps, FAR, card, sub_id=sub_id)
+
+    assert result == EnsureResult(Ensured.REFUSED, reason="duplicate_name")
+    assert await sub_role(db, sub_id) is None
+    assert writes(state) == []
+
+
+async def test_sub_set_stores_another_role_of_its_community(fake, deps, db) -> None:
+    state, _ = fake
+    add_far_community(state)
+    state.roles[FAR].append({"id": FAR_OTHER_ROLE, "name": "other", "permissions": "0", "position": 5,
+                             "mentionable": True})
+    card = await make_card(db, "alpha")
+    sub_id = await make_sub(db, card)
+
+    result = await ensure_follow_role(deps, FAR, card, role_id=FAR_OTHER_ROLE, sub_id=sub_id)
+
+    assert result == EnsureResult(Ensured.SET, role_id=FAR_OTHER_ROLE)
+    assert await sub_role(db, sub_id) == FollowRole(FAR, FAR_OTHER_ROLE)
+    assert writes(state) == []
+
+
+@pytest.mark.parametrize("position, permissions, reason", [
+    (20, "0", "hierarchy"),
+    (5, "8", "role_permissions"),
+])
+async def test_sub_set_refuses_a_role_above_the_bot_or_with_permissions(fake, deps, db, position: int,
+                                                                       permissions: str, reason: str) -> None:
+    state, _ = fake
+    add_far_community(state)
+    state.roles[FAR].append({"id": FAR_OTHER_ROLE, "name": "other", "permissions": permissions,
+                             "position": position, "mentionable": True})
+    card = await make_card(db, "alpha")
+    sub_id = await make_sub(db, card)
+
+    result = await ensure_follow_role(deps, FAR, card, role_id=FAR_OTHER_ROLE, sub_id=sub_id)
+
+    assert result == EnsureResult(Ensured.REFUSED, reason=reason)
+    assert await sub_role(db, sub_id) is None
+    assert writes(state) == []
+
+
+async def test_sub_create_403_is_failed_and_stores_nothing(fake, deps, db) -> None:
+    state, _ = fake
+    add_far_community(state)
+    state.overrides[f"POST {FAR_CREATE_PATH}"] = Override(403, b'{"code":"MISSING_PERMISSIONS","message":"no"}')
+    card = await make_card(db, "alpha")
+    sub_id = await make_sub(db, card)
+
+    result = await ensure_follow_role(deps, FAR, card, sub_id=sub_id)
+
+    assert result == EnsureResult(Ensured.FAILED, reason="create_failed")
+    assert await sub_role(db, sub_id) is None
+    assert requests_of(state, "PATCH", FAR_NEW_ROLE_PATH) == []

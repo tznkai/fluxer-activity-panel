@@ -65,23 +65,23 @@ Paths are relative to this directory.
 - `src/fluxer_client/rest.py:258` `async def add_member_role(` — a PUT that grants a role. This is a privilege change, so the role allowlist and the role hierarchy must be checked before the call. Fluxer answers both a hierarchy refusal and a missing permission with the same 403 code.
 - `src/fluxer_client/rest.py:262` `async def remove_member_role(` — a DELETE that removes a role. The same checks apply.
 - `tools/live/roles.py:32` `await rest.add_member_role(guild, user, role, reason=REASON)` — the live tool's call, which runs only in the private guild.
-- `src/fluxer_panel/follow_roles.py:112` `stored.role_id not in allow` — `toggle_follow` re-reads the card's stored role and the allowlist at press time. A role not in the allowlist is refused before any REST call.
-- `src/fluxer_panel/follow_roles.py:128` `not manageable(` — the hierarchy check in `toggle_follow`, against freshly fetched roles and the bot's own member record, runs before the add or remove.
-- `src/fluxer_panel/follow_roles.py:242` `if not zero_permissions(target):` — the adopt branch of `ensure_follow_role` refuses any role with permissions other than 0, so the bot never writes to a role that grants something.
-- `src/fluxer_panel/follow_roles.py:250` `await deps.rest.set_role_mentionable(` — an adopted role is made mentionable only after every check passes, and nothing is stored if the call fails.
-- `src/fluxer_panel/follow_roles.py:262` `deps.rest.create_role(` — the only role creation in the bot. The REST client fixes its permissions at 0.
-- `src/fluxer_panel/follow_roles.py:272` `await deps.rest.set_role_mentionable(` — a created role is made mentionable and checked before its id is stored.
+- `src/fluxer_panel/follow_roles.py:113` `stored.role_id not in allow` — `toggle_follow` re-reads the card's stored role and the allowlist at press time. A role not in the allowlist is refused before any REST call.
+- `src/fluxer_panel/follow_roles.py:129` `not manageable(` — the hierarchy check in `toggle_follow`, against freshly fetched roles and the bot's own member record, runs before the add or remove.
+- `src/fluxer_panel/follow_roles.py:265` `if not zero_permissions(role):` — the adopt branch of `ensure_follow_role` refuses any role with permissions other than 0, so the bot never writes to a role that grants something.
+- `src/fluxer_panel/follow_roles.py:273` `await deps.rest.set_role_mentionable(` — an adopted role is made mentionable only after every check passes, and nothing is stored if the call fails.
+- `src/fluxer_panel/follow_roles.py:285` `deps.rest.create_role(` — the only role creation in the bot. The REST client fixes its permissions at 0.
+- `src/fluxer_panel/follow_roles.py:295` `await deps.rest.set_role_mentionable(` — a created role is made mentionable and checked before its id is stored.
 - `src/fluxer_client/rest.py:306` `"permissions": "0"` — every role the client creates has no permissions, and there is no parameter that changes it.
 - `tests/test_role_callers.py:33` `assert files == {"follow_roles.py"}` — the structural test that fails when any module other than `follow_roles.py` uses a role method.
 
 ## Role creation
 
-- `src/fluxer_panel/follow_roles.py:262` `created = await deps.rest.create_role(` — the only role creation in the bot. The role is created with the name, and its permissions are fixed at 0 by the REST client.
+- `src/fluxer_panel/follow_roles.py:285` `created = await deps.rest.create_role(` — the only role creation in the bot. The role is created with the name, and its permissions are fixed at 0 by the REST client.
 - `src/fluxer_client/rest.py:306` `"permissions": "0"` — every role the client creates has no permissions, and there is no parameter that changes it.
-- `src/fluxer_panel/follow_roles.py:242` `if not zero_permissions(target):` — the adopt branch refuses any existing role with permissions other than 0 before it writes to it.
-- `src/fluxer_panel/follow_roles.py:244` `if not manageable(target, roles, bot_roles, guild_id):` — the adopt branch's hierarchy check, against freshly fetched roles, runs before the PATCH.
-- `src/fluxer_panel/follow_roles.py:287` `if role_id == guild_id:` — a manual set refuses the community's `@everyone` role, whose id is the guild id.
-- `src/fluxer_panel/follow_roles.py:208` `async with deps.locks.get(card.id):` — the publish and the manual set take the card's own role lock, not the card lock. A second role step on the card waits and then reuses the role the first one stored, so it never creates a second role.
+- `src/fluxer_panel/follow_roles.py:265` `if not zero_permissions(role):` — the adopt branch refuses any existing role with permissions other than 0 before it writes to it.
+- `src/fluxer_panel/follow_roles.py:267` `if not manageable(role, roles, bot_roles, guild_id):` — the adopt branch's hierarchy check, against freshly fetched roles, runs before the PATCH.
+- `src/fluxer_panel/follow_roles.py:310` `if role_id == guild_id:` — a manual set refuses the community's `@everyone` role, whose id is the guild id.
+- `src/fluxer_panel/follow_roles.py:230` `async with deps.locks.get(card.id):` — the publish and the manual set take the card's own role lock, not the card lock. A second role step on the card waits and then reuses the role the first one stored, so it never creates a second role.
 
 ## Reaction removal
 
