@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from fluxer_panel import cards
+from fluxer_panel import cards, subscriptions
 from fluxer_panel.cards import (
     Address,
     CardFieldError,
@@ -608,6 +608,86 @@ async def test_clear_follow_role_returns_the_old_value_and_removes_it(db: Databa
     assert await db.run(lambda c: cards.clear_follow_role(c, card_id)) == FollowRole(GUILD, "3001")
     assert await db.run(lambda c: cards.get_follow_role(c, card_id)) is None
     assert await db.run(lambda c: cards.clear_follow_role(c, card_id)) is None
+    assert await db.run(lambda c: cards.follow_role_ids(c)) == frozenset()
+
+
+async def _subscribe(db: Database, card_id: int, channel_id: str = "2001") -> int:
+    return await db.run(lambda c: subscriptions.add(c, card_id, GUILD, channel_id))
+
+
+async def test_set_subscription_role_round_trips_and_overwrites(db: Database) -> None:
+    card_id = await _create(db)
+    sub_id = await _subscribe(db, card_id)
+    assert await db.run(lambda c: cards.get_subscription_role(c, sub_id)) is None
+
+    await db.run(lambda c: cards.set_subscription_role(c, sub_id, "3001"))
+    await db.run(lambda c: cards.set_subscription_role(c, sub_id, "3001"))
+    assert await db.run(lambda c: cards.get_subscription_role(c, sub_id)) == FollowRole(GUILD, "3001")
+
+    await db.run(lambda c: cards.set_subscription_role(c, sub_id, "3002"))
+    assert await db.run(lambda c: cards.get_subscription_role(c, sub_id)) == FollowRole(GUILD, "3002")
+    assert await db.run(lambda c: cards.follow_role_ids(c)) == frozenset({"3002"})
+
+
+async def test_clear_subscription_role_returns_the_old_value_and_removes_it(db: Database) -> None:
+    card_id = await _create(db)
+    sub_id = await _subscribe(db, card_id)
+    await db.run(lambda c: cards.set_subscription_role(c, sub_id, "3001"))
+
+    assert await db.run(lambda c: cards.clear_subscription_role(c, sub_id)) == FollowRole(GUILD, "3001")
+    assert await db.run(lambda c: cards.get_subscription_role(c, sub_id)) is None
+    assert await db.run(lambda c: cards.clear_subscription_role(c, sub_id)) is None
+    assert await db.run(lambda c: cards.follow_role_ids(c)) == frozenset()
+
+
+async def test_subscription_role_is_refused_when_a_card_holds_it(db: Database) -> None:
+    card_id = await _create(db)
+    sub_id = await _subscribe(db, card_id)
+    await db.run(lambda c: cards.set_follow_role(c, card_id, GUILD, "3001"))
+
+    with pytest.raises(FollowRoleTaken):
+        await db.run(lambda c: cards.set_subscription_role(c, sub_id, "3001"))
+    assert await db.run(lambda c: cards.get_subscription_role(c, sub_id)) is None
+
+
+async def test_card_role_is_refused_when_a_subscription_holds_it(db: Database) -> None:
+    card_id = await _create(db)
+    sub_id = await _subscribe(db, card_id)
+    await db.run(lambda c: cards.set_subscription_role(c, sub_id, "3001"))
+
+    with pytest.raises(FollowRoleTaken):
+        await db.run(lambda c: cards.set_follow_role(c, card_id, GUILD, "3001"))
+    assert await db.run(lambda c: cards.get_follow_role(c, card_id)) is None
+
+
+async def test_subscription_role_is_refused_when_another_subscription_holds_it(db: Database) -> None:
+    card_id = await _create(db)
+    first = await _subscribe(db, card_id, "2001")
+    second = await _subscribe(db, card_id, "2002")
+    await db.run(lambda c: cards.set_subscription_role(c, first, "3001"))
+
+    with pytest.raises(FollowRoleTaken):
+        await db.run(lambda c: cards.set_subscription_role(c, second, "3001"))
+    assert await db.run(lambda c: cards.get_subscription_role(c, second)) is None
+    assert await db.run(lambda c: cards.get_subscription_role(c, first)) == FollowRole(GUILD, "3001")
+
+
+async def test_follow_role_ids_lists_card_and_subscription_roles(db: Database) -> None:
+    card_id = await _create(db)
+    sub_id = await _subscribe(db, card_id)
+    await db.run(lambda c: cards.set_follow_role(c, card_id, GUILD, "3001"))
+    await db.run(lambda c: cards.set_subscription_role(c, sub_id, "3002"))
+
+    assert await db.run(lambda c: cards.follow_role_ids(c)) == frozenset({"3001", "3002"})
+
+
+async def test_removing_a_subscription_cascades_its_role(db: Database) -> None:
+    card_id = await _create(db)
+    sub_id = await _subscribe(db, card_id)
+    await db.run(lambda c: cards.set_subscription_role(c, sub_id, "3001"))
+
+    assert await db.run(lambda c: subscriptions.remove_by_id(c, sub_id)) is True
+    assert await db.run(lambda c: cards.get_subscription_role(c, sub_id)) is None
     assert await db.run(lambda c: cards.follow_role_ids(c)) == frozenset()
 
 
