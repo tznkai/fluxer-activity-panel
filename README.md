@@ -249,7 +249,7 @@ games channel.
   a mirror, so the only ways a mirror is posted are its object's first publish and the copy's change to `both`.
 - **Next-session line:** a `local` copy shows its own next session. A `both` copy shows the sooner of its own next
   session and the home one, and the home one links to its mirror in this copy when there is one. A `redirect` copy
-  shows the home session, without a link.
+  shows the home session; outside the games community it carries no link.
 - **Channel and role options:** `channel=<channel>` sets the channel a local or both copy posts in, as a link or
   a channel id. The channel must be a text channel of the copy's community, and not the games channel. Without
   it, the copy's own channel is used. `role=<role id>` gives the copy a follow role that already exists in its
@@ -271,13 +271,16 @@ games channel.
 - **Unsubscribe:** deletes the copy and removes the subscription. A copy that is already gone counts as
   removed. If the bot cannot delete it for another reason, the subscription is still removed, and the
   reply says the copy is still there, to delete by hand.
-- **Archive:** ends every scope first: the card's own, and each local or both copy's. Upcoming sessions are cancelled
-  (with DMs to their attendees), open polls close with no winner, and live play-now posts expire. Then it deletes the
-  mirrors, then every copy, and the card's message last. The reply may span several messages when many channels are
-  left. A 403 on a copy or on the card's own message is handled the same way: that message stays where it is, the
-  archive goes ahead, and the reply lists each channel left, as a mention, to delete by hand. The reply says the message
-  was removed only when nothing is left; otherwise it says the card is archived and its settings are kept. Any other
-  failure to delete (not already gone) stops the archive while the card is still live: the copies deleted before the
+- **Archive:** ends every scope first: the card's own, and each local or both copy's, and also any session, poll or
+  play-now post a copy left behind when it became `redirect`. Upcoming sessions are cancelled (with DMs to their
+  attendees), every open poll closes with no winner, and live play-now posts expire, with their reactions cleared,
+  the mirrors' too. Then it deletes the mirrors, then every copy, and the card's message last.
+  The reply may span several messages when many channels are left. A mirror that cannot be deleted, for any reason,
+  is named in the reply as left, and the archive goes on. A 403 on a copy or on the card's own message is handled the
+  same way: that message stays where it is, the archive goes ahead, and the reply lists each channel left, as a
+  mention, to delete by hand. The reply says the message was removed only when nothing is left; otherwise it says the
+  card is archived and its settings are kept. Any other failure to delete a copy or the card's message (not already
+  gone) stops the archive while the card is still live: the copies deleted before the
   stop are posted again by the next check, the mirrors deleted before the stop stay deleted, and the card's message
   stays in place, so running it again is safe. The subscriptions are kept. Publishing again posts every subscription
   that is not paused.
