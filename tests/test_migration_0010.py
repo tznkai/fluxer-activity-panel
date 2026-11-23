@@ -166,10 +166,12 @@ async def test_mirror_message_needs_exactly_one_object(tmp_path: Path, monkeypat
         database.close()
 
 
-async def test_a_subscription_with_a_session_cannot_be_deleted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("table", ["sessions", "polls", "play_now"])
+async def test_a_subscription_with_scoped_rows_cannot_be_deleted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                                 table: str) -> None:
     database = _migrate(tmp_path / "panel.db", monkeypatch)
     try:
-        await database.run(lambda c: c.execute("UPDATE sessions SET scope_sub_id = 1 WHERE id = 1"))
+        await database.run(lambda c: c.execute(f"UPDATE {table} SET scope_sub_id = 1 WHERE id = 1"))
         with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY constraint failed"):
             await database.run(lambda c: c.execute("DELETE FROM card_subscription WHERE id = 1"))
     finally:

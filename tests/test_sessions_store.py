@@ -571,6 +571,22 @@ async def test_the_upcoming_list_for_a_card_keeps_every_scope(db: Database) -> N
     assert {session.id for session in upcoming} == {home, scoped}
 
 
+async def test_upcoming_for_scope_returns_only_that_scopes_upcoming_rows_in_start_order(db: Database) -> None:
+    card = await _card(db)
+    sub = await _sub(db, card)
+    home = await _add(db, card, starts_in=5 * HOUR)
+    later = await _add(db, card, starts_in=4 * HOUR, scope_sub_id=sub)
+    cancelled = await _add(db, card, starts_in=6 * HOUR, scope_sub_id=sub)
+    earlier = await _add(db, card, starts_in=3 * HOUR, scope_sub_id=sub)
+    await db.run(lambda c: sessions.cancel_if(c, cancelled, NOW))
+
+    home_only = await db.run(lambda c: sessions.upcoming_for_scope(c, card, None))
+    scoped = await db.run(lambda c: sessions.upcoming_for_scope(c, card, sub))
+
+    assert [session.id for session in home_only] == [home]
+    assert [session.id for session in scoped] == [earlier, later]
+
+
 async def test_a_mirror_only_user_has_the_subscription_as_origin(db: Database) -> None:
     card = await _card(db)
     sub = await _sub(db, card)

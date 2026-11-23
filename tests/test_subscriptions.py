@@ -224,6 +224,22 @@ async def test_set_local_channel_sets_and_clears(db: Database, card_id: int) -> 
     assert sub is not None and sub.local_channel_id is None
 
 
+async def test_is_scope_is_false_for_redirect_and_true_for_local_and_both(db: Database, card_id: int) -> None:
+    redirect_id = await db.run(lambda c: subscriptions.add(c, card_id, GUILD, CHANNELS[0]))
+    local_id = await db.run(lambda c: subscriptions.add(c, card_id, GUILD, CHANNELS[1]))
+    both_id = await db.run(lambda c: subscriptions.add(c, card_id, GUILD, CHANNELS[2]))
+    await db.run(lambda c: subscriptions.set_mode_if(c, local_id, "redirect", "local"))
+    await db.run(lambda c: subscriptions.set_mode_if(c, both_id, "redirect", "both"))
+
+    flags = {}
+    for sub_id in (redirect_id, local_id, both_id):
+        sub = await db.run(lambda c, sid=sub_id: subscriptions.get_by_id(c, sid))
+        assert sub is not None
+        flags[sub.mode] = sub.is_scope
+
+    assert flags == {"redirect": False, "local": True, "both": True}
+
+
 async def test_list_scopes_and_list_both_keep_only_active_local_and_both_rows(db: Database, card_id: int) -> None:
     redirect_id = await db.run(lambda c: subscriptions.add(c, card_id, GUILD, CHANNELS[0]))
     local_id = await db.run(lambda c: subscriptions.add(c, card_id, GUILD, CHANNELS[1]))
