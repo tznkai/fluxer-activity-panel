@@ -391,6 +391,14 @@ def remove_presence(conn: sqlite3.Connection, session_id: int, user_id: str, cho
 RECONCILE_ORDER: tuple[rsvp.Choice, ...] = ("going", "maybe", "no")
 
 
+def origin_subs(conn: sqlite3.Connection, session_id: int) -> frozenset[int]:
+    """The mirror subscriptions the session's real RSVP rows came through. A row keeps its origin after the mirror is
+    gone, so this can name a subscription that no longer has a mirror of the session."""
+    rows = conn.execute("SELECT DISTINCT via_sub_id FROM rsvp_reaction WHERE session_id = ? AND implicit = 0 "
+                        "AND via_sub_id IS NOT NULL", (session_id,)).fetchall()
+    return frozenset(int(row[0]) for row in rows)
+
+
 def presence_from_subs(conn: sqlite3.Connection, session_id: int, sub_ids: Iterable[int]) -> list[tuple[str, str, int]]:
     """The real RSVP rows of a session whose origin is one of the given mirror subscriptions, as (user id, choice,
     subscription id), in user id order."""

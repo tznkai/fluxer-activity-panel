@@ -302,7 +302,10 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   after a session exists. `sessions.add` writes the proposer's first going row when the session is created, and
   `sessions.add_presence` replaces the implicit presence row of any user who reacts. Any user may hold an implicit row:
   the proposer's going, and each maybe that `sessions.add(..., maybe=...)` writes for a scheduled poll's voters. The
-  reconcile drops the implicit row of every user with a reaction before it adds that user's real row.
+  reconcile drops the implicit row of every user with a reaction before it adds that user's real row. The startup
+  reconcile also carries a real row whose origin mirror is unreadable (403, dropped on 404, or no longer stored because
+  the copy left both or was unsubscribed): it stays with its origin, unless a readable message shows that user with the
+  same choice (`interactions._carry_unreadable`).
 - The non-admin paths are `dm_router` with `help`/`!help` (the command heads; admin heads only when `admin.authorize`
   passes; answered before a draft or ballot takes the reply), `!session` (`session_commands.py`), `!poll`, and ballot replies. `NonAdminLimiter.admit`
   allows 5 DM commands, draft or ballot replies, or 📅 DM reactions per 60 seconds per non-admin user. Admins are exempt. A `!session`

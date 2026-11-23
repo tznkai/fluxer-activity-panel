@@ -612,3 +612,77 @@ async def test_a_mirror_going_and_a_home_maybe_keep_the_going_through_a_403_reco
         await world.interactions.reconcile_sessions()
         assert await real_rows(world, session_id) == [(FAR_USER, "going", world.sub_b), (FAR_USER, "maybe", None)]
         assert await state_of(world, session_id, FAR_USER) == "maybe"
+
+
+# The startup reconcile keeps a far RSVP whose origin mirror no longer exists: the copy left both, was unsubscribed,
+# or its mirror answered 404 and was dropped. Each is carried over like a 403 mirror (AC3.8) ---------------------------
+
+UNKNOWN_BODY = b'{"code": "UNKNOWN_MESSAGE", "message": "Unknown Message"}'
+
+
+async def far_rsvp_via_b(world: SimpleNamespace) -> tuple[int, str, str]:
+    """A session with FAR_USER going through B's mirror and nothing on the home message.
+    Returns (session, home, mirror)."""
+    session_id = await publish(world)
+    home_id = await home_message(world, session_id)
+    mirror_id = await mirror_message(world, world.sub_b, session_id)
+    set_going(world, FAR_B, mirror_id, [FAR_USER])
+    await world.presses.on_reaction(reaction(FAR_USER, FAR_B, mirror_id))
+    assert await origin(world, session_id, FAR_USER) == world.sub_b
+    return session_id, home_id, mirror_id
+
+
+async def leave_both(world: SimpleNamespace) -> None:
+    """The copy moves from both to local: its mode changes and its mirror rows are deleted."""
+    def tx(conn: Any) -> None:
+        assert subscriptions.set_mode_if(conn, world.sub_b, "both", "local")
+        mirrors.delete_for_sub(conn, world.sub_b)
+    await world.db.run(tx)
+
+
+async def test_a_reconcile_after_both_to_local_keeps_the_far_rsvp_with_its_origin(world: SimpleNamespace) -> None:
+    session_id, _home_id, _mirror_id = await far_rsvp_via_b(world)
+    await leave_both(world)
+    await world.interactions.reconcile_sessions()
+    assert FAR_USER in await going(world, session_id)
+    assert await origin(world, session_id, FAR_USER) == world.sub_b
+
+
+async def test_a_reconcile_after_a_404_dropped_mirror_keeps_the_far_rsvp_with_its_origin(
+        world: SimpleNamespace) -> None:
+    session_id, _home_id, mirror_id = await far_rsvp_via_b(world)
+    world.state.overrides[mirror_reactors_path(FAR_B, mirror_id)] = Override(404, UNKNOWN_BODY)
+    await world.interactions.reconcile_sessions()
+    assert await mirror_row(world, world.sub_b, session_id) is None
+    assert FAR_USER in await going(world, session_id)
+    assert await origin(world, session_id, FAR_USER) == world.sub_b
+
+
+async def test_a_reconcile_after_unsubscribe_keeps_the_far_rsvp_with_its_origin(world: SimpleNamespace) -> None:
+    session_id, _home_id, _mirror_id = await far_rsvp_via_b(world)
+    await world.db.run(lambda c: subscriptions.remove_by_id(c, world.sub_b))
+    await world.interactions.reconcile_sessions()
+    assert FAR_USER in await going(world, session_id)
+    assert await origin(world, session_id, FAR_USER) == world.sub_b
+
+
+async def test_two_reconciles_in_a_row_keep_the_far_rsvp_with_its_origin(world: SimpleNamespace) -> None:
+    session_id, _home_id, _mirror_id = await far_rsvp_via_b(world)
+    await leave_both(world)
+    for _ in range(2):
+        await world.interactions.reconcile_sessions()
+        assert FAR_USER in await going(world, session_id)
+        assert await origin(world, session_id, FAR_USER) == world.sub_b
+
+
+async def test_a_home_user_whose_home_reaction_is_gone_is_still_removed_while_a_far_rsvp_is_kept(
+        world: SimpleNamespace) -> None:
+    session_id, home_id, _mirror_id = await far_rsvp_via_b(world)
+    await leave_both(world)
+    set_going(world, HOME, home_id, [HOME_ONLY_USER])
+    await world.presses.on_reaction(reaction(HOME_ONLY_USER, HOME, home_id))
+    assert HOME_ONLY_USER in await going(world, session_id)
+    set_going(world, HOME, home_id, [])                       # the home reaction is gone while the bot was down
+    await world.interactions.reconcile_sessions()
+    assert HOME_ONLY_USER not in await going(world, session_id)
+    assert FAR_USER in await going(world, session_id)
