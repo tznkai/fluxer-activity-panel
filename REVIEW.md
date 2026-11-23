@@ -375,7 +375,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/scope.py:92` `return scope.sub.local_channel_id or scope.sub.channel_id` — a local or both copy's scope posts only in its own channel: its local channel, else the copy's own channel.
 - `src/fluxer_panel/follow_roles.py:114` `_stored(c, RoleTarget(card, sub_id))` — the bell toggle reads only the stored role of the card or of the one subscription, so it never acts on another subscription's role.
 - `src/fluxer_panel/mirror_backfill.py:34` `async def backfill_locked(` — the back-fill entry point. It mirrors a card's upcoming home sessions and open home poll into a copy that enters `both`. The poller never calls it.
-- `src/fluxer_panel/card_commands.py:896` `backfill_locked(card, sub_id)` — its only caller: the mode change to `both`, under the card lock, after the copy's channel is stored.
+- `src/fluxer_panel/card_commands.py:905` `backfill_locked(card, sub_id)` — its callers: the mode change to `both` and a channel change on a copy that stays `both`, both under the card lock, after the copy's channel is stored.
 - `src/fluxer_panel/poll_jobs.py:121` `None if found is None else found.via_sub_id` — a reminder links the poll message that the recipient's own ballot came from: home, or their far mirror. Without a ballot it takes the home link.
 - `src/fluxer_panel/scope_cleanup.py:116` `await ctx.session_commands.scrub(session)` — unsubscribe scrubs each scoped session message before any row is deleted, so no location stays in Fluxer.
 - `src/fluxer_panel/scope_cleanup.py:120` `_delete_scope_rows_tx(c, sub_id))` — the scope's play-now, poll and session rows are deleted only after those scrubs, in one transaction.

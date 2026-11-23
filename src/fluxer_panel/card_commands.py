@@ -886,13 +886,22 @@ async def _subscribe_locked(ctx: CardContext, card: cards.Card, actor: str, guil
         if change is None:
             return text.SUBSCRIPTION_RETRY, None
         lines.append(text.SUBSCRIPTION_MODE_SET.format(channel_id=channel_id, mode=opts.mode))
+    # A both copy that stays both and changes its local channel moves its mirrors, as when it leaves both and enters it
+    # again: the old mirrors are deleted and back-filled in the new channel. Its RSVP rows are not touched.
+    moved = (existing is not None and current_mode == "both" and mode == "both" and local_channel is not None
+             and local_channel != existing.local_channel_id)
+    moved_left: tuple[str, ...] = ()
+    if moved:
+        moved_left = await scope_cleanup.delete_mirrors_locked(ctx, sub_id)
     if local_channel is not None:
         await ctx.db.run(lambda c: subscriptions.set_local_channel(c, sub_id, local_channel))
         lines.append(text.SUBSCRIPTION_LOCAL_CHANNEL_SET.format(channel_id=local_channel))
-    # A copy that enters both is back-filled after its channel is stored, so the mirrors go to the channel this command
-    # names, and no other path posts them. Its session reactions are seeded after the lock, in _finish_change.
+    # A copy that enters both, or moves its mirrors, is back-filled after its channel is stored, so the mirrors go to
+    # the channel this command names, and no other path posts them. Their session reactions are seeded after the lock,
+    # in _finish_change.
     seeds: tuple[tuple[str, str], ...] = ()
-    if change is not None and opts.mode == "both" and ctx.mirror_backfill is not None:
+    entered_both = change is not None and opts.mode == "both"
+    if (entered_both or moved) and ctx.mirror_backfill is not None:
         seeds = tuple(await ctx.mirror_backfill.backfill_locked(card, sub_id))
     final = await ctx.db.run(lambda c: subscriptions.get_by_id(c, sub_id))
     assert final is not None
@@ -904,7 +913,8 @@ async def _subscribe_locked(ctx: CardContext, card: cards.Card, actor: str, guil
         return text.SUBSCRIPTION_ALREADY, None
     ctx.kick()
     follow = _Followup(card_id=card.id, sub_id=sub_id, guild_id=guild_id, role_id=opts.role, role_step=role_step,
-                       reseed=role_step or change is not None, change=change or _ModeChange(), seeds=seeds)
+                       reseed=role_step or change is not None,
+                       change=change or _ModeChange(mirrors_left=moved_left), seeds=seeds)
     return "\n".join(lines), follow
 
 

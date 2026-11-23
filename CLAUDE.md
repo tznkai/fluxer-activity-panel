@@ -245,7 +245,10 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   (`card_fields.subscription_options`), under the card lock, with every refusal decided before the first write. A copy
   in the games community is always `redirect` (`text.SUBSCRIPTION_MODE_IN_GAMES`), and `channel=` and `role=` need a
   scope mode. The mode write is compare-and-set (`subscriptions.set_mode_if`). A change to `redirect` forgets the local
-  channel; `both` to `local` deletes the mirrors only. A copy that enters `both` is back-filled under the lock.
+  channel; `both` to `local` deletes the mirrors only. A copy that enters `both` is back-filled under the lock. A
+  `channel=` change on a copy that stays `both` moves its mirrors the same way: `delete_mirrors_locked`, the new local
+  channel stored, then `backfill_locked`, all under the lock, with the seeds after it. Its RSVP rows are kept, and a
+  mirror that cannot be deleted is named in the reply.
 - Each local or both subscription has its own follow role in its own community (`subscription_follow_role`), set by
   `follow_roles.ensure_follow_role(..., sub_id=)` after the card lock. Its bell toggles that role only; with none
   stored the copy gets no bell. `cards.follow_role_ids` (the role-call allowlist) includes these roles.

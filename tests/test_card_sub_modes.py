@@ -664,3 +664,79 @@ async def test_a_redirect_copy_loses_its_bell_when_its_role_step_fails_on_switch
     assert FOLLOW_EMOJI not in copy_emoji(modes_world, "PUT")
     assert modes_world.last_reply().splitlines()[-1] == text.SUBSCRIPTION_ROLE_FAILED.format(
         reason=text.SUBSCRIPTION_ROLE_REASON["create_failed"])
+
+
+# A both copy whose local channel changes moves its mirrors: they are deleted, then back-filled in the new channel --
+
+async def enter_both_with_home_objects(world: World) -> tuple[cards.Card, subscriptions.Subscription, int]:
+    """A local copy that enters both, so its mirror of the home session and poll sits in its own channel."""
+    card = await make_card(world)
+    await world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local")
+    sub = await sub_of(world, card.id)
+    assert sub is not None
+    session_id, _ = await seed_home(world, card.id)
+    await world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=both")
+    return card, sub, session_id
+
+
+async def test_a_channel_change_on_a_both_copy_moves_its_mirrors_to_the_new_channel(modes_world: World) -> None:
+    _card, sub, session_id = await enter_both_with_home_objects(modes_world)
+    old = await modes_world.db.run(lambda c: mirrors.get(c, "session", session_id, sub.id))
+    assert old is not None and old.channel_id == FAR_COPY
+    modes_world.clear_requests()
+
+    await modes_world.run(f"!card subscribe mc {FAR} {FAR_COPY} channel={FAR_LOCAL}")
+
+    assert (FAR_COPY, old.message_id) in modes_world.state.deleted
+    new = await modes_world.db.run(lambda c: mirrors.get(c, "session", session_id, sub.id))
+    assert new is not None and new.channel_id == FAR_LOCAL and new.message_id != old.message_id
+    assert len(mirror_posts_to(modes_world, FAR_LOCAL)) == 2, "the session mirror and the poll mirror"
+    assert mirror_posts_to(modes_world, FAR_COPY) == []
+    sub_after = await sub_of(modes_world, _card.id)
+    assert sub_after is not None and sub_after.mode == "both"
+
+
+async def test_the_moved_mirrors_reactions_run_after_the_card_lock_is_released(modes_world: World) -> None:
+    card, _sub, _session_id = await enter_both_with_home_objects(modes_world)
+    state = modes_world.state
+    mirror_message = str(state.next_message_id)      # the move's first post: the session mirror in the new channel
+    key = f"PUT /api/v1/channels/{FAR_LOCAL}/messages/{mirror_message}/reactions/{rsvp.GOING_EMOJI}/@me"
+    state.gates[key] = asyncio.Event()
+    change = asyncio.create_task(modes_world.run(f"!card subscribe mc {FAR} {FAR_COPY} channel={FAR_LOCAL}"))
+    try:
+        await wait_until(lambda: key in state.gated, waiting_for="the moved session mirror's first reaction")
+        assert not modes_world.ctx.locks.get(card.id).locked()
+    finally:
+        state.gates[key].set()
+    await asyncio.wait_for(change, timeout=5)
+
+
+async def test_an_rsvp_counted_before_the_move_stays_counted(modes_world: World) -> None:
+    _card, sub, session_id = await enter_both_with_home_objects(modes_world)
+
+    def far_going(conn: Any) -> None:
+        session = sessions.get(conn, session_id)
+        assert session is not None
+        sessions.add_presence(conn, session, PLAYER, "going", NOW, via_sub_id=sub.id)
+        sessions.recompute(conn, session, None, NOW)
+    await modes_world.db.run(far_going)
+
+    await modes_world.run(f"!card subscribe mc {FAR} {FAR_COPY} channel={FAR_LOCAL}")
+
+    rsvps = await modes_world.db.run(lambda c: sessions.rsvps_of(c, session_id))
+    assert rsvps[PLAYER][0] == "going"
+
+
+async def test_a_mirror_refused_on_the_move_is_named_in_the_reply(modes_world: World) -> None:
+    _card, sub, session_id = await enter_both_with_home_objects(modes_world)
+    old = await modes_world.db.run(lambda c: mirrors.get(c, "session", session_id, sub.id))
+    assert old is not None
+    modes_world.state.overrides[f"DELETE /api/v1/channels/{FAR_COPY}/messages/{old.message_id}"] = Override(
+        403, FORBIDDEN)
+
+    await modes_world.run(f"!card subscribe mc {FAR} {FAR_COPY} channel={FAR_LOCAL}")
+
+    reply = modes_world.state.requests_to(DM_MESSAGES)[-1]
+    assert f"<#{FAR_COPY}>" in reply.payload["content"]
+    new = await modes_world.db.run(lambda c: mirrors.get(c, "session", session_id, sub.id))
+    assert new is not None and new.channel_id == FAR_LOCAL

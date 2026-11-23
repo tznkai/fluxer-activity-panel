@@ -254,7 +254,9 @@ games channel.
   a channel id. The channel must be a text channel of the copy's community, and not the games channel. Without
   it, the copy's own channel is used. `role=<role id>` gives the copy a follow role that already exists in its
   community, in place of the one the bot would create. Both need `mode=local` or `mode=both`, and a refused
-  option changes nothing.
+  option changes nothing. Changing `channel=` on a copy that stays `both` moves its mirrors: the bot deletes the
+  old ones and posts fresh ones in the new channel, as when a copy leaves both and enters it again. Anyone who
+  already RSVPed through a mirror stays counted. A mirror the bot cannot delete is named in the reply.
 - **Games community:** a copy in the games community always points at the card, so `local` and `both` are
   refused there.
 - **Already subscribed:** subscribing an active channel again changes nothing and says so.
