@@ -3,7 +3,7 @@
 
 # Fluxer Activity Panel
 
-Last verified: 2026-11-13
+Last verified: 2026-11-22
 
 Standalone project with two packages under `src/`: `fluxer_client` (a panel-agnostic Fluxer REST and
 gateway client) and `fluxer_panel` (the activity panel bot built on it). `README.md` has the
@@ -192,7 +192,7 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   Its payload is the card's own, from `render.card_message`, with `allowed_mentions={"parse": []}`. The poller posts,
   edits and reposts a copy through the card's `_sync` path, under the card's lock, after the card's own message. A
   failed post or edit of the card's own message is logged and the copies still run. A copy is never on the board, and
-  a board link never points at one. `subscriptions.MAX_SUBSCRIPTIONS` (5) is checked in `subscriptions.add`, in the
+  a board link never points at one. `subscriptions.MAX_SUBSCRIPTIONS` (20) is checked in `subscriptions.add`, in the
   insert's transaction. A 403 on a copy's post or edit, or a 404 on its post (the channel is gone), pauses it and DMs
   the admins once: the pause changes a row only while it is active. The DM takes `text.SUBSCRIPTION_PAUSED_ALERT`
   (403) or `text.SUBSCRIPTION_CHANNEL_GONE_ALERT` (404), with the card slug and channel id as its only inputs. A 404
@@ -282,7 +282,8 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   options (`polls.MAX_OPTIONS`), and a typed time that would exceed that refuses the whole reply (`POLL_FULL`).
 - The member list is read once per poll start and once per runoff, in ids only. A failed read refuses the start
   (`poll_members.MembersUnavailable`).
-- A card has at most one open poll (the `polls_open_once` index).
+- A scope has at most one open poll: the home scope (NULL `scope_sub_id`) or one subscription's scope (the
+  `polls_open_once` index).
 - A runoff closes at min(now + `POLL_LENGTH_SECONDS`, earliest candidate time - 1 h - 10 min). With under 15 minutes
   left, 🔁 is refused (`POLL_RUNOFF_TOO_SOON`) and the presser is told to use 📅. A runoff keeps the parent's starter,
   and its candidates are the top three usable times that have votes; fewer than two is refused. The README's `### Polls`
@@ -375,10 +376,12 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   Hosts are never logged,
   and the outside text shows an address only when it is public (`render.outside_address`, the one helper for all
   three address slots).
-- `card_subscription` (migration 0005) holds one row per card and channel, keyed by `(card_id, channel_id)`, and cascades
-  with its card. `message_id` and `content_hash` are set together or not at all, and a hash only with a message.
-  `paused` is 0 or 1. Its writes are keyed by card and channel: `set_hash_if` and `clear_message_if` are compare-and-set,
-  and `pause` and `resume` change a row only in the state they expect. The cap of five is app-level, not a CHECK.
+- `card_subscription` (migration 0005, rebuilt by 0010) holds one row per card and channel and cascades with its card.
+  Its key is a surrogate `id` (`INTEGER PRIMARY KEY AUTOINCREMENT`, so an id is never reused), and `UNIQUE (card_id,
+  channel_id)` keeps one row per channel. `message_id` and `content_hash` are set together or not at all, and a hash
+  only with a message. `paused` is 0 or 1. Its writes are keyed by card and channel: `set_hash_if` and
+  `clear_message_if` are compare-and-set, and `pause` and `resume` change a row only in the state they expect. The cap
+  of twenty (`subscriptions.MAX_SUBSCRIPTIONS`) is app-level, not a CHECK.
 - `board` (migration 0004) holds one row, `id = 1`, seeded by the migration. Its `channel_id` and `message_id` are set
   together or not at all, and `content_hash` is set only with a message. The board's writes are compare-and-set, as
   the cards' are: `clear_message_if`, and `set_hash_if` for the hash.
@@ -399,9 +402,17 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   `outcome` is `winner`, `none` or `removed`; `parent_poll_id` links a runoff; `session_id` is `ON DELETE SET NULL`),
   `poll_options` (positions and `starts_at` unique per poll; `origin` is `offered` or `typed`), `poll_ballots` (one per
   recipient, with `answered`, `reminded` and the DM ids), and `poll_votes` (one row per pick, with `rank` for a runoff).
-  The indexes are `polls_open_once` (one open poll per card), `polls_message`, `polls_state_closes`, `polls_parent`,
+  The indexes are `polls_open_once` (one open poll per scope), `polls_message`, `polls_state_closes`, `polls_parent`,
   `poll_votes_rank`, `poll_votes_option` and `poll_ballots_user`. Every table is `STRICT`, and the ids are checked as
   digits, as elsewhere.
+- Subscription modes (migration 0010, schema 10): `card_subscription` gains `mode` (`redirect`, `local` or `both`,
+  default `redirect`, so every existing row is `redirect`) and `local_channel_id`, and is rebuilt with the AUTOINCREMENT
+  id above. `subscription_follow_role` (`sub_id` primary key, `role_id` unique) holds one follow role per subscription,
+  cascading with it. `sessions`, `polls` and `play_now` gain `scope_sub_id` (NULL is the home scope) with
+  `ON DELETE RESTRICT`, so a subscription that owns scoped rows cannot be deleted by SQL. `poll_ballots.via_sub_id` and
+  `rsvp_reaction.via_sub_id` are plain integers with no foreign key, because an id is never reused. `mirror_message`
+  holds one row per home session, poll or play-now post re-posted in a `both` subscription (exactly one object id per
+  row, cascading with the subscription and the object).
 - Migrations: `src/fluxer_panel/migrations/NNNN_name.sql`, numbered and contiguous from `0001`. Never edit a migration
   after release; add a new file instead. Do not put `BEGIN`, `COMMIT` or `PRAGMA user_version` in a file: the runner adds them.
 - `secure_delete = ON` is set, so purged rows do not survive in free pages. `.pre-v<N>` backups are not covered by that
