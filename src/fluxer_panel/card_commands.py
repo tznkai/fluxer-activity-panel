@@ -9,7 +9,7 @@ import dataclasses
 import enum
 import logging
 import time
-from collections.abc import Callable, Container
+from collections.abc import Callable, Container, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -19,7 +19,8 @@ from fluxer_client.events import MessageCreate
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
 from fluxer_client.roles import RoleCache
 from fluxer_panel import (
-    card_fields, cards, follow_roles, interaction_settings, polls, render, sessions, subscriptions, text)
+    card_fields, cards, follow_roles, interaction_settings, play_now, polls, render, scope_cleanup, sessions,
+    subscriptions, text)
 from fluxer_panel.cards import SHOW_ITEMS, CardFieldError, ChannelLink
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
@@ -689,23 +690,53 @@ async def _subscribe(event: MessageCreate, ctx: CardContext, rest: str) -> _Resu
     except CardFieldError:
         await _say(ctx, event, text.SUBSCRIPTION_USAGE)
         return _Result()
-    slug_raw = tokens[0]
-    card = await _find(ctx, slug_raw)
+    card = await _find(ctx, tokens[0])
     if card is None:
         await _say(ctx, event, text.NO_SUCH_CARD)
         return _Result()
     if channel_id == ctx.config.games_channel_id:
         await _say(ctx, event, text.SUBSCRIPTION_IS_GAMES)
         return _Result(card.id)
+    # A change that leaves a scope needs the reactor counts of the scope's live play-now posts, read before the lock.
+    before = await ctx.db.run(lambda c: subscriptions.get(c, card.id, channel_id))
+    counts = await _scope_end_counts(ctx, card.id, before) if opts.mode == "redirect" else {}
     # The lock is shared with the poller and archive, so a subscription cannot change under a post or an archive.
     async with ctx.locks.get(card.id):
-        reply = await _subscribe_locked(ctx, card.id, guild_id, channel_id, opts)
-    await _say(ctx, event, reply)
+        reply, follow = await _subscribe_locked(ctx, card, event.author_id, guild_id, channel_id, opts, counts)
+    lines = [reply] if reply else []
+    if follow is not None:
+        lines += await _finish_change(ctx, card, follow)
+    await _say(ctx, event, "\n".join(lines))
     return _Result(card.id)
+
+
+@dataclass(frozen=True)
+class _ModeChange:
+    """What a mode change left to do after the card lock: the ended scope, the copy message whose calendar and ballot
+    box reactions come off, and the channels where a mirror could not be deleted."""
+    ended: scope_cleanup.ScopeEnded | None = None
+    unseed: tuple[str, str] | None = None
+    mirrors_left: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class _Followup:
+    """What runs after the card lock is released for a subscribe that wrote a row."""
+    card_id: int
+    sub_id: int
+    guild_id: str
+    role_id: str | None
+    role_step: bool
+    reseed: bool
+    change: _ModeChange
 
 
 def _has_options(opts: card_fields.SubOptions) -> bool:
     return opts.mode is not None or opts.channel is not None or opts.role is not None
+
+
+def _is_scoped(mode: str) -> bool:
+    return mode in subscriptions.LOCAL_MODES
 
 
 async def _in_games_community(ctx: CardContext, guild_id: str) -> bool:
@@ -713,6 +744,14 @@ async def _in_games_community(ctx: CardContext, guild_id: str) -> bool:
     if ctx.games_guild is None:
         return False
     return await ctx.games_guild.get() == guild_id
+
+
+async def _scope_end_counts(ctx: CardContext, card_id: int, sub: subscriptions.Subscription | None) -> dict[int, int]:
+    """The reactor counts of a scope's live play-now posts, read before the card lock. Empty when there is no scope."""
+    if sub is None or not _is_scoped(sub.mode) or ctx.play_now_ender is None:
+        return {}
+    rows = await ctx.db.run(lambda c: play_now.live_for_scope(c, card_id, sub.id))
+    return await ctx.play_now_ender.count_play_now(rows) if rows else {}
 
 
 async def _local_channel(ctx: CardContext, guild_id: str, value: str) -> tuple[str | None, str]:
@@ -732,63 +771,138 @@ async def _local_channel(ctx: CardContext, guild_id: str, value: str) -> tuple[s
     return channel_id, reply
 
 
-async def _subscribe_locked(ctx: CardContext, card_id: int, guild_id: str, channel_id: str,
-                            opts: card_fields.SubOptions) -> str:
+async def _subscribe_locked(ctx: CardContext, card: cards.Card, actor: str, guild_id: str, channel_id: str,
+                            opts: card_fields.SubOptions, counts: Mapping[int, int]
+                            ) -> tuple[str, _Followup | None]:
     """Adds or resumes one subscription and applies its options, under the card lock. Every refusal is decided before
     the first write, so a refused command changes nothing. An active one with no options is refused before any Fluxer
     request, and a full card too. A new or paused channel is checked with the same flow as a card's text channel slot:
-    the bot must be in the community, and the channel must be a text channel of it."""
-    existing = await ctx.db.run(lambda c: subscriptions.get(c, card_id, channel_id))
+    the bot must be in the community, and the channel must be a text channel of it. Returns the reply and, when a row
+    was written, what runs after the lock."""
+    existing = await ctx.db.run(lambda c: subscriptions.get(c, card.id, channel_id))
     if existing is not None and not existing.paused and not _has_options(opts):
-        return text.SUBSCRIPTION_ALREADY
+        return text.SUBSCRIPTION_ALREADY, None
     current_mode = existing.mode if existing is not None else "redirect"
     mode = opts.mode or current_mode
-    if mode in subscriptions.LOCAL_MODES and await _in_games_community(ctx, guild_id):
-        return text.SUBSCRIPTION_MODE_IN_GAMES
+    if _is_scoped(mode) and await _in_games_community(ctx, guild_id):
+        return text.SUBSCRIPTION_MODE_IN_GAMES, None
     if mode == "redirect" and (opts.channel is not None or opts.role is not None):
-        return text.SUBSCRIPTION_NEEDS_SCOPE
+        return text.SUBSCRIPTION_NEEDS_SCOPE, None
     local_channel = None
     if opts.channel is not None:
         local_channel, refusal = await _local_channel(ctx, guild_id, opts.channel)
         if local_channel is None:
-            return refusal
+            return refusal, None
     limit_reply = text.SUBSCRIPTION_LIMIT.format(limit=subscriptions.MAX_SUBSCRIPTIONS)
-    if existing is None and await ctx.db.run(lambda c: subscriptions.count(c, card_id)) >= subscriptions.MAX_SUBSCRIPTIONS:
-        return limit_reply
+    if existing is None and await ctx.db.run(lambda c: subscriptions.count(c, card.id)) >= subscriptions.MAX_SUBSCRIPTIONS:
+        return limit_reply, None
     if existing is None or existing.paused:
         link, reply = await _check_channel(ctx.rest, guild_id, channel_id, TEXT_CHANNEL_TYPE)
         if link is None:
-            return reply
+            return reply, None
         if not link.verified:
-            return text.SUBSCRIPTION_NOT_IN_COMMUNITY
+            return text.SUBSCRIPTION_NOT_IN_COMMUNITY, None
     lines: list[str] = []
     try:
         if existing is None:
-            sub_id = await ctx.db.run(lambda c: subscriptions.add(c, card_id, guild_id, channel_id))
+            sub_id = await ctx.db.run(lambda c: subscriptions.add(c, card.id, guild_id, channel_id))
             lines.append(text.SUBSCRIBED)
         else:
             sub_id = existing.id
             if existing.paused:
-                await ctx.db.run(lambda c: subscriptions.resume(c, card_id, channel_id))
+                await ctx.db.run(lambda c: subscriptions.resume(c, card.id, channel_id))
                 lines.append(text.SUBSCRIPTION_RESUMED)
     except subscriptions.SubscriptionFull:  # defensive: the count above runs under this card's lock, so this cannot fire
-        return limit_reply
+        return limit_reply, None
+    change: _ModeChange | None = None
     if opts.mode is not None and opts.mode != current_mode:
-        if not await ctx.db.run(lambda c: subscriptions.set_mode_if(c, sub_id, current_mode, opts.mode)):
-            return text.SUBSCRIPTION_RETRY
+        sub = await ctx.db.run(lambda c: subscriptions.get_by_id(c, sub_id))
+        assert sub is not None
+        change = await _change_mode_locked(ctx, card, sub, opts.mode, actor, counts=counts)
+        if change is None:
+            return text.SUBSCRIPTION_RETRY, None
         lines.append(text.SUBSCRIPTION_MODE_SET.format(channel_id=channel_id, mode=opts.mode))
     if local_channel is not None:
         await ctx.db.run(lambda c: subscriptions.set_local_channel(c, sub_id, local_channel))
         lines.append(text.SUBSCRIPTION_LOCAL_CHANNEL_SET.format(channel_id=local_channel))
-    if not lines:   # an active row given options that it already has
-        return text.SUBSCRIPTION_ALREADY
+    final = await ctx.db.run(lambda c: subscriptions.get_by_id(c, sub_id))
+    assert final is not None
+    stored_role = await ctx.db.run(lambda c: cards.get_subscription_role(c, sub_id))
+    # The role step runs after the lock when the copy just left redirect, when a role was given, or when none is stored.
+    role_step = _is_scoped(final.mode) and (
+        (change is not None and current_mode == "redirect") or opts.role is not None or stored_role is None)
+    if not lines and not role_step:
+        return text.SUBSCRIPTION_ALREADY, None
     ctx.kick()
-    return "\n".join(lines)
+    follow = _Followup(card_id=card.id, sub_id=sub_id, guild_id=guild_id, role_id=opts.role, role_step=role_step,
+                       reseed=role_step or change is not None, change=change or _ModeChange())
+    return "\n".join(lines), follow
+
+
+async def _change_mode_locked(ctx: CardContext, card: cards.Card, sub: subscriptions.Subscription, new_mode: str,
+                              actor: str, *, counts: Mapping[int, int]) -> _ModeChange | None:
+    """Moves a subscription to `new_mode`. The caller holds the card lock. Leaving a scope ends it (its sessions, poll,
+    play-now posts and mirrors) and forgets its local channel; the copy's calendar and ballot box come off after the
+    lock. Both to local deletes the mirrors only. Returns None when the row changed under the caller."""
+    old_mode = sub.mode
+    ended: scope_cleanup.ScopeEnded | None = None
+    mirrors_left: tuple[str, ...] = ()
+    if new_mode == "redirect" and _is_scoped(old_mode):
+        ended = await scope_cleanup.end_scope_locked(ctx, card.id, sub.id, actor, counts=counts)
+        mirrors_left = ended.mirrors_left
+    elif old_mode == "both" and new_mode == "local":
+        mirrors_left = await scope_cleanup.delete_mirrors_locked(ctx, sub.id)
+    if not await ctx.db.run(lambda c: subscriptions.set_mode_if(c, sub.id, old_mode, new_mode)):
+        return None
+    if new_mode == "redirect":
+        await ctx.db.run(lambda c: subscriptions.set_local_channel(c, sub.id, None))
+    unseed = (sub.channel_id, sub.message_id) if ended is not None and sub.message_id is not None else None
+    return _ModeChange(ended=ended, unseed=unseed, mirrors_left=mirrors_left)
+
+
+async def _role_step_for_sub(ctx: CardContext, card: cards.Card, guild_id: str, sub_id: int,
+                             role_id: str | None) -> str:
+    """The follow role of one subscription, in its own community. Runs after the card lock. A refusal keeps the mode."""
+    deps = _follow_deps(ctx)
+    if deps is None:
+        return text.SUBSCRIPTION_ROLE_UNAVAILABLE
+    res = await follow_roles.ensure_follow_role(deps, guild_id, card, role_id=role_id, sub_id=sub_id)
+    if res.outcome in (follow_roles.Ensured.REUSED, follow_roles.Ensured.ADOPTED, follow_roles.Ensured.CREATED,
+                       follow_roles.Ensured.SET):
+        return text.SUBSCRIPTION_ROLE_OK.format(role_id=res.role_id)
+    if res.reason in ("taken", "duplicate_name"):
+        return text.SUBSCRIPTION_ROLE_ASK
+    reason = text.SUBSCRIPTION_ROLE_REASON.get(res.reason or "lookup_failed", text.SUBSCRIPTION_ROLE_REASON["lookup_failed"])
+    return text.SUBSCRIPTION_ROLE_FAILED.format(reason=reason)
+
+
+def _mirrors_left_line(channels: tuple[str, ...]) -> str:
+    return text.SUBSCRIPTION_MIRRORS_LEFT.format(channels=", ".join(f"<#{c}>" for c in dict.fromkeys(channels)))
+
+
+async def _finish_change(ctx: CardContext, card: cards.Card, follow: _Followup) -> list[str]:
+    """What runs after the card lock is released: the play-now reactions of an ended scope, the calendar and ballot box
+    of a copy that left its scope, the role step, the copy's reactions, and the names of any mirror left behind."""
+    if follow.change.ended is not None:
+        await scope_cleanup.end_scope_after_lock(ctx, follow.change.ended)
+    if follow.change.unseed is not None and ctx.seeder is not None:
+        channel_id, message_id = follow.change.unseed
+        await ctx.seeder.unseed(channel_id, message_id, (SESSION_EMOJI, POLL_EMOJI))
+    lines: list[str] = []
+    if follow.role_step:
+        lines.append(await _role_step_for_sub(ctx, card, follow.guild_id, follow.sub_id, follow.role_id))
+    if follow.reseed:
+        await _reseed(ctx, follow.card_id)
+    if follow.change.mirrors_left:
+        lines.append(_mirrors_left_line(follow.change.mirrors_left))
+    return lines
 
 
 async def _unsubscribe(event: MessageCreate, ctx: CardContext, rest: str) -> _Result:
-    """Deletes the copy and removes the row. A copy the bot cannot delete (any failure but a 404) still loses its row, is
-    logged, and the reply says the copy is still there. Unsubscribing is final, unlike archive, which keeps the rows."""
+    """Deletes the copy and removes the row. A scope the copy owns ends first (its sessions cancelled with DMs, its poll
+    closed, its play-now posts expired, its mirrors deleted), and then its history is deleted with the row, whatever the
+    mode now is. A copy the bot cannot delete (any failure but a 404) still loses its row, is logged, and the reply says
+    the copy is still there. Unsubscribing is final, unlike archive, which keeps the rows."""
     parts = rest.split(maxsplit=1)
     if len(parts) != 2:
         await _say(ctx, event, text.UNSUBSCRIBE_USAGE)
@@ -803,15 +917,26 @@ async def _unsubscribe(event: MessageCreate, ctx: CardContext, rest: str) -> _Re
     if card is None:
         await _say(ctx, event, text.NO_SUCH_CARD)
         return _Result()
+    before = await ctx.db.run(lambda c: subscriptions.get(c, card.id, channel_id))
+    counts = await _scope_end_counts(ctx, card.id, before)
+    ended: scope_cleanup.ScopeEnded | None = None
     async with ctx.locks.get(card.id):
         sub = await ctx.db.run(lambda c: subscriptions.get(c, card.id, channel_id))
         if sub is None:
             reply = text.SUBSCRIPTION_NOT_FOUND
         else:
+            if _is_scoped(sub.mode):
+                ended = await scope_cleanup.end_scope_locked(ctx, card.id, sub.id, event.author_id, counts=counts)
             copy_gone = (sub.message_id is None
                          or await _delete_posted(ctx.rest, channel_id, sub.message_id) is _Delete.GONE)
-            await ctx.db.run(lambda c: subscriptions.remove(c, card.id, channel_id))
+            if await ctx.db.run(lambda c: scope_cleanup.has_scope_rows(c, sub.id)):
+                await scope_cleanup.delete_scope_rows_locked(ctx, sub.id)
+            await ctx.db.run(lambda c: subscriptions.remove_by_id(c, sub.id))
             reply = text.UNSUBSCRIBED if copy_gone else text.UNSUBSCRIBED_COPY_LEFT.format(channel_id=channel_id)
+    if ended is not None:
+        await scope_cleanup.end_scope_after_lock(ctx, ended)
+        if ended.mirrors_left:
+            reply += "\n" + _mirrors_left_line(ended.mirrors_left)
     await _say(ctx, event, reply)
     return _Result(card.id)
 

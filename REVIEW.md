@@ -273,15 +273,15 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/card_fields.py:66` `def suffix(field: str, value: str) -> str:` — the suffix validator. Suffixes are card text and will come from members later, so they are untrusted: composed to NFC, trimmed of spaces only (a newline is refused, not trimmed), runs of spaces collapsed, then 1 to 20 characters. A refusal names the field and the rule, never the value.
 - `src/fluxer_panel/card_fields.py:82` `def _suffix_char(` — the allowlist: Unicode letters, decimal digits and `SUFFIX_MARKS` (space and - + . '). Everything else is refused, parentheses, backticks, markdown, `@`, `<`, `#`, controls, format characters, bidi controls and emoji included, and so are the Hangul filler letters (`_BLANK_LETTERS`), which render blank.
 - `src/fluxer_panel/migrations/0007_card_slots.sql:19` `suffix NOT GLOB` — the schema's second layer for suffixes, on all three slot tables: length 1-20, trimmed, no double space, and no ASCII control or punctuation other than - + . '.
-- `src/fluxer_panel/card_commands.py:243` `raise CardFieldError(field_name, "no_slot")` — a suffix is refused on an empty slot. The store's `set_suffix` writes only to a slot that still has a value, so a clear that lands first leaves no suffix behind.
+- `src/fluxer_panel/card_commands.py:244` `raise CardFieldError(field_name, "no_slot")` — a suffix is refused on an empty slot. The store's `set_suffix` writes only to a slot that still has a value, so a clear that lands first leaves no suffix behind.
 - `src/fluxer_panel/cards.py:399` `table = SLOT_KIND_TABLES[kind]` — the suffix write's table name comes from a fixed map, never from input. An unknown kind raises before any SQL.
 - `src/fluxer_panel/card_fields.py:39` `RENAMED_FIELDS = {"text_channel1": "text_channel"}` — the old field name is refused with a reply naming the new one. It is never read as an alias.
-- `src/fluxer_panel/card_commands.py:353` `exc.status in (403, 404)` — a 403 or a 404 from `get_guild` means the bot is not in that community. Both get the same "unverified" reply.
-- `src/fluxer_panel/card_commands.py:366` `if channel.get("type") != channel_type:` — the channel must be the type its slot takes: a voice channel for the voice slot, a text channel for a text slot.
-- `src/fluxer_panel/card_commands.py:45` `TEXT_CHANNEL_TYPE = 0` — the text channel type, the same value as Discord's. It was confirmed on a live instance: `tools/live/markup_live.py` printed type 0 for the posting channel.
-- `src/fluxer_panel/card_commands.py:368` `str(channel.get("guild_id")) != guild_id` — the channel must belong to the community the admin named.
-- `src/fluxer_panel/card_commands.py:614` `cards.set_state(conn, card_id, "archived", now)` — archive keeps the card row and its slots. It clears the message and sets the state, so the card can be read again.
-- `src/fluxer_panel/card_commands.py:763` `return text.SUBSCRIPTION_NOT_IN_COMMUNITY` — a subscription is refused unless the bot is in the community. `_check_channel` answers a 403 or 404 on the community lookup with an unverified link, and a subscription never stores one.
+- `src/fluxer_panel/card_commands.py:354` `exc.status in (403, 404)` — a 403 or a 404 from `get_guild` means the bot is not in that community. Both get the same "unverified" reply.
+- `src/fluxer_panel/card_commands.py:367` `if channel.get("type") != channel_type:` — the channel must be the type its slot takes: a voice channel for the voice slot, a text channel for a text slot.
+- `src/fluxer_panel/card_commands.py:46` `TEXT_CHANNEL_TYPE = 0` — the text channel type, the same value as Discord's. It was confirmed on a live instance: `tools/live/markup_live.py` printed type 0 for the posting channel.
+- `src/fluxer_panel/card_commands.py:369` `str(channel.get("guild_id")) != guild_id` — the channel must belong to the community the admin named.
+- `src/fluxer_panel/card_commands.py:615` `cards.set_state(conn, card_id, "archived", now)` — archive keeps the card row and its slots. It clears the message and sets the state, so the card can be read again.
+- `src/fluxer_panel/card_commands.py:804` `return text.SUBSCRIPTION_NOT_IN_COMMUNITY` — a subscription is refused unless the bot is in the community. `_check_channel` answers a 403 or 404 on the community lookup with an unverified link, and a subscription never stores one.
 
 ## Card poller
 
@@ -305,8 +305,8 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/poller.py:583` `if state.message_id is None and not may_post:` — when this tick's first read of the stored board failed, no new board is posted in that tick, so a board is never posted while the stored state is unknown.
 - `src/fluxer_panel/poller.py:727` `await self._sync(card_id, post_channel=sub.channel_id, edit_channel=sub.channel_id,` — a copy's post and edit run the card's own sync path, so each send carries the card's `allowed_mentions`. One copy's failure is caught here and does not stop the others.
 - `src/fluxer_panel/poller.py:750` `await self._dm_admins(alert.format(slug=slug, channel_id=channel_id),` — the pause DM takes a fixed text, the card's slug (a-z, 0-9 and -) and a channel id. No title or other card text reaches it, and the channel is shown as a mention.
-- `src/fluxer_panel/text.py:202` `SUBSCRIPTION_PAUSED_ALERT = (` — the 403 pause DM's text. Its placeholders are the card's slug and the channel id, and nothing else.
-- `src/fluxer_panel/text.py:205` `SUBSCRIPTION_CHANNEL_GONE_ALERT = (` — the 404 pause DM's text. Its placeholders are the card's slug and the channel id, and nothing else.
+- `src/fluxer_panel/text.py:220` `SUBSCRIPTION_PAUSED_ALERT = (` — the 403 pause DM's text. Its placeholders are the card's slug and the channel id, and nothing else.
+- `src/fluxer_panel/text.py:223` `SUBSCRIPTION_CHANNEL_GONE_ALERT = (` — the 404 pause DM's text. Its placeholders are the card's slug and the channel id, and nothing else.
 
 ## Private denylist
 

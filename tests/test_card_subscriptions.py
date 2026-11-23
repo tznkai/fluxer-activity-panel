@@ -696,8 +696,9 @@ async def test_subscribe_local_with_a_channel_stores_the_mode_and_the_local_chan
     sub = await stored(far_world, card.id, FAR_COPY)
     assert sub is not None
     assert (sub.mode, sub.local_channel_id, sub.guild_id) == ("local", FAR_LOCAL, FAR)
-    assert far_world.last_reply() == "\n".join([text.SUBSCRIBED, text.SUBSCRIPTION_MODE_SET.format(
-        channel_id=FAR_COPY, mode="local"), text.SUBSCRIPTION_LOCAL_CHANNEL_SET.format(channel_id=FAR_LOCAL)])
+    # The role step adds its own line after these (test_card_sub_modes covers it), so only the leading lines are compared.
+    assert far_world.last_reply().splitlines()[:3] == [text.SUBSCRIBED, text.SUBSCRIPTION_MODE_SET.format(
+        channel_id=FAR_COPY, mode="local"), text.SUBSCRIPTION_LOCAL_CHANNEL_SET.format(channel_id=FAR_LOCAL)]
 
 
 async def test_subscribe_local_with_a_channel_link_stores_the_channel(far_world: World) -> None:
@@ -724,7 +725,7 @@ async def test_channel_alone_on_an_active_local_row_updates_it_in_place(far_worl
     assert sub is not None
     assert (sub.mode, sub.local_channel_id) == ("local", FAR_LOCAL)
     assert len(await sub_rows(far_world, card.id)) == 1
-    assert far_world.last_reply() == text.SUBSCRIPTION_LOCAL_CHANNEL_SET.format(channel_id=FAR_LOCAL)
+    assert far_world.last_reply().splitlines()[0] == text.SUBSCRIPTION_LOCAL_CHANNEL_SET.format(channel_id=FAR_LOCAL)
 
 
 async def test_subscribe_with_a_bad_option_gives_usage_and_writes_nothing(far_world: World) -> None:

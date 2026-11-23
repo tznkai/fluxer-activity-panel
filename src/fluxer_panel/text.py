@@ -196,6 +196,24 @@ SUBSCRIPTION_CHANNEL_IS_GAMES = "That's the games channel. Sessions, polls and p
 SUBSCRIPTION_MODE_SET = "Copy in <#{channel_id}> is now {mode}."
 SUBSCRIPTION_LOCAL_CHANNEL_SET = "It posts in <#{channel_id}>."
 SUBSCRIPTION_RETRY = "Something changed at the same time. Run the command again."
+SUBSCRIPTION_ROLE_OK = "Follow role here: <@&{role_id}>."
+SUBSCRIPTION_ROLE_ASK = ("A role with the card's follow name is already in use in that community. Give one with "
+                         "role=<role id>.")
+SUBSCRIPTION_ROLE_FAILED = "The mode is set, but the follow role isn't: {reason}"
+SUBSCRIPTION_ROLE_UNAVAILABLE = "The mode is set, but following isn't available right now, so there's no follow role."
+SUBSCRIPTION_MIRRORS_LEFT = "I couldn't delete my posts in {channels}."
+# The role step's refusal reasons, as one sentence each. Nothing here names the role.
+SUBSCRIPTION_ROLE_REASON = {
+    "hierarchy": "That role is at or above the bot's top role.",
+    "role_permissions": "That role grants permissions. A follow role must have none.",
+    "missing": "That role isn't in this community.",
+    "everyone": "That's the @everyone role.",
+    "not_mentionable": "That role isn't mentionable.",
+    "create_failed": "I couldn't create or change the role there (I need Manage Roles, ranked above it).",
+    "mentionable_failed": "I couldn't create or change the role there (I need Manage Roles, ranked above it).",
+    "lookup_failed": "I couldn't reach Fluxer to check that role. Try again in a minute.",
+    "no_bot_id": "Try again in a moment.",
+}
 SUBSCRIPTIONS_HEADING = "Subscribed channels:"
 SUBSCRIPTION_PAUSED_SUFFIX = " (paused)"
 # The two pause alerts take the card's slug (a-z, 0-9 and -) and the channel, shown as a mention. No other card text.

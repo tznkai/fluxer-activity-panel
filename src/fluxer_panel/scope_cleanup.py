@@ -117,6 +117,16 @@ async def delete_scope_rows_locked(ctx: CardContext, sub_id: int) -> None:
     await ctx.db.run(lambda c: _delete_scope_rows_tx(c, sub_id))
 
 
+_SCOPE_ROW_QUERIES = ("SELECT 1 FROM play_now WHERE scope_sub_id = ? LIMIT 1",
+                      "SELECT 1 FROM polls WHERE scope_sub_id = ? LIMIT 1",
+                      "SELECT 1 FROM sessions WHERE scope_sub_id = ? LIMIT 1")
+
+
+def has_scope_rows(conn: Any, sub_id: int) -> bool:
+    """Whether the subscription owns any session, poll or play-now row, in any state."""
+    return any(conn.execute(query, (sub_id,)).fetchone() is not None for query in _SCOPE_ROW_QUERIES)
+
+
 def _delete_scope_rows_tx(conn: Any, sub_id: int) -> None:
     conn.execute("DELETE FROM play_now WHERE scope_sub_id = ?", (sub_id,))
     conn.execute("DELETE FROM polls WHERE scope_sub_id = ?", (sub_id,))
