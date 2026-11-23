@@ -868,20 +868,13 @@ def _carry_forbidden(conn: Any, session_id: int, readings: dict[rsvp.Choice, set
     if not forbidden:
         return readings, via, frozenset()
     carried: dict[rsvp.Choice, set[str]] = {choice: set(users) for choice, users in readings.items()}
-    origins = dict(via)
-    shown = {user_id for users in readings.values() for user_id in users}
     kept: set[tuple[str, str]] = set()
-    carried_origin: dict[str, int] = {}
-    for user_id, choice, sub_id in sessions.presence_from_subs(conn, session_id, forbidden):
+    for user_id, choice, _sub_id in sessions.presence_from_subs(conn, session_id, forbidden):
         if user_id in readings.get(choice, set()):
             continue
         carried.setdefault(choice, set()).add(user_id)
         kept.add((user_id, choice))
-        carried_origin[user_id] = min(sub_id, carried_origin.get(user_id, sub_id))
-    for user_id, sub_id in carried_origin.items():
-        if user_id not in shown:
-            origins[user_id] = sub_id
-    return carried, origins, frozenset(kept)
+    return carried, dict(via), frozenset(kept)
 
 
 def _merge_readings(home: dict[rsvp.Choice, set[str]],

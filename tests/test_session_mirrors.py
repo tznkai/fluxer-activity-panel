@@ -575,12 +575,6 @@ async def state_of(world: SimpleNamespace, session_id: int, user_id: str) -> str
     return None if found is None else found[0]
 
 
-async def react_and_forbid(world: SimpleNamespace, session_id: int, emoji: str, channel: str, message: str) -> None:
-    """Puts one reaction on a message, then answers 403 to the mirror's reads of its going reaction."""
-    world.state.reactions.setdefault((channel, message), {}).setdefault(emoji, []).append(FAR_USER)
-    await world.presses.on_reaction(emoji_reaction(FAR_USER, channel, message, emoji))
-
-
 def emoji_reaction(user_id: str, channel_id: str, message_id: str, emoji: str) -> Any:
     return events.ReactionAdd(user_id=user_id, channel_id=channel_id, message_id=message_id, guild_id=GAMES_GUILD,
                               emoji=events.Emoji(name=emoji, id=None), member_role_ids=None)
