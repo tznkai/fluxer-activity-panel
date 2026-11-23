@@ -363,7 +363,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/poll_post.py:70` `if via_sub_id is None:` — a home ballot links the home poll, and a far ballot links only its subscription's mirror, or nothing.
 - `src/fluxer_panel/poll_post.py:100` `None if poll.session_id is None else session_jump(conn, poll.session_id, row.sub_id)` — each poll mirror's session link is its own copy's session mirror, or plain text: never the home session (AC3.6).
 - `src/fluxer_panel/session_post.py:33` `via = sessions.presence_via(conn, session.id, user_id)` — a session DM links a far user's own mirror, and the home message only for a user with no far origin.
-- `src/fluxer_panel/poll_flow.py:556` `if sub_id is None:` — the scheduled DM links the home session only to a home voter; a far voter gets their mirror, or no link.
+- `src/fluxer_panel/poll_flow.py:567` `if sub_id is None:` — the scheduled DM links the home session only to a home voter; a far voter gets their mirror, or no link.
 - `src/fluxer_panel/sessions.py:532` `mirror = mirrors.get(conn, "session", home.id, sub.id)` — a both copy's next-session line shows the home session with its mirror's jump in this copy, never the home message.
 - `src/fluxer_panel/render.py:660` `if instance_url is not None and poll_jump is not None` — a ballot with no jump gets no link, in both the open and the closed form.
 - `src/fluxer_panel/mirrors.py:63` `WHERE EXISTS ` — a mirror row is stored only while its subscription is an active both copy, so a copy that left both cannot keep one.

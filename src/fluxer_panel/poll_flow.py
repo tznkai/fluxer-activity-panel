@@ -467,7 +467,8 @@ class PollFlow:
     async def _recipients(self, card: Card, starter: str, resolved: scope.Scope
                           ) -> tuple[poll_members.Recipients, bool] | None:
         """The starter, then the holders of the scope's follow role, then (for a home scope) the holders of each both
-        copy's role, capped. The flag says whether the scope has a follow role. The home role's holders are read from
+        copy's role, capped. The flag says whether any follow role exists for the poll (see `_has_follow_role`). The
+        home role's holders are read from
         its own community, and a failure there refuses the start. A far community that cannot be read is skipped and
         logged per subscription, so it never fails the home poll. None when the home member list could not be read."""
         role = resolved.role
@@ -479,7 +480,17 @@ class PollFlow:
                 return None
         far = await self._far_holders(card) if resolved.sub_id is None else []
         found = poll_members.combined([(None, home), *far], starter_id=starter, cap=self._config.poll_max_recipients)
-        return found, role is not None
+        return found, await self._has_follow_role(card, resolved)
+
+    async def _has_follow_role(self, card: Card, resolved: scope.Scope) -> bool:
+        """Whether the poll's scope has a follow role to ballot: its own, or for a home poll any both copy's. The
+        copies' roles are read from storage, so a far member list that fails to read does not make a role vanish."""
+        if resolved.role is not None:
+            return True
+        if resolved.sub_id is not None:
+            return False
+        return await self._db.run(lambda c: any(cards.get_subscription_role(c, sub.id) is not None
+                                                for sub in subscriptions.list_both(c, card.id)))
 
     async def _far_holders(self, card: Card) -> list[tuple[int, list[str]]]:
         """(subscription id, holders of its follow role) for each both copy that has one, in subscription order. The

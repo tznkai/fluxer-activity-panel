@@ -295,6 +295,21 @@ async def test_a_card_with_no_follow_role_polls_only_the_starter_and_says_so(bui
     assert text.POLL_NO_ROLE in dm_contents(world.state, STARTER)
 
 
+async def test_a_home_poll_with_no_home_role_but_a_both_copy_role_does_not_say_only_you_were_sent_a_ballot(
+        build) -> None:
+    world = await build(follow=False)
+    far_members(world.state, HOLDER_B)
+    await add_scope(world, mode="both")
+
+    await world.flow.start(press(world.card_id))
+    await world.post.drain()
+
+    poll = await open_poll(world)
+    assert poll is not None
+    assert await ballot_users(world, poll.id) == {STARTER, HOLDER_B}
+    assert text.POLL_NO_ROLE not in dm_contents(world.state, STARTER)
+
+
 # AC2.7: a second press while a poll is open ----------------------------------------------------------------
 
 async def test_a_second_press_while_a_poll_is_open_posts_nothing_and_links_the_open_poll(build) -> None:
