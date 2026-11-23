@@ -100,6 +100,33 @@ async def test_resolve_scope_is_elsewhere_for_a_far_redirect_copy(db: Database) 
     assert await db.run(lambda c: scope.resolve_scope(c, card, far, GUILD)) is scope.ELSEWHERE
 
 
+PLAY_POST_MSG = "5009"   # a play-now post's message, in the games channel's community or elsewhere
+
+
+async def test_resolve_scope_is_home_for_a_play_now_post_in_the_games_community(db: Database) -> None:
+    ids = await db.run(build_world)
+    card = await db.run(lambda c: cards.get_by_id(c, ids["card"]))
+    assert card is not None
+    home_post = Surface("play_now", PLAY_CH, PLAY_POST_MSG, GUILD, True)
+    assert await db.run(lambda c: scope.resolve_scope(c, card, home_post, GUILD)) == scope.home_scope(card, GUILD)
+
+
+async def test_resolve_scope_is_elsewhere_for_a_play_now_post_outside_the_games_community(db: Database) -> None:
+    ids = await db.run(build_world)
+    card = await db.run(lambda c: cards.get_by_id(c, ids["card"]))
+    assert card is not None
+    far_post = Surface("play_now", FAR_LOCAL, PLAY_POST_MSG, OTHER_GUILD, False)
+    assert await db.run(lambda c: scope.resolve_scope(c, card, far_post, GUILD)) is scope.ELSEWHERE
+
+
+async def test_resolve_scope_is_elsewhere_for_a_card_message_outside_the_games_community(db: Database) -> None:
+    ids = await db.run(build_world)
+    card = await db.run(lambda c: cards.get_by_id(c, ids["card"]))
+    assert card is not None
+    far_card = Surface("card", FAR_LOCAL, CARD_MSG, OTHER_GUILD, False)
+    assert await db.run(lambda c: scope.resolve_scope(c, card, far_card, GUILD)) is scope.ELSEWHERE
+
+
 async def test_resolve_scope_is_the_subscription_for_a_local_copy_with_its_stored_role(db: Database) -> None:
     ids = await db.run(build_world)
     card = await db.run(lambda c: cards.get_by_id(c, ids["card"]))

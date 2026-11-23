@@ -65,7 +65,7 @@ Paths are relative to this directory.
 - `src/fluxer_client/rest.py:258` `async def add_member_role(` — a PUT that grants a role. This is a privilege change, so the role allowlist and the role hierarchy must be checked before the call. Fluxer answers both a hierarchy refusal and a missing permission with the same 403 code.
 - `src/fluxer_client/rest.py:262` `async def remove_member_role(` — a DELETE that removes a role. The same checks apply.
 - `tools/live/roles.py:32` `await rest.add_member_role(guild, user, role, reason=REASON)` — the live tool's call, which runs only in the private guild.
-- `src/fluxer_panel/follow_roles.py:115` `stored.role_id not in allow` — `toggle_follow` re-reads the card's stored role and the allowlist at press time. A role not in the allowlist is refused before any REST call.
+- `src/fluxer_panel/follow_roles.py:115` `stored.role_id not in allow` — `toggle_follow` re-reads the stored role of the card or the subscription and the allowlist at press time. A role not in the allowlist is refused before any REST call.
 - `src/fluxer_panel/follow_roles.py:132` `not manageable(` — the hierarchy check in `toggle_follow`, against freshly fetched roles and the bot's own member record, runs before the add or remove.
 - `src/fluxer_panel/follow_roles.py:275` `if not zero_permissions(role):` — the adopt branch of `ensure_follow_role` refuses any role with permissions other than 0, so the bot never writes to a role that grants something.
 - `src/fluxer_panel/follow_roles.py:283` `await deps.rest.set_role_mentionable(` — an adopted role is made mentionable only after every check passes, and nothing is stored if the call fails.
@@ -109,8 +109,8 @@ Paths are relative to this directory.
 - `src/fluxer_panel/interactions.py:57` `return {"parse": []}` — a play-now message with no follow role mentions nobody.
 - `src/fluxer_panel/interactions.py:58` `return {"parse": [], "roles": [role_id], "replied_user": False}` — the play-now role ping. Only the follow role of the play-now post's own scope can be mentioned, and only when `_scope_role_in` has matched it.
 - `src/fluxer_panel/interactions.py:64` `return role.role_id if role is not None and role.guild_id == guild_id else None` — the scope-role community check: a role from another community is never mentioned.
-- `src/fluxer_panel/interactions.py:361` `if channel_id == self._config.games_channel_id:` — the play-now guard in `send_play_now`. A play-now message is never sent to the games channel.
-- `src/fluxer_panel/interactions.py:362` `raise GamesChannelRefused` — the refusal happens before any REST call.
+- `src/fluxer_panel/interactions.py:362` `if channel_id == self._config.games_channel_id:` — the play-now guard in `send_play_now`. A play-now message is never sent to the games channel.
+- `src/fluxer_panel/interactions.py:363` `raise GamesChannelRefused` — the refusal happens before any REST call.
 
 ## Purge deletion
 

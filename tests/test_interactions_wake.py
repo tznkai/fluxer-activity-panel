@@ -96,6 +96,19 @@ async def test_a_wake_press_on_any_surface_wakes_the_card(db: Database, session:
     assert wake.presses == [(CARD_ID, PRESSER)]
 
 
+async def test_a_wake_press_on_a_play_now_post_outside_the_games_community_still_wakes_the_card(
+        db: Database, session: aiohttp.ClientSession) -> None:
+    wake = RecordingWake()
+    interactions = make_interactions(db, session, wake)
+    far_post = Surface(kind="play_now", channel_id=FAR_CHANNEL, message_id="5003", guild_id=FAR_GUILD,
+                       home_community=False)
+
+    await interactions.handle(Press(card_id=CARD_ID, action=Action.WAKE, user_id=PRESSER, member_role_ids=None,
+                                    surface=far_post))
+
+    assert wake.presses == [(CARD_ID, PRESSER)]
+
+
 async def test_a_wake_press_without_wake_requests_does_nothing(db: Database, session: aiohttp.ClientSession) -> None:
     interactions = make_interactions(db, session, None)
 

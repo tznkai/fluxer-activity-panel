@@ -30,7 +30,7 @@ from fluxer_panel.db import Database
 from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.interactions import GamesChannelRefused, Interactions, _scope_role_in
 from fluxer_panel.pacer import ChannelPacer
-from fluxer_panel.presses import PLAY_NOW_EMOJI, WAKE_EMOJI, Presses
+from fluxer_panel.presses import PLAY_NOW_EMOJI, WAKE_EMOJI, Action, Press, Presses, Surface
 from fluxer_panel.resolver import CardStatus, StatusKind
 from fluxer_panel.seeding import Seeder
 from tests.fakes import FakeFluxerState, Override, Recorded, make_rest_app
@@ -417,6 +417,16 @@ async def test_a_copy_outside_the_home_community_is_refused_by_dm_and_nothing_is
     h = await harness()
     await h.presses.on_reaction(play_press(channel=FAR_COPY, message=FAR_MSG, guild=OTHER_GUILD))
     assert channel_posts(h.state) == []
+    assert dm_channel_texts(h.state, PRESSER) == [text.PLAY_NOW_ELSEWHERE]
+
+
+async def test_a_far_play_now_post_given_to_the_play_now_handler_is_refused_by_dm(harness) -> None:
+    h = await harness()
+    far_post = Surface("play_now", FAR_PLAY, FAR_MSG, OTHER_GUILD, False)
+    await h.interactions.play_now(Press(card_id=CARD_ID, action=Action.PLAY_NOW, user_id=PRESSER,
+                                        member_role_ids=frozenset(), surface=far_post))
+    assert channel_posts(h.state) == []
+    assert [r for r in h.state.requests if "/roles" in r.path] == []
     assert dm_channel_texts(h.state, PRESSER) == [text.PLAY_NOW_ELSEWHERE]
 
 

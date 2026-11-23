@@ -54,11 +54,12 @@ def scope_for_sub(conn: sqlite3.Connection, card: Card, sub: Subscription) -> Sc
 
 def resolve_scope(conn: sqlite3.Connection, card: Card, surface: Surface, games_guild_id: str | None
                   ) -> Scope | Elsewhere:
-    """A card message, a play-now post or a home copy is the home scope. A far copy in local or both is its
-    subscription's scope. A far redirect copy is ELSEWHERE. The subscription is read here, inside the caller's
-    transaction, so a mode changed since the press was filtered wins."""
+    """A card message, a play-now post or a home copy in the games community is the home scope. A far card, play-now
+    post or redirect copy is ELSEWHERE, and so is a far copy whose subscription is not a scope. A far copy in local or
+    both is its subscription's scope. The subscription is read here, inside the caller's transaction, so a mode changed
+    since the press was filtered wins."""
     if surface.sub_id is None:
-        return home_scope(card, games_guild_id)
+        return home_scope(card, games_guild_id) if surface.home_community else ELSEWHERE
     sub = subscriptions.get_by_id(conn, surface.sub_id)
     if sub is not None and sub.is_scope:
         return scope_for_sub(conn, card, sub)

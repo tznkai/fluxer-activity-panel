@@ -18,7 +18,7 @@ import pytest
 from fluxer_client import events
 from fluxer_client.rest import FluxerREST
 from fluxer_client.roles import RoleCache
-from fluxer_panel import cards, render, subscriptions, text
+from fluxer_panel import cards, play_now, render, subscriptions, text
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
@@ -332,6 +332,28 @@ async def test_a_copy_elsewhere_with_no_card_message_gets_the_plain_text(harness
     assert dm_channel_texts(h.state, PRESSER) == [
         text.FOLLOW_ELSEWHERE_NO_LINK.format(card=render.escape(CARD_TITLE))]
     assert "](" not in dm_channel_texts(h.state, PRESSER)[0]
+
+
+# A play-now post outside the games community ----------------------------------------------------------
+
+FAR_PLAY_MSG = "5999"   # a play-now post in OTHER_GUILD, in the local copy's channel
+
+
+async def far_play_now(h: Harness, scope_sub: int | None) -> None:
+    await h.db.run(lambda c: play_now.add(c, card_id=CARD_ID, guild_id=OTHER_GUILD, channel_id=FAR_LOCAL,
+                                          message_id=FAR_PLAY_MSG, presser_id="6009", offers_wake=False, now=0,
+                                          expires_at=10**9, scope_sub_id=scope_sub))
+
+
+@pytest.mark.parametrize("scoped", [False, True], ids=["unscoped", "scoped"])
+async def test_bell_on_a_far_play_now_post_is_elsewhere_with_no_role_call(harness, scoped: bool) -> None:
+    h = await harness()
+    sub = await local_copy(h) if scoped else None
+    await far_play_now(h, sub)
+    await h.presses.on_reaction(follow_press(channel=FAR_LOCAL, message=FAR_PLAY_MSG, guild=OTHER_GUILD))
+    assert role_requests(h.state) == []
+    assert dm_channel_texts(h.state, PRESSER) == [
+        text.FOLLOW_ELSEWHERE.format(card=render.escape(CARD_TITLE), link=jump_to_games_card())]
 
 
 # A local or both copy: its own community, its own follow role ----------------------------------------

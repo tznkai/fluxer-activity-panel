@@ -108,7 +108,8 @@ class Interactions:
         self._kick = kick
         self._status_of = status_of
         self._follow_deps = follow_roles.FollowDeps(db=db, rest=rest, config=config, roles=roles, identity=identity)
-        self._follow_alerted: set[tuple[int, str]] = set()   # (card id, reason) whose admin alert was sent
+        # (card id, sub id, reason) whose admin alert was sent
+        self._follow_alerted: set[tuple[int, int | None, str]] = set()
         self._recount_tickets = itertools.count(1)           # one ticket per Me Too recount, taken before its reactor reads
         self._recount_applied: dict[str, int] = {}           # play-now message id -> ticket of the newest recount shown
         self._session_post = session_post
