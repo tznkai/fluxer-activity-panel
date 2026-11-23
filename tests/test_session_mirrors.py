@@ -221,6 +221,7 @@ async def test_a_purge_scrub_patches_each_mirror_without_the_location(world: Sim
 FAR_USER = "1201"
 OTHER_FAR_USER = "1202"
 QUIET_FAR_USER = "1203"
+HOME_ONLY_USER = "1204"
 
 
 def reaction(user_id: str, channel_id: str, message_id: str, *, added: bool = True) -> Any:
@@ -430,3 +431,81 @@ async def test_a_mirror_dropped_on_a_404_is_not_posted_again_by_a_later_edit(wor
     await edit(world, session_id)
 
     assert len(requests(world, "POST", messages_path(FAR_B))) == 1, "only the publish posted the mirror"
+
+
+# An unreadable mirror: a 403 or 404 on its reactor reads never blocks a home removal or the startup reconcile
+# (AC3.8) -----------------------------------------------------------------------------------------------------
+
+def mirror_reactors_path(channel_id: str, message_id: str) -> str:
+    return f"GET {messages_path(channel_id, message_id)}/reactions/{rsvp.GOING_EMOJI}/users"
+
+
+async def remove_home_going(world: SimpleNamespace, session_id: int, user_id: str) -> None:
+    home_id = await home_message(world, session_id)
+    set_going(world, HOME, home_id, [])
+    await world.presses.on_reaction(reaction(user_id, HOME, home_id, added=False))
+
+
+async def far_and_home_going(world: SimpleNamespace) -> tuple[int, str, str]:
+    """A session with FAR_USER going on the home message and on B's mirror. Returns (session id, home id, mirror id)."""
+    session_id = await publish(world)
+    home_id = await home_message(world, session_id)
+    mirror_id = await mirror_message(world, world.sub_b, session_id)
+    set_going(world, HOME, home_id, [FAR_USER])
+    set_going(world, FAR_B, mirror_id, [FAR_USER])
+    await world.presses.on_reaction(reaction(FAR_USER, HOME, home_id))
+    await world.presses.on_reaction(reaction(FAR_USER, FAR_B, mirror_id))
+    return session_id, home_id, mirror_id
+
+
+async def test_a_mirror_answering_403_does_not_block_a_home_removal(world: SimpleNamespace,
+                                                                    caplog: pytest.LogCaptureFixture) -> None:
+    session_id, _home_id, mirror_id = await far_and_home_going(world)
+    world.state.overrides[mirror_reactors_path(FAR_B, mirror_id)] = Override(
+        403, b'{"code": "MISSING_PERMISSIONS", "message": "Missing Permissions"}')
+    await remove_home_going(world, session_id, FAR_USER)
+    assert FAR_USER not in await going(world, session_id)
+    row = await mirror_row(world, world.sub_b, session_id)
+    assert row is not None and row.message_id == mirror_id      # a 403 keeps the row
+    assert any(r.getMessage() == "mirror_unreadable" for r in caplog.records)
+
+
+async def test_a_mirror_answering_404_is_dropped_and_the_home_removal_applies(world: SimpleNamespace) -> None:
+    session_id, _home_id, mirror_id = await far_and_home_going(world)
+    world.state.overrides[mirror_reactors_path(FAR_B, mirror_id)] = Override(
+        404, b'{"code": "UNKNOWN_MESSAGE", "message": "Unknown Message"}')
+    await remove_home_going(world, session_id, FAR_USER)
+    assert FAR_USER not in await going(world, session_id)
+    assert await mirror_row(world, world.sub_b, session_id) is None
+
+
+async def test_a_transient_failure_on_a_mirror_keeps_the_rsvp(world: SimpleNamespace) -> None:
+    session_id, _home_id, mirror_id = await far_and_home_going(world)
+    world.state.overrides[mirror_reactors_path(FAR_B, mirror_id)] = Override(
+        500, b'{"code": "INTERNAL", "message": "Internal Error"}')
+    await remove_home_going(world, session_id, FAR_USER)
+    assert FAR_USER in await going(world, session_id)
+    row = await mirror_row(world, world.sub_b, session_id)
+    assert row is not None and row.message_id == mirror_id
+
+
+async def test_a_startup_reconcile_with_a_403_mirror_still_reconciles_the_home_message(
+        world: SimpleNamespace) -> None:
+    session_id = await publish(world)
+    mirror_id = await mirror_message(world, world.sub_b, session_id)
+    home_id = await home_message(world, session_id)
+    set_going(world, HOME, home_id, [HOME_ONLY_USER])
+    world.state.overrides[mirror_reactors_path(FAR_B, mirror_id)] = Override(
+        403, b'{"code": "MISSING_PERMISSIONS", "message": "Missing Permissions"}')
+    await world.interactions.reconcile_sessions()
+    assert HOME_ONLY_USER in await going(world, session_id)
+    assert await origin(world, session_id, HOME_ONLY_USER) is None
+
+
+async def test_a_startup_reconcile_with_a_404_mirror_drops_that_mirror(world: SimpleNamespace) -> None:
+    session_id = await publish(world)
+    mirror_id = await mirror_message(world, world.sub_b, session_id)
+    world.state.overrides[mirror_reactors_path(FAR_B, mirror_id)] = Override(
+        404, b'{"code": "UNKNOWN_MESSAGE", "message": "Unknown Message"}')
+    await world.interactions.reconcile_sessions()
+    assert await mirror_row(world, world.sub_b, session_id) is None

@@ -689,14 +689,22 @@ class Interactions:
         try:
             home = (session.message_id != message_id
                     and user_id in await self._reactor_ids(session.channel_id, session.message_id, emoji))
-            subs: list[int] = []
-            for row in sorted(mirror_rows, key=lambda r: r.sub_id):
-                if row.message_id != message_id and user_id in await self._reactor_ids(
-                        row.channel_id, row.message_id, emoji):
-                    subs.append(row.sub_id)
         except _ReactorsUnreadable as exc:
             log_event(log, "rsvp_recheck_failed", level=logging.WARNING, session_id=session.id, **exc.fields)
             return None
+        subs: list[int] = []
+        for row in sorted(mirror_rows, key=lambda r: r.sub_id):
+            if row.message_id == message_id:
+                continue
+            try:
+                holds = user_id in await self._reactor_ids(row.channel_id, row.message_id, emoji)
+            except _ReactorsUnreadable as exc:
+                if await self._mirror_holds_nothing(row, exc):
+                    continue
+                log_event(log, "rsvp_recheck_failed", level=logging.WARNING, session_id=session.id, **exc.fields)
+                return None
+            if holds:
+                subs.append(row.sub_id)
         return _Holds(home_holds=home, mirror_subs=tuple(subs))
 
     async def _edit_session_coalesced(self, session: Session, ticket: int) -> None:
@@ -782,11 +790,35 @@ class Interactions:
         return readings
 
     async def _read_mirror_reactions(self, listed: Session) -> list[tuple[int, dict[rsvp.Choice, set[str]]]]:
-        """The RSVP reactors on each mirror of the session, as (subscription id, readings). Raises _ReactorsUnreadable if
-        any mirror cannot be read in full, so the whole session is skipped, as for the home message."""
+        """The RSVP reactors on each mirror of the session, as (subscription id, readings). A mirror that answers 404 is
+        dropped and one that answers 403 is left out, so neither skips the session. Any other failure raises
+        _ReactorsUnreadable, and the whole session is skipped, as for the home message."""
         rows = await self._db.run(lambda c: mirrors.for_object(c, "session", listed.id))
-        return [(row.sub_id, await self._read_message_reactions(row.channel_id, row.message_id))
-                for row in sorted(rows, key=lambda r: r.sub_id)]
+        readings: list[tuple[int, dict[rsvp.Choice, set[str]]]] = []
+        for row in sorted(rows, key=lambda r: r.sub_id):
+            try:
+                per_choice = await self._read_message_reactions(row.channel_id, row.message_id)
+            except _ReactorsUnreadable as exc:
+                if await self._mirror_holds_nothing(row, exc):
+                    continue
+                raise
+            readings.append((row.sub_id, per_choice))
+        return readings
+
+    async def _mirror_holds_nothing(self, row: mirrors.Mirror, exc: _ReactorsUnreadable) -> bool:
+        """Whether an unreadable mirror is treated as holding no reaction. A 404 means its message is gone, so its row
+        is dropped (as MirrorPost drops one on a 404 edit). A 403 keeps the row and is logged: the bot cannot read it.
+        Any other failure is not known to hold nothing, so it returns False and the caller keeps the RSVP or skips."""
+        if exc.status == 404:
+            await self._db.run(lambda c: mirrors.delete_if(c, row.id, row.message_id))
+            log_event(log, "mirror_dropped", level=logging.INFO, sub_id=row.sub_id, mirror_id=row.id, kind=row.kind,
+                      status=404)
+            return True
+        if exc.status == 403:
+            log_event(log, "mirror_unreadable", level=logging.WARNING, sub_id=row.sub_id, mirror_id=row.id,
+                      kind=row.kind, reason="forbidden")
+            return True
+        return False
 
     async def _reactor_ids(self, channel_id: str, message_id: str, emoji: str) -> set[str]:
         """The non-bot users on one reaction of a message, paged the way `_count_playing` pages them: each page waits for
@@ -844,3 +876,8 @@ class _ReactorsUnreadable(Exception):
     def __init__(self, fields: dict[str, Any]) -> None:
         super().__init__()
         self.fields = fields
+
+    @property
+    def status(self) -> object:
+        """The HTTP status of the failed read, or None when the failure was not an HTTP answer."""
+        return self.fields.get("status")
