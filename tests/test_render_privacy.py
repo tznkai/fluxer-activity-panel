@@ -151,9 +151,9 @@ async def test_every_rendering_with_the_sentinel_data_is_free_of_ids_and_names(d
                           location_text=None, seats=None, recurrence=None, series_id=42, next_posted=False,
                           state="upcoming", closed_at=None, moved=False, headsup_sent=False, created_at=1),
             Counts(going=1, maybe=0, waiting=0), effective_location=None, effective_seats=None, instance_url=URL),
-        "render_poll_message": render.render_poll_message(poll_view(), instance_url=URL),
+        "render_poll_message": render.render_poll_message(poll_view(), instance_url=URL, session_jump=None),
         "render_poll_ballot": render.render_poll_ballot(poll_view(), user_id=FOLLOWER, zone_name="UTC",
-                                                        instance_url=URL),
+                                                        instance_url=URL, poll_jump=(GUILD, GAMES, "5020")),
     }
     # the ended and the unknown-count forms of the play-now message are renderings too
     ended = render.play_now_message(card, role_id=ROLE, playing=None, ended=True, instance_url=URL)

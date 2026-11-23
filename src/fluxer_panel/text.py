@@ -418,6 +418,7 @@ POLL_ROUND_SEP = ", "
 POLL_DROPPED = " {letter} was dropped."
 POLL_FIELD_SESSION = "Session"
 POLL_SESSION_LINK = "Open the session"
+POLL_SESSION_PLAIN = "A session is scheduled."     # the session field when there is no link to show
 # The ballot.
 POLL_BALLOT_HEAD = "Time poll {n} for {card}."       # {n} is the poll id: a voter with several ballots names it
 POLL_BALLOT_HEAD_RUNOFF = "Runoff {n} for {card}."

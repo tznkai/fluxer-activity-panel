@@ -257,8 +257,10 @@ class PollPost:
 
     def _ballot_content(self, view: PollView, user_id: str) -> str:
         zone = self._config.session_time_zone.key
+        poll = view.poll
         payload = render.render_poll_ballot(view, user_id=user_id, zone_name=zone,
-                                            instance_url=self._config.instance_url)
+                                            instance_url=self._config.instance_url,
+                                            poll_jump=(poll.guild_id, poll.channel_id, poll.message_id))
         return payload["content"]
 
     def _remember(self, poll_id: int, channel_id: str, message_id: str, canonical: str) -> None:
@@ -344,7 +346,8 @@ class PollPost:
 
     async def _edit_poll_message(self, view: PollView) -> bool:
         poll = view.poll
-        payload = render.render_poll_message(view, instance_url=self._config.instance_url, rounds=_rounds(view))
+        payload = render.render_poll_message(view, instance_url=self._config.instance_url, rounds=_rounds(view),
+                                             session_jump=view.session_link)
         canonical = _canonical(payload)
         if self._unchanged(poll.id, poll.channel_id, poll.message_id, canonical):
             return False

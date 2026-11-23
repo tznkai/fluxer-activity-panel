@@ -244,24 +244,25 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/render.py:92` `def escape(` — the escape for all card text: neutralise first, then escape markdown. Every user text passes through it before it enters an embed.
 - `src/fluxer_panel/render.py:122` `def code(` — a code span. Backticks are removed, because they cannot be escaped inside one.
 - `src/fluxer_panel/render.py:103` `def fit(` — cuts escaped text to a limit in UTF-16 units, the unit Fluxer counts in, without leaving a dangling backslash that would escape the ellipsis.
-- `src/fluxer_panel/render.py:340` `"allowed_mentions": {"parse": []}` — every card send and edit carries empty `allowed_mentions`.
-- `src/fluxer_panel/render.py:374` `def outside_location(has_location: bool)` — takes a bool, so the location text cannot reach the outside line.
+- `src/fluxer_panel/render.py:345` `"allowed_mentions": {"parse": []}` — every card send and edit carries empty `allowed_mentions`.
+- `src/fluxer_panel/render.py:379` `def outside_location(has_location: bool)` — takes a bool, so the location text cannot reach the outside line.
 - `src/fluxer_panel/render.py:270` `fit(escape(channel.channel_name)` — a voice or text channel's name is escaped before it enters the field, so a name cannot form a link or a mention.
-- `src/fluxer_panel/render.py:350` `def _outside_channel(` — a channel name on the outside line is mention-neutralised, and the line shows it only when the link is verified.
+- `src/fluxer_panel/render.py:355` `def _outside_channel(` — a channel name on the outside line is mention-neutralised, and the line shows it only when the link is verified.
 - `tests/test_render.py:705` `SENTINEL_LOCATION not in outside` — the test that the location text never appears in the outside rendering.
 - `src/fluxer_panel/render.py:132` `def channel_link(` — the only place a channel link is built. Both ids pass the snowflake check first.
 - `src/fluxer_panel/render.py:238` `suffix=escape(suffix)` — a slot's suffix is validated card text (`card_fields.suffix`), and it is escaped again before it enters the field name, as a second layer.
-- `src/fluxer_panel/render.py:363` `def outside_address(address: Address, public: bool) -> str:` — the single helper that decides, for every address slot, whether the outside line shows the host or only says the address is in Fluxer. The host is shown only when `public` is true, with or without a suffix.
-- `src/fluxer_panel/render.py:407` `lines.append(outside_address(address, address.public))` — the outside text sends each of the three address slots through that helper and has no other path to a host.
-- `src/fluxer_panel/render.py:422` `if address is not None and address.public:` — the play-now and session messages (both through `_join_fields`) show an address slot only when that slot is public.
+- `src/fluxer_panel/render.py:368` `def outside_address(address: Address, public: bool) -> str:` — the single helper that decides, for every address slot, whether the outside line shows the host or only says the address is in Fluxer. The host is shown only when `public` is true, with or without a suffix.
+- `src/fluxer_panel/render.py:412` `lines.append(outside_address(address, address.public))` — the outside text sends each of the three address slots through that helper and has no other path to a host.
+- `src/fluxer_panel/render.py:428` `if address is not None and address.public:` — the play-now and session messages (both through `_join_fields`) show an address slot only when that slot is public.
+- `src/fluxer_panel/render.py:433` `value = (_channel_label(link, text.VOICE_UNNAMED) if far` — a mirror's voice slot shows only the channel name, so a mirror in a `both` copy never links into the games community or to the home message.
 - `tests/test_render_slots.py:141` `assert LAN_HOST not in outside` — the leak test: a private address in any one of the three slots never appears outside Fluxer.
 - `src/fluxer_panel/render.py:249` `def _fit_budget(` — keeps a card embed within 6000 UTF-16 units by shortening first_time, then the description, then join. No slot, label or link is cut.
 - `tests/test_text.py:27` `"guild" in node.value.lower()` — the scan that fails on any user-facing string that mentions a guild.
 
 - `src/fluxer_panel/render.py:140` `def jump_link(` — the only place a masked jump link is built. Its ids pass the snowflake check first.
-- `src/fluxer_panel/render.py:286` `fit(escape(card.title), LIMITS["board_title"])` — a board cell's title is escaped before it is fitted, so a title cannot ping anyone or form a link.
-- `src/fluxer_panel/render.py:310` `card.channel_id == games_channel_id` — a board status is a jump link only for a card whose message is in the board's channel, so the link's community is the one looked up for that channel, and no link leaves it.
-- `src/fluxer_panel/render.py:303` `return {"embeds": embeds, "allowed_mentions": {"parse": []}}` — the summary board message carries empty `allowed_mentions`.
+- `src/fluxer_panel/render.py:291` `fit(escape(card.title), LIMITS["board_title"])` — a board cell's title is escaped before it is fitted, so a title cannot ping anyone or form a link.
+- `src/fluxer_panel/render.py:315` `card.channel_id == games_channel_id` — a board status is a jump link only for a card whose message is in the board's channel, so the link's community is the one looked up for that channel, and no link leaves it.
+- `src/fluxer_panel/render.py:308` `return {"embeds": embeds, "allowed_mentions": {"parse": []}}` — the summary board message carries empty `allowed_mentions`.
 - `src/fluxer_panel/poller.py:655` `payload = render.card_message(embed)` — the card's own message and a home copy are sent with this near payload, whose `allowed_mentions` is `{"parse": []}`. A copy mentions nobody, the same as the card.
 - `src/fluxer_panel/poller.py:657` `far_payload = render.card_message(far_embed)` — a redirect copy outside the games community is sent with this payload instead. It is the same card with the next session's jump link left out, and it has the same `allowed_mentions`, so that copy mentions nobody either.
 - `src/fluxer_panel/poller.py:761` `home = games_guild is not None and sub.guild_id == games_guild` — the copy's community decides whether it gets the linked card rendering or the link-free one. A failed games-guild lookup (`None`) counts as far, so a copy gets the link-free rendering unless its community is confirmed to be the games community.
@@ -358,9 +359,9 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/poll_post.py:105` `raise GamesChannelRefused` — the refusal for a poll send.
 - `src/fluxer_panel/poll_post.py:112` `if channel_id == self._config.games_channel_id:` — `delete_unstored` refuses the games channel before any REST call.
 - `src/fluxer_panel/poll_post.py:249` `if view.poll.channel_id == self._config.games_channel_id:` — `_refused` makes the same check against a stored poll's channel, for every flush, closed-poll seed, unseed and reaction removal (`remove_reaction`).
-- `src/fluxer_panel/poll_post.py:331` `if self._refused(view):` — `_edit_marked` (run by `_flush_locked`) refuses a stored games channel before any edit.
+- `src/fluxer_panel/poll_post.py:333` `if self._refused(view):` — `_edit_marked` (run by `_flush_locked`) refuses a stored games channel before any edit.
 - `src/fluxer_panel/poll_post.py:130` `sent = await notify.dm_user(self._rest, user_id, content, backoff=self._backoff)` — a ballot DM goes through the DM helper, which sends empty mentions and honours the DM backoff.
-- `src/fluxer_panel/poll_post.py:375` `allowed_mentions={"parse": []})` — the ballot edit carries empty `allowed_mentions`.
+- `src/fluxer_panel/poll_post.py:378` `allowed_mentions={"parse": []})` — the ballot edit carries empty `allowed_mentions`.
 
 ## Non-admin DM path
 
