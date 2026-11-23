@@ -240,6 +240,14 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
 
 - A subscription's mode is `redirect`, `local` or `both` (`subscriptions.MODES`). Only `local` and `both` are scopes
   (`Subscription.is_scope`, `subscriptions.LOCAL_MODES`).
+- The mode, local channel and role are set by `!card subscribe <slug> <channel> [mode=] [channel=] [role=]`
+  (`card_fields.subscription_options`), under the card lock, with every refusal decided before the first write. A copy
+  in the games community is always `redirect` (`text.SUBSCRIPTION_MODE_IN_GAMES`), and `channel=` and `role=` need a
+  scope mode. The mode write is compare-and-set (`subscriptions.set_mode_if`). A change to `redirect` forgets the local
+  channel; `both` to `local` deletes the mirrors only. A copy that enters `both` is back-filled under the lock.
+- Each local or both subscription has its own follow role in its own community (`subscription_follow_role`), set by
+  `follow_roles.ensure_follow_role(..., sub_id=)` after the card lock. Its bell toggles that role only; with none
+  stored the copy gets no bell. `cards.follow_role_ids` (the role-call allowlist) includes these roles.
 - The scope rule: every session, poll and play-now row has a scope. NULL `scope_sub_id` is home; a row with an id
   belongs to that one subscription. No home object posts in a local channel, and a copy's own objects never post home.
   Mirrors exist only for `both`.
@@ -264,6 +272,9 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   a 403 or another failure is logged with ids and status only, and the row is kept.
 - A mirror row is stored only while its copy is `both` and active (`mirrors.py` checks the copy in the insert's
   `WHERE EXISTS`).
+- A home session, poll or play-now call is mirrored when it is published (`SessionPost.sync_mirrors`,
+  `PollFlow._mirror_new_poll`, `Interactions._post_mirrors`); later edits update only the stored mirrors.
+  An RSVP on a mirror counts for the home session (`rsvp_reaction.via_sub_id`), and a far user's DM links to that mirror.
 - The poller never back-fills a mirror. Back-fill runs only when a copy enters `both` (`mirror_backfill.py`), under the
   card lock, and a mirror the copy lost on a 404 stays gone until it enters `both` again.
 - No reaction REST call runs under the card lock. A mirror's reactions are seeded after the lock is released, as the
@@ -372,8 +383,9 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   never a redirect far copy or a play-now post (`seeding.has_session_channel` with `sub`). A card
   message is always at home, and a copy is at home when its community is the games channel's. A card message's play-now
   target is its own verified play-now channel or `PLAY_NOW_CHANNEL_ID`; a home copy always has one, and a copy elsewhere
-  has one when the card does. A copy elsewhere carries the bell and the raised hand too, but a press there makes no
-  role call and no post: it gets a DM pointing at the card (`text.FOLLOW_ELSEWHERE`, `text.PLAY_NOW_ELSEWHERE`).
+  has one when the card does. A redirect copy elsewhere carries the bell and the raised hand too, but a press there
+  makes no role call and no post: it gets a DM pointing at the card (`text.FOLLOW_ELSEWHERE`, `text.PLAY_NOW_ELSEWHERE`).
+  A local or both copy always has a play-now target (its scope's channel), and its bell follows `seeding.follow_for`.
   Seeding runs only while `Seeder.enabled_for` allows it (the global switch on and the card not switched off), and
   `Seeder.seed` asks again before each add. It runs after the card's lock is released, so a reaction send is the one
   card call not under the lock. A failure is logged as `seed_failed` with the card id and the exception type, and the
@@ -390,8 +402,10 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
 - Play-now targets (`interactions._play_now_targets`): a press on the card posts once, in the card's target (its
   verified `play_now_channel`, else `PLAY_NOW_CHANNEL_ID`). A press on a home copy posts in the copy's channel and, when
   the card's target is another channel, in that too. Each post gets its own play-now row and seeds, and both count as
-  one press for the cooldown. One failed post is logged (ids and status only) and the other is kept; the presser is
-  DMed only when no post succeeds.
+  one press for the cooldown. A press that resolves to a subscription's scope posts once, in that scope's target
+  (`scope.checked_target`), never at home. The cooldown is per scope (`play_now.latest_for_scope`). Only a home call
+  is mirrored, into each active both copy, under the card lock. One failed post is logged (ids and status only) and
+  the other is kept; the presser is DMed only when no post succeeds.
 - Play-now posts are sent only by `interactions.send_play_now`, which refuses a games-channel target before any REST
   call (`GamesChannelRefused`). `PLAY_NOW_CHANNEL_ID` must differ from `GAMES_CHANNEL_ID`, or the bot refuses to start.
 - A play-now post is the only send that may mention anyone: `interactions.play_now_mentions` allows the follow role
