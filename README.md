@@ -445,9 +445,13 @@ who follows a card in two places may get two ballots, one for each open poll.
 **Starting.** A press on the ballot box (🗳️) on the card, on a home copy in the games community, or on a local or both
 copy, posts that scope's poll and DMs a ballot to each recipient. The poll offers up to six times, soonest first, from
 the same slots as 📅. The recipients are the starter and the holders of that scope's follow role (the card's, or a local
-or both copy's own), bots excluded. When `POLL_MAX_RECIPIENTS` cuts
-the list, the holders with the highest ids are left out, and the starter is told how many. A scope with no follow role
-sends a ballot only to the starter, and the starter is told that too. If the member list cannot be read, the start is
+or both copy's own), bots excluded. A home poll also sends ballots to the holders of each both copy's follow role, in the
+order the copies were added. A user who holds more than one of these roles gets one ballot, by the first route. The
+list is capped at `POLL_MAX_RECIPIENTS`, the starter included, and the cut comes from the end of that order: the home
+holders are kept first, so the holders of a both copy's role are cut first, and within a group the highest ids are cut
+first. The starter is told how many were left out. A scope with no follow role sends a ballot only to the starter, and
+the starter is told that too; a home poll counts as having no follow role only when neither the card nor any both copy
+has one. If the member list cannot be read, the start is
 refused with a direct message, and nothing is posted. A scope has one open poll at a time (the home scope, or each local
 or both copy): a second press in the same scope links the open one. A redirect copy outside the games community only
 points back to the card.

@@ -274,7 +274,8 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   (`games_guard.GamesChannelRefused`) before any REST call, as sessions and polls do.
 - The first post of a mirror carries the caller's `allowed_mentions` (a play-now mirror pings only its copy's own role,
   through `interactions.play_now_mentions`). Every mirror edit sends `{"parse": []}`, so an edit never re-pings.
-- A mirror's first post is the only post that may mention anyone. A 404 on a mirror drops its row (`mirrors.delete_if`);
+- Mentions: a session or poll mirror mentions nobody, at its first post or after. Only a play-now mirror's first post
+  may mention, under the one mention rule in Reactions rules. A 404 on a mirror drops its row (`mirrors.delete_if`);
   a 403 or another failure is logged with ids and status only, and the row is kept.
 - A mirror row is stored only while its copy is `both` and active (`mirrors.py` checks the copy in the insert's
   `WHERE EXISTS`).
@@ -417,10 +418,10 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   the other is kept; the presser is DMed only when no post succeeds.
 - Play-now posts are sent only by `interactions.send_play_now`, which refuses a games-channel target before any REST
   call (`GamesChannelRefused`). `PLAY_NOW_CHANNEL_ID` must differ from `GAMES_CHANNEL_ID`, or the bot refuses to start.
-- A play-now post is the only send that may mention anyone: `interactions.play_now_mentions` allows the follow role
-  of the post's own scope (the card's for a home post) only, and only when it belongs to the target's community
-  (`_scope_role_in`); otherwise `{"parse": []}`. An edit never re-pings. Never
-  users, `@everyone` or another role. `REVIEW.md` anchors these lines.
+- The one mention rule: only a play-now post, or a play-now mirror's first post, may mention anyone, and only the follow
+  role of its own scope (the card's for a home post). Session and poll mirrors mention nobody. `interactions.play_now_mentions`
+  allows that role only when it belongs to the target's community (`_scope_role_in`); otherwise `{"parse": []}`. An
+  edit never re-pings. Never users, `@everyone` or another role. `REVIEW.md` anchors these lines.
 
 ## Database
 
