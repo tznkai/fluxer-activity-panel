@@ -318,3 +318,24 @@ async def test_a_row_stored_by_a_concurrent_post_wins_and_the_sent_message_is_re
     [sent] = [key for key in world.state.messages if key[0] == CHANNEL_A]
     assert sent in world.state.deleted
     assert "row_refused" in refused_reasons(caplog)
+
+
+async def test_a_copy_paused_during_the_post_gets_no_row_and_its_message_is_removed(
+        world: SimpleNamespace, caplog: pytest.LogCaptureFixture) -> None:
+    # The copy is paused while its post is in flight: a paused copy is not active, so no row may be stored for it.
+    gate_key = f"POST {POST_PATH}"
+    gate = asyncio.Event()
+    world.state.gates[gate_key] = gate
+    caplog.set_level(logging.WARNING)
+    try:
+        task = asyncio.create_task(post_for(world, world.sub_a, CHANNEL_A))
+        await wait_gated(world, gate_key)
+        assert await world.db.run(lambda c: subscriptions.pause(c, world.card, CHANNEL_A))
+    finally:
+        gate.set()
+    result = await asyncio.wait_for(task, timeout=5)
+    assert result is None
+    assert await stored(world, world.sub_a) is None
+    [sent] = [key for key in world.state.messages if key[0] == CHANNEL_A]
+    assert sent in world.state.deleted
+    assert "row_refused" in refused_reasons(caplog)

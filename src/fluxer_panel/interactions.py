@@ -760,8 +760,8 @@ class Interactions:
                 card = cards.get_by_id(c, s.card_id)
                 if card is None:
                     return None
-                carried_readings, carried_via = _carry_forbidden(c, s.id, readings, via, forbidden)
-                if not sessions.reconcile_presence(c, s, carried_readings, now, via=carried_via):
+                carried_readings, carried_via, kept = _carry_forbidden(c, s.id, readings, via, forbidden)
+                if not sessions.reconcile_presence(c, s, carried_readings, now, via=carried_via, kept=kept):
                     return s, card, None
                 return s, card, sessions.recompute(c, s, sessions.effective_seats(s, card), now)
 
@@ -859,22 +859,29 @@ class Interactions:
 
 
 def _carry_forbidden(conn: Any, session_id: int, readings: dict[rsvp.Choice, set[str]], via: dict[str, int | None],
-                     forbidden: frozenset[int]) -> tuple[dict[rsvp.Choice, set[str]], dict[str, int | None]]:
-    """The readings and origins for the startup reconcile, with the presence of users a 403 mirror may still hold
-    carried over. A stored real RSVP whose origin is a forbidden mirror, and which no readable message shows, stays as
-    it is: the bot cannot read that mirror, so it cannot tell that the user left. Every other row is reconciled as
-    read."""
+                     forbidden: frozenset[int]
+                     ) -> tuple[dict[rsvp.Choice, set[str]], dict[str, int | None], frozenset[tuple[str, str]]]:
+    """The readings, origins and kept rows for the startup reconcile, with the real RSVPs a 403 mirror may still hold
+    carried over. A stored row whose origin is a forbidden mirror stays as it is when no readable message shows that
+    same choice for that user: the bot cannot read that mirror, so it cannot tell that the user left it. A user a
+    readable message shows keeps the origin that reading gives (home wins). Every other row is reconciled as read."""
     if not forbidden:
-        return readings, via
+        return readings, via, frozenset()
     carried: dict[rsvp.Choice, set[str]] = {choice: set(users) for choice, users in readings.items()}
     origins = dict(via)
     shown = {user_id for users in readings.values() for user_id in users}
+    kept: set[tuple[str, str]] = set()
+    carried_origin: dict[str, int] = {}
     for user_id, choice, sub_id in sessions.presence_from_subs(conn, session_id, forbidden):
-        if user_id in shown:
+        if user_id in readings.get(choice, set()):
             continue
         carried.setdefault(choice, set()).add(user_id)
-        origins[user_id] = sub_id
-    return carried, origins
+        kept.add((user_id, choice))
+        carried_origin[user_id] = min(sub_id, carried_origin.get(user_id, sub_id))
+    for user_id, sub_id in carried_origin.items():
+        if user_id not in shown:
+            origins[user_id] = sub_id
+    return carried, origins, frozenset(kept)
 
 
 def _merge_readings(home: dict[rsvp.Choice, set[str]],

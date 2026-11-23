@@ -555,3 +555,66 @@ async def test_a_user_who_reacted_on_both_is_unaffected_by_a_403_mirror(world: S
     await world.interactions.reconcile_sessions()
     assert FAR_USER in await going(world, session_id)
     assert await origin(world, session_id, FAR_USER) is None
+
+
+# A user who holds two RSVP choices, one readable and one on a 403 mirror, keeps the forbidden
+# row through each reconcile.
+
+async def real_rows(world: SimpleNamespace, session_id: int) -> list[tuple[str, str, int | None]]:
+    """The stored real RSVP rows of a session as (user id, choice, origin), in the order they were made."""
+    def read(conn: Any) -> list[tuple[str, str, int | None]]:
+        rows = conn.execute("SELECT user_id, choice, via_sub_id FROM rsvp_reaction WHERE session_id = ? "
+                            "AND implicit = 0 ORDER BY seq", (session_id,)).fetchall()
+        return [(user_id, choice, via) for user_id, choice, via in rows]
+    return await world.db.run(read)
+
+
+async def state_of(world: SimpleNamespace, session_id: int, user_id: str) -> str | None:
+    rows = await world.db.run(lambda c: sessions.rsvps_of(c, session_id))
+    found = rows.get(user_id)
+    return None if found is None else found[0]
+
+
+async def react_and_forbid(world: SimpleNamespace, session_id: int, emoji: str, channel: str, message: str) -> None:
+    """Puts one reaction on a message, then answers 403 to the mirror's reads of its going reaction."""
+    world.state.reactions.setdefault((channel, message), {}).setdefault(emoji, []).append(FAR_USER)
+    await world.presses.on_reaction(emoji_reaction(FAR_USER, channel, message, emoji))
+
+
+def emoji_reaction(user_id: str, channel_id: str, message_id: str, emoji: str) -> Any:
+    return events.ReactionAdd(user_id=user_id, channel_id=channel_id, message_id=message_id, guild_id=GAMES_GUILD,
+                              emoji=events.Emoji(name=emoji, id=None), member_role_ids=None)
+
+
+async def test_a_home_going_and_a_mirror_maybe_keep_the_maybe_through_a_403_reconcile(
+        world: SimpleNamespace) -> None:
+    session_id = await publish(world)
+    home_id = await home_message(world, session_id)
+    mirror_id = await mirror_message(world, world.sub_b, session_id)
+    world.state.reactions.setdefault((HOME, home_id), {})[rsvp.GOING_EMOJI] = [FAR_USER]
+    await world.presses.on_reaction(emoji_reaction(FAR_USER, HOME, home_id, rsvp.GOING_EMOJI))
+    world.state.reactions.setdefault((FAR_B, mirror_id), {})[rsvp.MAYBE_EMOJI] = [FAR_USER]
+    await world.presses.on_reaction(emoji_reaction(FAR_USER, FAR_B, mirror_id, rsvp.MAYBE_EMOJI))
+    assert await real_rows(world, session_id) == [(FAR_USER, "going", None), (FAR_USER, "maybe", world.sub_b)]
+    world.state.overrides[mirror_reactors_path(FAR_B, mirror_id)] = Override(403, FORBIDDEN_BODY)
+    for _ in range(2):   # the mirror still answers 403 on the second start
+        await world.interactions.reconcile_sessions()
+        assert await real_rows(world, session_id) == [(FAR_USER, "going", None), (FAR_USER, "maybe", world.sub_b)]
+        assert await state_of(world, session_id, FAR_USER) == "maybe"
+
+
+async def test_a_mirror_going_and_a_home_maybe_keep_the_going_through_a_403_reconcile(
+        world: SimpleNamespace) -> None:
+    session_id = await publish(world)
+    home_id = await home_message(world, session_id)
+    mirror_id = await mirror_message(world, world.sub_b, session_id)
+    world.state.reactions.setdefault((FAR_B, mirror_id), {})[rsvp.GOING_EMOJI] = [FAR_USER]
+    await world.presses.on_reaction(emoji_reaction(FAR_USER, FAR_B, mirror_id, rsvp.GOING_EMOJI))
+    world.state.reactions.setdefault((HOME, home_id), {})[rsvp.MAYBE_EMOJI] = [FAR_USER]
+    await world.presses.on_reaction(emoji_reaction(FAR_USER, HOME, home_id, rsvp.MAYBE_EMOJI))
+    assert await real_rows(world, session_id) == [(FAR_USER, "going", world.sub_b), (FAR_USER, "maybe", None)]
+    world.state.overrides[mirror_reactors_path(FAR_B, mirror_id)] = Override(403, FORBIDDEN_BODY)
+    for _ in range(2):
+        await world.interactions.reconcile_sessions()
+        assert await real_rows(world, session_id) == [(FAR_USER, "going", world.sub_b), (FAR_USER, "maybe", None)]
+        assert await state_of(world, session_id, FAR_USER) == "maybe"
