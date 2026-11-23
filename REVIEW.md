@@ -109,8 +109,8 @@ Paths are relative to this directory.
 - `src/fluxer_panel/interactions.py:57` `return {"parse": []}` — a play-now message with no follow role mentions nobody.
 - `src/fluxer_panel/interactions.py:58` `return {"parse": [], "roles": [role_id], "replied_user": False}` — the play-now role ping. Only the follow role of the play-now post's own scope can be mentioned, and only when `_scope_role_in` has matched it.
 - `src/fluxer_panel/interactions.py:64` `return role.role_id if role is not None and role.guild_id == guild_id else None` — the scope-role community check: a role from another community is never mentioned.
-- `src/fluxer_panel/interactions.py:362` `if channel_id == self._config.games_channel_id:` — the play-now guard in `send_play_now`. A play-now message is never sent to the games channel.
-- `src/fluxer_panel/interactions.py:363` `raise GamesChannelRefused` — the refusal happens before any REST call.
+- `src/fluxer_panel/interactions.py:350` `if channel_id == self._config.games_channel_id:` — the play-now guard in `send_play_now`. A play-now message is never sent to the games channel.
+- `src/fluxer_panel/interactions.py:351` `raise GamesChannelRefused` — the refusal happens before any REST call.
 
 ## Purge deletion
 

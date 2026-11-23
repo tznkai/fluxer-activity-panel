@@ -71,18 +71,6 @@ def _failure_fields(exc: Exception) -> dict[str, Any]:
     return {"reason": type(exc).__name__}
 
 
-async def card_target(rest: FluxerREST, config: Config, card: Card, *,
-                      failed_event: str = "play_now_failed") -> tuple[tuple[str, str] | None, str | None]:
-    """The card's home target channel, as scope.checked_target gives it. Kept for the session and poll flows, which move
-    to scopes in a later phase."""
-    return await scope.checked_target(rest, config, card, scope.home_scope(card, None), failed_event=failed_event)
-
-
-def target_channel_id(card: Card, config: Config) -> str | None:
-    """The home target channel, read with no REST call (see scope.scope_target)."""
-    return scope.scope_target(card, config, scope.home_scope(card, None))
-
-
 class Interactions:
     def __init__(self, *, db: Database, rest: FluxerREST, config: Config, locks: CardLocks, games_guild: GamesGuild,
                  seeder: Seeder, pacer: ChannelPacer, identity: BotIdentity, roles: RoleCache,
@@ -313,20 +301,20 @@ class Interactions:
             copy_target = (press.surface.channel_id, press.surface.guild_id)
             # The target is looked up before the cooldown check, by design: a cooled-down copy press still costs one
             # channel lookup. Moving the lookup under the card lock would hold the lock across a REST call.
-            card_target, _ = await self._card_target(card)
-            if card_target is None or card_target[0] == copy_target[0]:
+            home_target, _ = await self._home_target(card)
+            if home_target is None or home_target[0] == copy_target[0]:
                 return [copy_target]
-            return [copy_target, card_target]
-        card_target, reason = await self._card_target(card)
-        if card_target is None:
+            return [copy_target, home_target]
+        home_target, reason = await self._home_target(card)
+        if home_target is None:
             template = text.PLAY_NOW_NO_CHANNEL if reason == "no_channel" else text.PLAY_NOW_UNAVAILABLE
             await self._dm_presser(press.user_id, template, card)
             return None
-        return [card_target]
+        return [home_target]
 
-    async def _card_target(self, card: Card) -> tuple[tuple[str, str] | None, str | None]:
-        """The play-now target of a card (see `card_target`), logged as a play-now failure."""
-        return await card_target(self._rest, self._config, card)
+    async def _home_target(self, card: Card) -> tuple[tuple[str, str] | None, str | None]:
+        """The play-now target of the card's home scope (scope.checked_target), logged as a play-now failure."""
+        return await scope.checked_target(self._rest, self._config, card, scope.home_scope(card, None))
 
     async def _send_and_store(self, card: Card, channel_id: str, guild_id: str, role_id: str | None, presser_id: str,
                               *, offers_wake: bool, now: int, scope_sub_id: int | None = None) -> str:
