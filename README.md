@@ -153,6 +153,11 @@ The purge also deletes:
 
 The cutoffs are strict: a row exactly at a cutoff is kept.
 
+Scope history is deleted sooner. Unsubscribing a `local` or `both` copy deletes that scope's sessions, polls and
+play-now posts at once, not at the cutoff (see Subscriptions). When the purge scrubs a session, it scrubs each of its
+mirrors too, then deletes the rows with the mirrors. An RSVP whose only reaction is on a mirror the bot can no longer
+read is kept as it stands, because the bot cannot tell that the reaction was removed.
+
 ### Status file
 
 The status file is `purge-status.json` in the data directory, or the path in
@@ -203,8 +208,8 @@ bot does not answer it, and it counts toward the non-admin limit of 5 commands p
   next tick, and edits the message when its content changes. Without `GAMES_CHANNEL_ID` the card is not
   posted, but its active copies are. Publishing a card that is already live does not repost it, but it does
   give the card a follow role if it has none (see Follow roles).
-- **Archived:** `!card archive` deletes the card's message and keeps the card. Publishing it again
-  makes it live.
+- **Archived:** `!card archive` ends every scope, deletes the mirrors, the copies and the card's message, and keeps
+  the card. Publishing it again makes it live.
 
 A card message that is deleted by hand is posted again. The delete kicks the poller, so the
 repost does not wait for the next poll interval.
@@ -231,9 +236,20 @@ games channel.
     same name is adopted, and it must be mentionable, below the bot's top role, and have no permissions. A
     second subscription of the same card in the same community clashes on that name, so it is refused with a
     reply that asks for `role=<role id>`.
-  - `both`: `local`, and the home sessions and the open home poll are mirrored into the copy's channel as well.
-    Changing from `local` to `both` posts no mirrors straight away. Changing back from `both` to `local` deletes
-    them.
+  - `both`: `local`, and the home objects are mirrored into the copy's channel as well (see Mirrors below).
+    Changing a copy to `both` posts its mirrors of the upcoming home sessions and the open home poll at once, under
+    the card's lock. Changing back from `both` to `local` deletes them.
+- **Mirrors (both):** a `both` copy shows some of the home objects in its own channel. What is pushed there: the home
+  play-now posts, the upcoming home sessions and the open home poll. What flows back: RSVPs, Me Too presses on a
+  play-now mirror and poll votes made from a far ballot, which count toward the home object they mirror. Nothing a
+  `both` copy starts goes home: its own sessions, polls and play-now posts stay in its scope. A far user's session
+  or poll link goes to their own copy's mirror, never to the home message. A mirror is stored only while its copy is
+  `both` and active. A mirror that Fluxer refuses to edit (403) is logged and kept. A mirror whose message is gone (404)
+  is dropped, and a dropped mirror is not re-posted until its copy enters `both` again. The poller never back-fills
+  a mirror, so the only ways a mirror is posted are its object's first publish and the copy's change to `both`.
+- **Next-session line:** a `local` copy shows its own next session. A `both` copy shows the sooner of its own next
+  session and the home one, and the home one links to its mirror in this copy when there is one. A `redirect` copy
+  shows the home session, without a link.
 - **Channel and role options:** `channel=<channel>` sets the channel a local or both copy posts in, as a link or
   a channel id. The channel must be a text channel of the copy's community, and not the games channel. Without
   it, the copy's own channel is used. `role=<role id>` gives the copy a follow role that already exists in its
@@ -255,13 +271,16 @@ games channel.
 - **Unsubscribe:** deletes the copy and removes the subscription. A copy that is already gone counts as
   removed. If the bot cannot delete it for another reason, the subscription is still removed, and the
   reply says the copy is still there, to delete by hand.
-- **Archive:** deletes every copy, then the card's message last. A 403 on a copy or on the card's own message is
-  handled the same way: that message stays where it is, the archive goes ahead, and the reply lists each
-  channel left, as a mention, to delete by hand. The reply says the message was removed only when nothing is
-  left; otherwise it says the card is archived and its settings are kept. Any other failure to delete (not
-  already gone) stops the archive while the card is still live: the copies deleted before the stop are posted
-  again by the next check, and the card's message stays in place, so running it again is safe. The
-  subscriptions are kept. Publishing again posts every subscription that is not paused.
+- **Archive:** ends every scope first: the card's own, and each local or both copy's. Upcoming sessions are cancelled
+  (with DMs to their attendees), open polls close with no winner, and live play-now posts expire. Then it deletes the
+  mirrors, then every copy, and the card's message last. The reply may span several messages when many channels are
+  left. A 403 on a copy or on the card's own message is handled the same way: that message stays where it is, the
+  archive goes ahead, and the reply lists each channel left, as a mention, to delete by hand. The reply says the message
+  was removed only when nothing is left; otherwise it says the card is archived and its settings are kept. Any other
+  failure to delete (not already gone) stops the archive while the card is still live: the copies deleted before the
+  stop are posted again by the next check, the mirrors deleted before the stop stay deleted, and the card's message
+  stays in place, so running it again is safe. The subscriptions are kept. Publishing again posts every subscription
+  that is not paused.
 - **Leaving a scope:** changing a copy from `local` or `both` back to `redirect` cancels its upcoming sessions (with
   DMs to their attendees), closes its open poll with no winner, expires its play-now posts, and deletes its
   mirrors. Its calendar and ballot-box reactions come off the copy. Its follow role is kept.
@@ -496,10 +515,10 @@ upper or lower case, like `90m`, `12h` or `2d`. Without one, it adds `POLL_LENGT
 longer than `POLL_MAX_LENGTH_SECONDS` from when it started. `!poll shown` does not
 change the ballots until the next `!poll sort`, which also re-letters the times.
 
-**Archive and the kill switch.** `!card archive` closes the card's open poll with no winner, before it deletes the
-card's messages. A poll whose message the bot finds deleted when it next edits it closes as removed. `!card interactions
-off` removes the ballot box (🗳️) from the card's messages and copies. It does not close open polls and does not touch
-poll messages, so 📅 and 🔁 stay on closed polls.
+**Archive and the kill switch.** `!card archive` closes the card's open polls, in every scope, with no winner,
+before it deletes the card's messages. A poll whose message the bot finds deleted when it next edits it closes as
+removed. `!card interactions off` removes the ballot box (🗳️) from the card's messages and copies. It does not close
+open polls and does not touch poll messages, so 📅 and 🔁 stay on closed polls.
 
 ### Fields
 
