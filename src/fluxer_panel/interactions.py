@@ -31,6 +31,7 @@ from fluxer_panel.follow_roles import Toggle
 from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.games_guard import GamesChannelRefused
 from fluxer_panel.logs import log_event
+from fluxer_panel.mirror_post import MirrorPost
 from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.presses import PLAY_NOW_EMOJI, WAKE_EMOJI, Action, Press, Surface
 from fluxer_panel.resolver import CardStatus, StatusKind
@@ -97,9 +98,12 @@ class Interactions:
                  wake: WakeRequests | None = None,
                  status_of: Callable[[int], CardStatus | None] = lambda _id: None,
                  session_post: SessionPost | None = None, backoff: DmBackoff | None = None,
-                 session_flow: SessionFlow | None = None, poll_flow: PollFlow | None = None) -> None:
+                 session_flow: SessionFlow | None = None, poll_flow: PollFlow | None = None,
+                 mirror_post: MirrorPost | None = None) -> None:
         self._db = db
         self._wake = wake
+        # The both-copy mirrors of play-now calls. MirrorPost holds no state, so one is made when none is passed.
+        self._mirror_post = mirror_post if mirror_post is not None else MirrorPost(db=db, rest=rest, config=config)
         self._session_flow = session_flow   # the calendar's DM flow: a 📅 press starts a draft there
         self._poll_flow = poll_flow         # the poll flow: a 🗳️ press starts a poll there
         self._backoff = backoff   # the press replies' DM backoff (dm_user checks it)
@@ -255,10 +259,13 @@ class Interactions:
         now = int(self._clock())
         cooling = None
         posted: list[tuple[str, str]] = []   # (channel id, message id) of each message this press posted
+        mirror_posted: list[tuple[str, str]] = []   # the both-copy mirrors of a home call, posted under the lock
         failures: list[Exception] = []
+        home_channel = scope.scope_target(card, self._config, scope.home_scope(card, None))
         # The cooldown check and the posts share the card's lock, so two presses cannot both post (AC4.7). One press
         # counts once for the cooldown, however many messages it posts. The cooldown is per scope: a local press and a
-        # home press do not cool each other down.
+        # home press do not cool each other down. A home call's mirrors are posted under the lock with their row, and
+        # seeded after it, as the home message is.
         async with self._locks.get(card.id):
             last = await self._db.run(lambda c: play_now.latest_for_scope(c, card.id, resolved.sub_id))
             if last is not None and now - last.created_at < self._config.play_now_cooldown_seconds:
@@ -266,22 +273,24 @@ class Interactions:
             else:
                 for channel_id, guild_id in targets:
                     try:
-                        message_id = await self._send_and_store(card, channel_id, guild_id,
-                                                                _scope_role_in(resolved, guild_id), press.user_id,
-                                                                offers_wake=offers_wake, now=now,
-                                                                scope_sub_id=resolved.sub_id)
+                        message_id, row_id = await self._send_and_store(
+                            card, channel_id, guild_id, _scope_role_in(resolved, guild_id), press.user_id,
+                            offers_wake=offers_wake, now=now, scope_sub_id=resolved.sub_id)
                     except Exception as exc:  # noqa: BLE001 - a failed target is logged; another target can still post
                         failures.append(exc)
                         self._log_target_failure(card.id, channel_id, exc)
                         continue
                     posted.append((channel_id, message_id))
+                    # AC3.7: only a home call is mirrored. A subscription's own call stays in its channel.
+                    if resolved.sub_id is None and channel_id == home_channel:
+                        mirror_posted.extend(await self._post_mirrors(card, row_id))
         if cooling is not None:
             await self._dm_cooldown(press.user_id, card, cooling)
             return
         if not posted:
             await self._press_failed(press, card, failures)
             return
-        for channel_id, message_id in posted:
+        for channel_id, message_id in posted + mirror_posted:
             await self._seeder.seed(channel_id, message_id, wanted, card_id=card.id)   # outside the card lock
             log_event(log, "play_now_posted", card_id=card.id, channel_id=channel_id)
 
@@ -336,25 +345,83 @@ class Interactions:
         return await scope.checked_target(self._rest, self._config, card, scope.home_scope(card, None))
 
     async def _send_and_store(self, card: Card, channel_id: str, guild_id: str, role_id: str | None, presser_id: str,
-                              *, offers_wake: bool, now: int, scope_sub_id: int | None = None) -> str:
+                              *, offers_wake: bool, now: int, scope_sub_id: int | None = None) -> tuple[str, int]:
         """Sends the play-now message and stores its row in the scope. Runs under the card's lock. Returns the new
-        message's id."""
+        message's id and the new row's id."""
         payload = render.play_now_message(card, role_id=role_id, playing=1, ended=False,
                                           instance_url=self._config.instance_url)
         sent = await self.send_play_now(channel_id, payload, role_id)
         message_id = str(sent["id"])
         expires_at = now + self._config.play_now_expiry_seconds
         try:
-            await self._db.run(lambda c: play_now.add(c, card_id=card.id, guild_id=guild_id, channel_id=channel_id,
-                                                      message_id=message_id, presser_id=presser_id,
-                                                      offers_wake=offers_wake, now=now, expires_at=expires_at,
-                                                      scope_sub_id=scope_sub_id))
+            row_id = await self._db.run(lambda c: play_now.add(c, card_id=card.id, guild_id=guild_id,
+                                                               channel_id=channel_id, message_id=message_id,
+                                                               presser_id=presser_id, offers_wake=offers_wake, now=now,
+                                                               expires_at=expires_at, scope_sub_id=scope_sub_id))
         except Exception:
             # With no row the message would never expire, so it is deleted; the press then fails as any other press does.
             log_event(log, "play_now_store_failed", level=logging.WARNING, card_id=card.id)
             await self._discard_unstored(channel_id, message_id, card.id)
             raise
-        return message_id
+        return message_id, row_id
+
+    async def _post_mirrors(self, card: Card, row_id: int) -> list[tuple[str, str]]:
+        """Posts the new home call into each both copy's channel, under the card's lock. Each mirror mentions only its
+        subscription's own role, or nobody. Returns the (channel, message) pairs posted, for seeding after the lock. A
+        failed mirror is logged and the home call is unaffected."""
+        targets = await self._db.run(lambda c: self._mirror_targets(c, card))
+        posted: list[tuple[str, str]] = []
+        for sub, channel_id, role_id in targets:
+            payload = render.play_now_message(card, role_id=role_id, playing=1, ended=False,
+                                              instance_url=self._config.instance_url, far=True)
+            try:
+                message_id = await self._mirror_post.sync(sub=sub, channel_id=channel_id, kind="play_now",
+                                                          object_id=row_id, payload=payload,
+                                                          allowed_mentions=play_now_mentions(role_id))
+            except Exception as exc:  # noqa: BLE001 - a failed mirror is logged; the home call stands
+                log_event(log, "play_now_mirror_failed", level=logging.WARNING, card_id=card.id, sub_id=sub.id,
+                          **_failure_fields(exc))
+                continue
+            if message_id is not None:
+                posted.append((channel_id, message_id))
+        return posted
+
+    def _mirror_targets(self, conn: Any, card: Card) -> list[tuple[subscriptions.Subscription, str, str | None]]:
+        """Each active both copy with its mirror channel and its own follow role (None when it has none in its own
+        community)."""
+        found: list[tuple[subscriptions.Subscription, str, str | None]] = []
+        for sub, channel_id in self._mirror_post.targets(conn, card):
+            role = _scope_role_in(scope.scope_for_sub(conn, card, sub), sub.guild_id)
+            found.append((sub, channel_id, role))
+        return found
+
+    async def _mirror_rows(self, play_now_id: int) -> list[mirrors.Mirror]:
+        """The stored mirrors of one play-now call, in subscription order."""
+        return await self._db.run(lambda c: mirrors.for_object(c, "play_now", play_now_id))
+
+    async def _mirror_role(self, card: Card, sub_id: int) -> str | None:
+        """The follow role a mirror of this subscription shows: its stored role, when it is in the subscription's own
+        community. None when the subscription is gone."""
+        def read(conn: Any) -> str | None:
+            sub = subscriptions.get_by_id(conn, sub_id)
+            return None if sub is None else _scope_role_in(scope.scope_for_sub(conn, card, sub), sub.guild_id)
+
+        return await self._db.run(read)
+
+    async def _sync_play_now_mirrors(self, card: Card, pn: play_now.PlayNow, *, playing: int | None,
+                                     ended: bool) -> None:
+        """Edits every stored mirror of a play-now call to the count and state of the home message. It edits only: a
+        mirror is posted when its call is stored, never by a count. Runs under the card's lock and reads no reactors.
+        Each edit that fails is logged by the mirror layer, and the other mirrors still run."""
+        for row in await self._mirror_rows(pn.id):
+            role_id = None if ended else await self._mirror_role(card, row.sub_id)
+            payload = render.play_now_message(card, role_id=role_id, playing=playing, ended=ended,
+                                              instance_url=self._config.instance_url, far=True)
+            try:
+                await self._mirror_post.edit_stored(row, payload)
+            except Exception as exc:  # noqa: BLE001 - one mirror's failed edit must not stop the others
+                log_event(log, "play_now_mirror_failed", level=logging.WARNING, card_id=card.id, sub_id=row.sub_id,
+                          **_failure_fields(exc))
 
     async def _discard_unstored(self, channel_id: str, message_id: str, card_id: int) -> None:
         """Deletes a play-now message whose row could not be stored. Its reactions and buttons would otherwise stay up
@@ -388,7 +455,8 @@ class Interactions:
         Each recount takes a ticket before it reads, and an edit is skipped when a newer recount's count is already on the
         message. Overlapping recounts can therefore finish in any order, and the newest count still stands.
         `user_id` is not needed: the count is read from the message, not from the event."""
-        pn = await self._db.run(lambda c: play_now.get_live_by_message(c, surface.message_id))
+        # A mirror's press counts toward its home call: the home message id is the one the call is keyed by.
+        pn = await self._db.run(lambda c: play_now.get_live_by_message(c, surface.mirror_of or surface.message_id))
         if pn is None:
             return   # ended (AC4.10), or not a play-now message
         ticket = next(self._recount_tickets)
@@ -411,36 +479,48 @@ class Interactions:
                 log_event(log, "play_now_edit_failed", level=logging.WARNING, card_id=card_id, **_failure_fields(exc))
                 return
             self._recount_applied[pn.message_id] = ticket
+            await self._sync_play_now_mirrors(card, pn, playing=count, ended=False)
         log_event(log, "play_now_count", card_id=card_id, count=count)
 
     async def _count_playing(self, pn: play_now.PlayNow) -> int:
-        """The people on the message's play-now reaction: the distinct non-bot reactors plus the presser. Each page waits
-        for the channel's budget. Pages follow `has_more` and `next_after` (the last id when `next_after` is absent). The
-        count stops at the last page, when a page adds no new user, when the cursor does not advance, or after
-        MAX_REACTOR_PAGES pages. The last two are logged, and a capped count is a floor. The reactor ids are read here and
-        kept nowhere: not stored, not logged."""
+        """The people on the call's play-now reaction, across the home message and every stored mirror: the distinct
+        non-bot reactors plus the presser, counted once. The home message's read must succeed. A mirror whose read fails
+        is logged and left out, so the count is then a floor. Each page waits for the channel's budget. The reactor ids
+        are read here and kept nowhere: not stored, not logged."""
         reactors: set[str] = set()
+        await self._read_reactors(pn.card_id, pn.channel_id, pn.message_id, reactors)
+        for row in await self._mirror_rows(pn.id):
+            try:
+                await self._read_reactors(pn.card_id, row.channel_id, row.message_id, reactors)
+            except Exception as exc:  # noqa: BLE001 - a mirror that cannot be read is left out of the count
+                log_event(log, "play_now_count_failed", level=logging.WARNING, card_id=pn.card_id,
+                          **_failure_fields(exc))
+        return len(reactors | {pn.presser_id})
+
+    async def _read_reactors(self, card_id: int, channel_id: str, message_id: str, reactors: set[str]) -> None:
+        """Adds one message's non-bot play-now reactors to `reactors`. Pages follow `has_more` and `next_after` (the
+        last id when `next_after` is absent). The read stops at the last page, when a page adds no new user, when the
+        cursor does not advance, or after MAX_REACTOR_PAGES pages. The last two are logged, and a capped read is a
+        floor."""
         seen: set[str] = set()
         after: str | None = None
         for _ in range(MAX_REACTOR_PAGES):
-            await self._pacer.wait(pn.channel_id)
-            page = await self._rest.get_reaction_users_page(pn.channel_id, pn.message_id, PLAY_NOW_EMOJI,
+            await self._pacer.wait(channel_id)
+            page = await self._rest.get_reaction_users_page(channel_id, message_id, PLAY_NOW_EMOJI,
                                                             limit=REACTOR_PAGE, after=after)
             before = len(seen)
             for user in page.users:
                 seen.add(user["id"])
                 if user.get("bot") is not True and user["id"] != self._identity.user_id:
                     reactors.add(user["id"])
-            count = len(reactors | {pn.presser_id})
             if not page.has_more:
-                return count
+                return
             cursor = page.next_after or (page.users[-1]["id"] if page.users else None)
             if cursor is None or cursor == after or len(seen) == before:
-                log_event(log, "play_now_count_stalled", level=logging.WARNING, card_id=pn.card_id)
-                return count
+                log_event(log, "play_now_count_stalled", level=logging.WARNING, card_id=card_id)
+                return
             after = cursor
-        log_event(log, "play_now_count_truncated", level=logging.WARNING, card_id=pn.card_id)
-        return len(reactors | {pn.presser_id})
+        log_event(log, "play_now_count_truncated", level=logging.WARNING, card_id=card_id)
 
     async def _count_for_end(self, pn: play_now.PlayNow) -> int | None:
         """The count an ended message shows, or None when it cannot be read: the count line is then left out."""
@@ -496,16 +576,20 @@ class Interactions:
         return ended
 
     async def clear_play_now_reactions(self, rows: Iterable[play_now.PlayNow]) -> None:
-        """Removes every reaction from each ended message. Call after the card's lock is released."""
+        """Removes every reaction from each ended message and from each of its mirrors. Call after the card's lock is
+        released."""
         for pn in rows:
-            await self._remove_all_reactions(pn)
+            await self._remove_reactions_at(pn.channel_id, pn.message_id)
+            for row in await self._mirror_rows(pn.id):
+                await self._remove_reactions_at(row.channel_id, row.message_id)
 
     async def _expire(self, play_now_id: int) -> bool:
         """Expires one row if it is still live. Returns whether this call expired it."""
         return await self._db.run(lambda c: play_now.expire_if(c, play_now_id))
 
     async def _end_message(self, pn: play_now.PlayNow, playing: int | None) -> None:
-        """Edits an expiring message to the ended wording, with the count read just before the lock. Runs under the lock."""
+        """Edits an expiring call's home message and its mirrors to the ended wording, with the count read just before
+        the lock. Runs under the lock."""
         card = await self._db.run(lambda c: cards.get_by_id(c, pn.card_id))
         if card is None:
             return
@@ -514,16 +598,17 @@ class Interactions:
         except Exception as exc:  # noqa: BLE001 - a failed edit is logged; the reactions are removed all the same
             log_event(log, "play_now_end_failed", level=logging.WARNING, card_id=pn.card_id, channel_id=pn.channel_id,
                       **_failure_fields(exc))
+        await self._sync_play_now_mirrors(card, pn, playing=playing, ended=True)
 
-    async def _remove_all_reactions(self, pn: play_now.PlayNow) -> None:
-        await self._pacer.wait(pn.channel_id)
+    async def _remove_reactions_at(self, channel_id: str, message_id: str) -> None:
+        await self._pacer.wait(channel_id)
         try:
-            await self._rest.remove_all_reactions(pn.channel_id, pn.message_id)
+            await self._rest.remove_all_reactions(channel_id, message_id)
         except FluxerHTTPError as exc:
-            log_event(log, "play_now_reactions_not_removed", level=logging.WARNING, channel_id=pn.channel_id,
+            log_event(log, "play_now_reactions_not_removed", level=logging.WARNING, channel_id=channel_id,
                       status=exc.status)
         except Exception as exc:  # noqa: BLE001 - one message's failed removal must not stop the others
-            log_event(log, "play_now_reactions_not_removed", level=logging.WARNING, channel_id=pn.channel_id,
+            log_event(log, "play_now_reactions_not_removed", level=logging.WARNING, channel_id=channel_id,
                       reason=type(exc).__name__)
 
     async def _edit_play_now(self, card: Card, pn: play_now.PlayNow, *, playing: int | None, ended: bool) -> None:

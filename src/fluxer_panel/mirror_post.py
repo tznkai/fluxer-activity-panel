@@ -31,6 +31,12 @@ def body_hash(payload: dict[str, Any]) -> str:
     return render.rendered_hash({key: value for key, value in payload.items() if key != "allowed_mentions"})
 
 
+def _content_field(payload: dict[str, Any]) -> dict[str, Any]:
+    """The message text, when the payload has one. A session message has none, so its mirror is sent embeds only, and a
+    play-now mirror carries the text its mention and ended wording live in."""
+    return {"content": payload["content"]} if "content" in payload else {}
+
+
 def _reason(exc: Exception) -> str:
     """A reason key only: "forbidden" for a 403, else the exception's type name. Never its message."""
     if isinstance(exc, FluxerHTTPError) and exc.status == 403:
@@ -100,7 +106,7 @@ class MirrorPost:
                     payload: dict[str, Any], digest: str, allowed_mentions: dict[str, Any]) -> str | None:
         try:
             sent = await self._rest.send_message(channel_id, embeds=payload["embeds"],
-                                                 allowed_mentions=allowed_mentions)
+                                                 allowed_mentions=allowed_mentions, **_content_field(payload))
         except Exception as exc:  # noqa: BLE001 - a refused post is logged; the home action goes on
             self._log_failed(sub_id=sub.id, channel_id=channel_id, kind=kind, reason=_reason(exc))
             return None
@@ -121,7 +127,7 @@ class MirrorPost:
         # An edit never re-pings, so it always sends empty allowed_mentions.
         try:
             await self._rest.edit_message(mirror.channel_id, mirror.message_id, embeds=payload["embeds"],
-                                          allowed_mentions=NO_MENTIONS)
+                                          allowed_mentions=NO_MENTIONS, **_content_field(payload))
         except Exception as exc:  # noqa: BLE001 - the row stays unless the message is gone
             if _is_not_found(exc):
                 await self._db.run(lambda c: mirrors.delete_if(c, mirror.id, mirror.message_id))

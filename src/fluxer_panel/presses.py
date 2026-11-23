@@ -77,6 +77,7 @@ class Surface:
     home_community: bool   # the surface's community is the games channel's
     sub_id: int | None = None   # the copy's subscription, for a copy; None for the card and play-now posts
     mode: str | None = None     # that subscription's mode when the press was seen
+    mirror_of: str | None = None   # a play-now mirror: the home play-now message's id; None for every other surface
 
 
 @dataclass(frozen=True)
@@ -104,18 +105,21 @@ class _Lookup:
     switched_on: bool   # the global switch is on and the card is not switched off
     degraded: bool      # the channel refuses the bot's removals
     sub: Subscription | None = None   # the copy's subscription, for a copy
+    mirror_of: str | None = None      # the home play-now message, for a play-now mirror
 
 
-def _find_surface(conn, channel_id: str, message_id: str) -> tuple[int, SurfaceKind, Subscription | None] | None:
-    """The card, the kind of surface a message is and, for a copy, its subscription, when it is a live card's, a live
-    copy's or a live play-now post in this channel. The board's message is never a surface."""
+def _find_surface(conn, channel_id: str, message_id: str
+                  ) -> tuple[int, SurfaceKind, Subscription | None, str | None] | None:
+    """The card, the kind of surface a message is, for a copy its subscription and for a play-now mirror the home
+    play-now message's id. A live card's, a live copy's, a live play-now post's or a live play-now mirror's, in this
+    channel. The board's message is never a surface."""
     if board.get(conn).message_id == message_id:
         return None
     card = cards.get_by_message_id(conn, message_id)
     if card is not None:
         if card.state != "live" or card.channel_id != channel_id:
             return None
-        return card.id, "card", None
+        return card.id, "card", None, None
     sub = subscriptions.get_by_message_id(conn, message_id)
     if sub is not None:
         if sub.channel_id != channel_id or sub.paused:
@@ -123,12 +127,21 @@ def _find_surface(conn, channel_id: str, message_id: str) -> tuple[int, SurfaceK
         copied = cards.get_by_id(conn, sub.card_id)
         if copied is None or copied.state != "live":
             return None
-        return copied.id, "copy", sub
+        return copied.id, "copy", sub, None
     post = play_now.get_live_by_message(conn, message_id)
     if post is not None and post.channel_id == channel_id:
         owner = cards.get_by_id(conn, post.card_id)
         if owner is not None and owner.state == "live":
-            return owner.id, "play_now", None
+            return owner.id, "play_now", None, None
+        return None
+    mirror = mirrors.get_by_message_id(conn, message_id)
+    if mirror is not None and mirror.kind == "play_now" and mirror.channel_id == channel_id:
+        home = play_now.get_by_id(conn, mirror.object_id)
+        if home is None or home.state != "live":
+            return None
+        owner = cards.get_by_id(conn, home.card_id)
+        if owner is not None and owner.state == "live":
+            return owner.id, "play_now", None, home.message_id
     return None
 
 
@@ -136,10 +149,10 @@ def _lookup(conn, channel_id: str, message_id: str) -> _Lookup | None:
     found = _find_surface(conn, channel_id, message_id)
     if found is None:
         return None
-    card_id, kind, sub = found
+    card_id, kind, sub, mirror_of = found
     switched_on = interaction_settings.enabled(conn) and not interaction_settings.card_off(conn, card_id)
     return _Lookup(card_id=card_id, kind=kind, switched_on=switched_on,
-                   degraded=interaction_settings.is_degraded(conn, channel_id), sub=sub)
+                   degraded=interaction_settings.is_degraded(conn, channel_id), sub=sub, mirror_of=mirror_of)
 
 
 def _find_poll(conn, channel_id: str, message_id: str) -> int | None:
@@ -223,7 +236,7 @@ class Presses:
         me_too = found.kind == "play_now" and action is Action.PLAY_NOW
         if isinstance(event, events.ReactionRemove) and not me_too:
             return   # 6. Removals are never presses, in any channel
-        surface = await self._surface(event, found.kind, found.sub)
+        surface = await self._surface(event, found.kind, found.sub, found.mirror_of)
         if me_too:
             try:
                 await self._handler.me_too_changed(found.card_id, surface, event.user_id)
@@ -253,12 +266,14 @@ class Presses:
         await self._remove(event, degraded=found.degraded, now=now)
 
     async def _surface(self, event: events.ReactionAdd | events.ReactionRemove, kind: SurfaceKind,
-                       sub: Subscription | None = None) -> Surface:
+                       sub: Subscription | None = None, mirror_of: str | None = None) -> Surface:
         games_guild_id = await self._games_guild.get()
-        home = games_guild_id is not None and event.guild_id == games_guild_id
+        # A play-now mirror is never home, even in the games community: it has no scope of its own.
+        home = games_guild_id is not None and event.guild_id == games_guild_id and mirror_of is None
         return Surface(kind=kind, channel_id=event.channel_id, message_id=event.message_id,
                        guild_id=event.guild_id, home_community=home,
-                       sub_id=None if sub is None else sub.id, mode=None if sub is None else sub.mode)
+                       sub_id=None if sub is None else sub.id, mode=None if sub is None else sub.mode,
+                       mirror_of=mirror_of)
 
     def _admit(self, card_id: int, action: Action, user_id: str, now: float) -> str | None:
         """None when the press is handled, else the reason it is absorbed. Only a handled press moves the windows."""

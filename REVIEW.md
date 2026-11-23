@@ -92,25 +92,25 @@ Paths are relative to this directory.
 
 ## Reactions and presses
 
-- `src/fluxer_panel/presses.py:185` `if event.guild_id is None or event.user_id == self._identity.user_id or event.user_is_bot:` — DM reactions, the bot's own reactions and another bot's reactions never reach the press adapter.
-- `src/fluxer_panel/presses.py:203` `in POLL_ACTION_EMOJI:` — 📅 and 🔁 on a poll message go to the poll flow before the kill switch and the rate limits, and only an add counts; a removal reaches nothing, because the poll flow removes the presser's reaction.
+- `src/fluxer_panel/presses.py:198` `if event.guild_id is None or event.user_id == self._identity.user_id or event.user_is_bot:` — DM reactions, the bot's own reactions and another bot's reactions never reach the press adapter.
+- `src/fluxer_panel/presses.py:216` `in POLL_ACTION_EMOJI:` — 📅 and 🔁 on a poll message go to the poll flow before the kill switch and the rate limits, and only an add counts; a removal reaches nothing, because the poll flow removes the presser's reaction.
 - `src/fluxer_panel/poll_flow.py:258` `if user_id != poll.starter_id and not admin.is_admin_id(user_id, self._config):` — a 📅 or 🔁 on a poll message acts only for the poll's starter or a listed admin; anyone else's is removed and does nothing.
 - `src/fluxer_panel/poll_flow.py:295` `runoff = await self._db.run(lambda c: polls.child_of(c, poll_id))` — 📅 on a poll refuses when a runoff was started from it, checked under the poll's lock, so 📅 and 🔁 on one poll cannot both act.
 - `src/fluxer_panel/poll_flow.py:338` `if view.poll.session_id is not None:` — 🔁 refuses when the winner is already scheduled, checked under the same lock as the 📅 path's check above it.
-- `src/fluxer_panel/presses.py:220` `if found is None or not found.switched_on:` — the kill switch, the global one and the card's own, is read before any rate limit, so a switched-off surface absorbs nothing and counts nothing.
-- `src/fluxer_panel/presses.py:269` `if last is not None and now - last < self._config.press_user_window_seconds:` — the per-user window. A repeated press from one user inside it is absorbed.
-- `src/fluxer_panel/presses.py:277` `if len(times) >= self._config.press_card_burst:` — the per-card burst limit. A card's presses past the burst are absorbed.
-- `src/fluxer_panel/presses.py:335` `await self._pacer.wait(event.channel_id)` — the reaction removal waits for the channel's shared budget before the call.
-- `src/fluxer_panel/presses.py:336` `await self._rest.remove_reaction(event.channel_id, event.message_id, event.emoji.name, event.user_id)` — after a press is handled, the user's reaction is removed, so the button resets for the next tap.
-- `src/fluxer_panel/presses.py:339` `newly = await self._db.run(lambda c: interaction_settings.mark_degraded(c, channel, int(now)))` — a removal refused with 403 marks its channel degraded, and the admins are DMed once. A later press retries the removal at most once a day, and a success clears the mark.
+- `src/fluxer_panel/presses.py:233` `if found is None or not found.switched_on:` — the kill switch, the global one and the card's own, is read before any rate limit, so a switched-off surface absorbs nothing and counts nothing.
+- `src/fluxer_panel/presses.py:284` `if last is not None and now - last < self._config.press_user_window_seconds:` — the per-user window. A repeated press from one user inside it is absorbed.
+- `src/fluxer_panel/presses.py:292` `if len(times) >= self._config.press_card_burst:` — the per-card burst limit. A card's presses past the burst are absorbed.
+- `src/fluxer_panel/presses.py:350` `await self._pacer.wait(event.channel_id)` — the reaction removal waits for the channel's shared budget before the call.
+- `src/fluxer_panel/presses.py:351` `await self._rest.remove_reaction(event.channel_id, event.message_id, event.emoji.name, event.user_id)` — after a press is handled, the user's reaction is removed, so the button resets for the next tap.
+- `src/fluxer_panel/presses.py:354` `newly = await self._db.run(lambda c: interaction_settings.mark_degraded(c, channel, int(now)))` — a removal refused with 403 marks its channel degraded, and the admins are DMed once. A later press retries the removal at most once a day, and a success clears the mark.
 
 ## Play-now mentions
 
-- `src/fluxer_panel/interactions.py:76` `return {"parse": []}` — a play-now message with no follow role mentions nobody.
-- `src/fluxer_panel/interactions.py:77` `return {"parse": [], "roles": [role_id], "replied_user": False}` — the play-now role ping. Only the follow role of the play-now post's own scope can be mentioned, and only when `_scope_role_in` has matched it.
-- `src/fluxer_panel/interactions.py:83` `return role.role_id if role is not None and role.guild_id == guild_id else None` — the scope-role community check: a role from another community is never mentioned.
-- `src/fluxer_panel/interactions.py:369` `if channel_id == self._config.games_channel_id:` — the play-now guard in `send_play_now`. A play-now message is never sent to the games channel.
-- `src/fluxer_panel/interactions.py:370` `raise GamesChannelRefused` — the refusal happens before any REST call.
+- `src/fluxer_panel/interactions.py:77` `return {"parse": []}` — a play-now message with no follow role mentions nobody.
+- `src/fluxer_panel/interactions.py:78` `return {"parse": [], "roles": [role_id], "replied_user": False}` — the play-now role ping. Only the follow role of the play-now post's own scope can be mentioned, and only when `_scope_role_in` has matched it.
+- `src/fluxer_panel/interactions.py:84` `return role.role_id if role is not None and role.guild_id == guild_id else None` — the scope-role community check: a role from another community is never mentioned.
+- `src/fluxer_panel/interactions.py:436` `if channel_id == self._config.games_channel_id:` — the play-now guard in `send_play_now`. A play-now message is never sent to the games channel.
+- `src/fluxer_panel/interactions.py:437` `raise GamesChannelRefused` — the refusal happens before any REST call.
 
 ## Purge deletion
 
@@ -352,7 +352,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/session_post.py:88` `if session.channel_id == self._config.games_channel_id:` — `edit_session` makes the same check against the session's stored channel.
 - `src/fluxer_panel/session_post.py:89` `raise GamesChannelRefused` — the refusal for a session edit.
 - `src/fluxer_panel/session_jobs.py:254` `send_session(session.channel_id, payload)` — a recurrence posts the next occurrence to the session's own channel, which the guard above keeps out of the games channel.
-- `src/fluxer_panel/mirror_post.py:148` `if channel_id == self._config.games_channel_id:` — `MirrorPost` checks the games channel before any post, edit or delete of a mirror, so a mirror never reaches the games community's channel.
+- `src/fluxer_panel/mirror_post.py:154` `if channel_id == self._config.games_channel_id:` — `MirrorPost` checks the games channel before any post, edit or delete of a mirror, so a mirror never reaches the games community's channel.
 
 ## Poll channel guard
 

@@ -52,6 +52,11 @@ def get_live_by_message(conn: sqlite3.Connection, message_id: str) -> PlayNow | 
     return None if row is None else _load(row)
 
 
+def get_by_id(conn: sqlite3.Connection, play_now_id: int) -> PlayNow | None:
+    row = conn.execute(f"SELECT {_COLUMNS} FROM play_now WHERE id = ?", (play_now_id,)).fetchone()
+    return None if row is None else _load(row)
+
+
 def latest_for_scope(conn: sqlite3.Connection, card_id: int, scope_sub_id: int | None) -> PlayNow | None:
     """The newest play-now row of one scope of the card, in any state (NULL is the home card)."""
     row = conn.execute(f"SELECT {_COLUMNS} FROM play_now WHERE card_id = ? AND scope_sub_id IS ? "
