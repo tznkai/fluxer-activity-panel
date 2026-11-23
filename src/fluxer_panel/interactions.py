@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 from fluxer_client.ids import is_snowflake
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
 from fluxer_client.roles import RoleCache
-from fluxer_panel import cards, follow_roles, notify, play_now, render, rsvp, sessions, text
+from fluxer_panel import cards, follow_roles, notify, play_now, render, rsvp, scope, sessions, text
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.cards import Card
 from fluxer_panel.config import Config
@@ -73,35 +73,14 @@ def _failure_fields(exc: Exception) -> dict[str, Any]:
 
 async def card_target(rest: FluxerREST, config: Config, card: Card, *,
                       failed_event: str = "play_now_failed") -> tuple[tuple[str, str] | None, str | None]:
-    """The card's target channel as (channel id, community id), with no DM: the verified channel the card links to, else
-    PLAY_NOW_CHANNEL_ID. The second item is the reason there is none: "no_channel" or "unavailable". A failed lookup is
-    logged under `failed_event`, with ids and the exception type only."""
-    own = card.play_now_channel
-    if own is not None and own.verified:
-        return (own.channel_id, own.guild_id), None
-    configured = config.play_now_channel_id
-    if configured is None:
-        return None, "no_channel"
-    try:
-        channel = await rest.get_channel(configured)
-    except Exception as exc:  # noqa: BLE001 - an unreachable channel is refused, never raised
-        log_event(log, failed_event, level=logging.WARNING, card_id=card.id, channel_id=configured,
-                  reason=type(exc).__name__)
-        return None, "unavailable"
-    guild_id = channel.get("guild_id")
-    if not is_snowflake(guild_id):
-        return None, "unavailable"
-    return (configured, guild_id), None
+    """The card's home target channel, as scope.checked_target gives it. Kept for the session and poll flows, which move
+    to scopes in a later phase."""
+    return await scope.checked_target(rest, config, card, scope.home_scope(card, None), failed_event=failed_event)
 
 
 def target_channel_id(card: Card, config: Config) -> str | None:
-    """The channel a session or poll posts to, read from the card with no REST call: its verified channel, else
-    PLAY_NOW_CHANNEL_ID. The session and poll flows both use it, so a card that changed since its target was read is
-    noticed under the card lock."""
-    own = card.play_now_channel
-    if own is not None and own.verified:
-        return own.channel_id
-    return config.play_now_channel_id
+    """The home target channel, read with no REST call (see scope.scope_target)."""
+    return scope.scope_target(card, config, scope.home_scope(card, None))
 
 
 class Interactions:

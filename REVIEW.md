@@ -92,25 +92,25 @@ Paths are relative to this directory.
 
 ## Reactions and presses
 
-- `src/fluxer_panel/presses.py:174` `if event.guild_id is None or event.user_id == self._identity.user_id or event.user_is_bot:` — DM reactions, the bot's own reactions and another bot's reactions never reach the press adapter.
-- `src/fluxer_panel/presses.py:190` `in POLL_ACTION_EMOJI:` — 📅 and 🔁 on a poll message go to the poll flow before the kill switch and the rate limits, and only an add counts; a removal reaches nothing, because the poll flow removes the presser's reaction.
+- `src/fluxer_panel/presses.py:178` `if event.guild_id is None or event.user_id == self._identity.user_id or event.user_is_bot:` — DM reactions, the bot's own reactions and another bot's reactions never reach the press adapter.
+- `src/fluxer_panel/presses.py:194` `in POLL_ACTION_EMOJI:` — 📅 and 🔁 on a poll message go to the poll flow before the kill switch and the rate limits, and only an add counts; a removal reaches nothing, because the poll flow removes the presser's reaction.
 - `src/fluxer_panel/poll_flow.py:246` `if user_id != poll.starter_id and not admin.is_admin_id(user_id, self._config):` — a 📅 or 🔁 on a poll message acts only for the poll's starter or a listed admin; anyone else's is removed and does nothing.
 - `src/fluxer_panel/poll_flow.py:283` `runoff = await self._db.run(lambda c: polls.child_of(c, poll_id))` — 📅 on a poll refuses when a runoff was started from it, checked under the poll's lock, so 📅 and 🔁 on one poll cannot both act.
 - `src/fluxer_panel/poll_flow.py:325` `if view.poll.session_id is not None:` — 🔁 refuses when the winner is already scheduled, checked under the same lock as the 📅 path's check above it.
-- `src/fluxer_panel/presses.py:207` `if found is None or not found.switched_on:` — the kill switch, the global one and the card's own, is read before any rate limit, so a switched-off surface absorbs nothing and counts nothing.
-- `src/fluxer_panel/presses.py:254` `if last is not None and now - last < self._config.press_user_window_seconds:` — the per-user window. A repeated press from one user inside it is absorbed.
-- `src/fluxer_panel/presses.py:262` `if len(times) >= self._config.press_card_burst:` — the per-card burst limit. A card's presses past the burst are absorbed.
-- `src/fluxer_panel/presses.py:320` `await self._pacer.wait(event.channel_id)` — the reaction removal waits for the channel's shared budget before the call.
-- `src/fluxer_panel/presses.py:321` `await self._rest.remove_reaction(event.channel_id, event.message_id, event.emoji.name, event.user_id)` — after a press is handled, the user's reaction is removed, so the button resets for the next tap.
-- `src/fluxer_panel/presses.py:324` `newly = await self._db.run(lambda c: interaction_settings.mark_degraded(c, channel, int(now)))` — a removal refused with 403 marks its channel degraded, and the admins are DMed once. A later press retries the removal at most once a day, and a success clears the mark.
+- `src/fluxer_panel/presses.py:211` `if found is None or not found.switched_on:` — the kill switch, the global one and the card's own, is read before any rate limit, so a switched-off surface absorbs nothing and counts nothing.
+- `src/fluxer_panel/presses.py:260` `if last is not None and now - last < self._config.press_user_window_seconds:` — the per-user window. A repeated press from one user inside it is absorbed.
+- `src/fluxer_panel/presses.py:268` `if len(times) >= self._config.press_card_burst:` — the per-card burst limit. A card's presses past the burst are absorbed.
+- `src/fluxer_panel/presses.py:326` `await self._pacer.wait(event.channel_id)` — the reaction removal waits for the channel's shared budget before the call.
+- `src/fluxer_panel/presses.py:327` `await self._rest.remove_reaction(event.channel_id, event.message_id, event.emoji.name, event.user_id)` — after a press is handled, the user's reaction is removed, so the button resets for the next tap.
+- `src/fluxer_panel/presses.py:330` `newly = await self._db.run(lambda c: interaction_settings.mark_degraded(c, channel, int(now)))` — a removal refused with 403 marks its channel degraded, and the admins are DMed once. A later press retries the removal at most once a day, and a success clears the mark.
 
 ## Play-now mentions
 
 - `src/fluxer_panel/interactions.py:57` `return {"parse": []}` — a play-now message with no follow role mentions nobody.
 - `src/fluxer_panel/interactions.py:58` `return {"parse": [], "roles": [role_id], "replied_user": False}` — the play-now role ping. Only the card's own follow role can be mentioned, and only when `_role_in` has matched it.
 - `src/fluxer_panel/interactions.py:64` `return follow.role_id if follow is not None and follow.guild_id == guild_id else None` — the follow-role community check: a role from another community is never mentioned.
-- `src/fluxer_panel/interactions.py:342` `if channel_id == self._config.games_channel_id:` — the play-now guard in `send_play_now`. A play-now message is never sent to the games channel.
-- `src/fluxer_panel/interactions.py:343` `raise GamesChannelRefused` — the refusal happens before any REST call.
+- `src/fluxer_panel/interactions.py:321` `if channel_id == self._config.games_channel_id:` — the play-now guard in `send_play_now`. A play-now message is never sent to the games channel.
+- `src/fluxer_panel/interactions.py:322` `raise GamesChannelRefused` — the refusal happens before any REST call.
 
 ## Purge deletion
 

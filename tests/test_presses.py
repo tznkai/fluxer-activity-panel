@@ -298,7 +298,19 @@ async def test_an_active_copy_is_a_press_for_its_card(harness, channel: str, mes
     await h.presses.on_reaction(reaction_add(channel=channel, message=message, guild=guild))
     [press] = h.handler.presses
     assert press.card_id == CARD_ID
-    assert press.surface == Surface("copy", channel, message, guild, home)
+    sub = await h.db.run(lambda c: subscriptions.get(c, CARD_ID, channel))
+    assert sub is not None
+    assert press.surface == Surface("copy", channel, message, guild, home, sub.id, "redirect")
+
+
+async def test_a_press_on_a_far_local_copy_carries_its_subscription_and_mode(harness) -> None:
+    h = await harness()
+    sub = await h.db.run(lambda c: subscriptions.get(c, CARD_ID, FAR_COPY))
+    assert sub is not None
+    await h.db.run(lambda c: subscriptions.set_mode_if(c, sub.id, "redirect", "local"))
+    await h.presses.on_reaction(reaction_add(channel=FAR_COPY, message=FAR_MSG, guild=OTHER_GUILD))
+    [press] = h.handler.presses
+    assert press.surface == Surface("copy", FAR_COPY, FAR_MSG, OTHER_GUILD, False, sub.id, "local")
 
 
 async def test_a_play_now_post_takes_wake_as_a_press(harness) -> None:
