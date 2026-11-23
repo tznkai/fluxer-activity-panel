@@ -266,7 +266,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/poller.py:657` `payload = render.card_message(embed)` — the card's own message and a home copy are sent with this near payload, whose `allowed_mentions` is `{"parse": []}`. A copy mentions nobody, the same as the card.
 - `src/fluxer_panel/poller.py:659` `far_payload = render.card_message(far_embed)` — a redirect copy outside the games community is sent with this payload instead. It is the same card with the next session's jump link left out, and it has the same `allowed_mentions`, so that copy mentions nobody either.
 - `src/fluxer_panel/poller.py:763` `home = games_guild is not None and sub.guild_id == games_guild` — the copy's community decides whether it gets the linked card rendering or the link-free one. A failed games-guild lookup (`None`) counts as far, so a copy gets the link-free rendering unless its community is confirmed to be the games community.
-- `src/fluxer_panel/poller.py:768` `if sub.is_scope and sub.id in scope_payloads:` — a local or both copy with its own entry gets its own scope's next session instead, and its jump link points into the copy's community (`sessions.scope_session_view`). The payload still comes from `render.card_message`, so its `allowed_mentions` is empty.
+- `src/fluxer_panel/poller.py:768` `if sub.is_scope and sub.id in scope_payloads:` — a local or both copy with its own entry gets its own scope's next session instead, and its jump link points into the copy's community (`sessions.scope_session_view` for a local copy, `sessions.both_session_view` for a both copy, whose home session links only to its own mirror). The payload still comes from `render.card_message`, so its `allowed_mentions` is empty.
 
 ## Card commands
 
@@ -352,7 +352,21 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/session_post.py:90` `if session.channel_id == self._config.games_channel_id:` — `edit_session` makes the same check against the session's stored channel.
 - `src/fluxer_panel/session_post.py:91` `raise GamesChannelRefused` — the refusal for a session edit.
 - `src/fluxer_panel/session_jobs.py:254` `send_session(session.channel_id, payload)` — a recurrence posts the next occurrence to the session's own channel, which the guard above keeps out of the games channel.
-- `src/fluxer_panel/mirror_post.py:159` `if channel_id == self._config.games_channel_id:` — `MirrorPost` checks the games channel before any post, edit or delete of a mirror, so a mirror never reaches the games community's channel.
+- `src/fluxer_panel/mirror_post.py:163` `if channel_id == self._config.games_channel_id:` — `MirrorPost` checks the games channel before any post, edit or delete of a mirror, so a mirror never reaches the games community's channel.
+
+## Mirror links and mentions
+
+- `src/fluxer_panel/mirror_post.py:81` `allowed_mentions if allowed_mentions is not None else NO_MENTIONS` — the first post of a mirror carries the caller's allowed mentions (a play-now mirror pings only its own copy's role), and every other post carries none.
+- `src/fluxer_panel/mirror_post.py:139` `allowed_mentions=NO_MENTIONS, **_content_field(payload))` — every mirror edit sends empty allowed mentions, so an edit never re-pings anyone.
+- `src/fluxer_panel/interactions.py:380` `allowed_mentions=play_now_mentions(role_id))` — a play-now mirror's post mentions only the role its own copy resolved, or nobody.
+- `src/fluxer_panel/interactions.py:394` `role = _scope_role_in(scope.scope_for_sub(conn, card, sub), sub.guild_id)` — a mirror takes only the copy's own community role, so no other subscription's role can be mentioned in it.
+- `src/fluxer_panel/poll_post.py:70` `if via_sub_id is None:` — a home ballot links the home poll, and a far ballot links only its subscription's mirror, or nothing (decision 2).
+- `src/fluxer_panel/poll_post.py:100` `None if poll.session_id is None else session_jump(conn, poll.session_id, row.sub_id)` — each poll mirror's session link is its own copy's session mirror, or plain text: never the home session (AC3.6).
+- `src/fluxer_panel/session_post.py:33` `via = sessions.presence_via(conn, session.id, user_id)` — a session DM links a far user's own mirror, and the home message only for a user with no far origin (decision 3).
+- `src/fluxer_panel/poll_flow.py:556` `if sub_id is None:` — the scheduled DM links the home session only to a home voter; a far voter gets their mirror, or no link.
+- `src/fluxer_panel/sessions.py:488` `mirror = mirrors.get(conn, "session", home.id, sub.id)` — a both copy's next-session line shows the home session with its mirror's jump in this copy, never the home message.
+- `src/fluxer_panel/render.py:660` `if instance_url is not None and poll_jump is not None` — a ballot with no jump gets no link, in both the open and the closed form.
+- `src/fluxer_panel/mirrors.py:63` `WHERE EXISTS ` — a mirror row is stored only while its subscription is an active both copy, so a copy that left both cannot keep one.
 
 ## Poll channel guard
 
