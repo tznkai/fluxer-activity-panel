@@ -496,9 +496,11 @@ async def test_a_scope_that_ends_while_a_poll_waits_for_the_lock_posts_nothing(b
     await lock.acquire()
     try:
         task = asyncio.create_task(world.flow.start(far_press(world.card_id, sub_id)))
-        # The target and the member list are read before the lock, so once the start is queued on
-        # it the change lands after the pre-lock scope read.
-        await wait_until(lambda: bool(lock._waiters), waiting_for="the poll start to wait for the card lock")
+        # The scope, the target and the member list are read before the lock. Once the far member list is requested,
+        # the flow is only left to wait on the lock, so the change below lands after the pre-lock scope read.
+        far_members_path = f"/api/v1/guilds/{OTHER_GUILD}/members"
+        await wait_until(lambda: any(r.method == "GET" and r.path == far_members_path for r in world.state.requests),
+                         waiting_for="the far member list request")
         await world.db.run(lambda c: c.execute(ending, (sub_id,)))
     finally:
         lock.release()
