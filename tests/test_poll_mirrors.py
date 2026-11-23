@@ -8,6 +8,7 @@ REST server and a SQLite file."""
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,7 @@ from fluxer_panel.db import Database
 from fluxer_panel.dm_backoff import DmBackoff
 from fluxer_panel.dm_router import NonAdminLimiter
 from fluxer_panel.games import BotIdentity, GamesGuild
+from fluxer_panel.mirror_backfill import MirrorBackfill
 from fluxer_panel.mirror_post import MirrorPost
 from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.poll_close import PollCloser
@@ -32,6 +34,7 @@ from fluxer_panel.poll_jobs import PollJobs
 from fluxer_panel.poll_post import PollPost
 from fluxer_panel.session_flow import SessionFlow
 from fluxer_panel.session_post import SessionPost
+from fluxer_panel.text import POLL_SESSION_PLAIN
 from tests.fakes import FakeFluxerState, make_rest_app
 
 TOKEN = "SENTINEL-TOKEN-poll-mirrors"
@@ -90,6 +93,7 @@ class World:
     jobs: PollJobs
     flow: PollFlow
     mirror: MirrorPost
+    session_post: SessionPost
     card_id: int
     sub_b: int
     sub_l: int
@@ -161,7 +165,8 @@ async def world(tmp_path: Path, aiohttp_server: Any) -> AsyncIterator[World]:
                             kick=lambda: None)
             card_id, sub_b, sub_l = await database.run(_card)
             yield World(db=database, state=state, rest=rest, config=config, clock=clock, post=post, closer=closer,
-                        jobs=jobs, flow=flow, mirror=mirror, card_id=card_id, sub_b=sub_b, sub_l=sub_l)
+                        jobs=jobs, flow=flow, mirror=mirror, session_post=session_post, card_id=card_id,
+                        sub_b=sub_b, sub_l=sub_l)
     finally:
         if post is not None:
             await post.aclose(timeout=0.05)
@@ -389,3 +394,84 @@ async def test_a_mirror_404_drops_its_row_and_the_home_poll_stays_open(world: Wo
     assert await mirror_of(world, poll_id, world.sub_b) is None
     poll = await world.db.run(lambda c: polls.get(c, poll_id))
     assert poll is not None and poll.state == "open"
+
+
+# The session link of a poll mirror: its own copy's session mirror, never the home session (AC3.6, decision 2) ---------
+
+async def schedule_home_poll(world: World) -> tuple[int, sessions.Session]:
+    """A home poll with two votes for its first time, closed and scheduled. Returns the poll id and its session."""
+    poll_id = await open_home(world)
+    await world.flow.vote(FAR_F1, poll_id, "a", reply_channel_id=await _dm(world, FAR_F1))
+    await world.flow.vote(HOME_H1, poll_id, "a", reply_channel_id=await _dm(world, HOME_H1))
+    world.clock.now = CLOSES + 1
+    await world.closer.close(poll_id)
+    await world.flow._schedule(poll_id, presser=STARTER)
+    poll = await world.db.run(lambda c: polls.get(c, poll_id))
+    assert poll is not None and poll.session_id is not None
+    session = await world.db.run(lambda c: sessions.get(c, poll.session_id))
+    assert session is not None
+    return poll_id, session
+
+
+def poll_mirror_patches(world: World, channel: str, message: str) -> list[str]:
+    """The JSON of every PATCH to one message, in order."""
+    path = f"/api/v1/channels/{channel}/messages/{message}"
+    return [json.dumps(r.payload, sort_keys=True) for r in world.state.requests
+            if r.method == "PATCH" and r.path == path]
+
+
+async def test_a_scheduled_poll_mirror_links_its_own_copys_session_mirror_and_never_home(world: World) -> None:
+    poll_id, session = await schedule_home_poll(world)
+    session_mirror = await world.db.run(lambda c: mirrors.get(c, "session", session.id, world.sub_b))
+    assert session_mirror is not None
+    row = await mirror_of(world, poll_id, world.sub_b)
+    assert row is not None
+    await world.post.drain()
+    await world.post.flush(poll_id)
+    patches = poll_mirror_patches(world, FAR_B, row.message_id)
+    assert patches, "the scheduled poll's mirror is edited with its session link"
+    last = patches[-1]
+    assert f"/{OTHER}/{FAR_B}/{session_mirror.message_id}" in last
+    home_channel, home_message = await home_ids(world, poll_id)
+    leaves_out(last, session.message_id, home_message, home_channel)
+
+
+async def test_a_scheduled_poll_mirror_with_no_session_mirror_shows_plain_text_and_no_link(world: World) -> None:
+    poll_id, session = await schedule_home_poll(world)
+    session_mirror = await world.db.run(lambda c: mirrors.get(c, "session", session.id, world.sub_b))
+    assert session_mirror is not None
+    await world.post.drain()
+    assert await world.mirror.delete(session_mirror)
+    row = await mirror_of(world, poll_id, world.sub_b)
+    assert row is not None
+    world.state.requests.clear()
+    world.post.changed(poll_id)
+    await world.post.flush(poll_id)
+    patches = poll_mirror_patches(world, FAR_B, row.message_id)
+    assert patches, "the poll mirror is edited once its session mirror is gone"
+    assert POLL_SESSION_PLAIN in patches[-1]
+    assert "/channels/" not in patches[-1]
+    assert session.message_id not in patches[-1]
+
+
+async def test_a_backfill_of_an_open_poll_beside_a_scheduled_session_links_nothing_home(world: World) -> None:
+    # The schema allows a session link only on a winning, closed poll (CHECK polls.session_id), so an open poll never
+    # shows a session field. Its back-fill, with the card's home session scheduled beside it, must post no link at all.
+    _closed_id, session = await schedule_home_poll(world)
+    open_id = await open_home(world)
+    row = await mirror_of(world, open_id, world.sub_b)
+    assert row is not None
+    assert await world.mirror.delete(row)
+    home_channel, home_message = await home_ids(world, open_id)
+    card = await world.db.run(lambda c: cards.get_by_id(c, world.card_id))
+    assert card is not None
+    backfill = MirrorBackfill(db=world.db, config=world.config, session_post=world.session_post,
+                              mirror_post=world.mirror)
+    world.state.requests.clear()
+    await backfill.backfill_locked(card, world.sub_b)
+    text_of_poll = [json.dumps(r.payload, sort_keys=True) for r in world.state.requests
+                    if r.method == "POST" and r.path == f"/api/v1/channels/{FAR_B}/messages"]
+    assert text_of_poll, "the back-fill posts the open poll's mirror"
+    assert all("/channels/" not in body for body in text_of_poll)
+    for body in text_of_poll:
+        leaves_out(body, session.message_id, home_message, home_channel)

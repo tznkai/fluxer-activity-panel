@@ -384,7 +384,8 @@ class SessionFlow:
         except Exception as exc:  # noqa: BLE001 - the message keeps its counts from the last good edit
             log_event(log, "session_edit_failed", level=logging.WARNING, session_id=session_id,
                       reason=type(exc).__name__)
-        await self._session_post.sync_mirrors(session_id)   # a no-op when the edit above already synced them
+        # The edit above only edits mirrors already stored, so this call posts the new session's mirrors.
+        await self._session_post.sync_mirrors(session_id)
         if notify_proposer:
             if self._config.instance_url:
                 link = render.jump_link(text.SESSION_LINK_LABEL, self._config.instance_url, guild_id, channel_id,

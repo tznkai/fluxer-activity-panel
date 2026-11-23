@@ -17,7 +17,7 @@ from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.logs import log_event
 from fluxer_panel.mirror_post import MirrorPost
-from fluxer_panel.poll_post import mirror_payload, session_jump
+from fluxer_panel.poll_post import mirror_payload
 from fluxer_panel.session_post import SessionPost
 from fluxer_panel.subscriptions import Subscription
 
@@ -68,7 +68,9 @@ class MirrorBackfill:
                           message_id=message_id, reason=type(exc).__name__)
 
     async def _poll_mirror(self, card: cards.Card, sub: Subscription, channel_id: str) -> None:
-        """Posts or edits the open home poll's mirror in one copy, with its session link when the poll is scheduled."""
+        """Posts or edits the open home poll's mirror in one copy. An open poll has no session link: the schema allows a
+        session only on a winning, closed poll (the polls.session_id CHECK), so the mirror shows no session field
+        here."""
         def read(conn) -> tuple[int, dict] | None:
             poll = polls.open_for_scope(conn, card.id, None)
             if poll is None:
@@ -76,8 +78,7 @@ class MirrorBackfill:
             view = polls.view(conn, poll.id)
             if view is None:
                 return None
-            jump = None if poll.session_id is None else session_jump(conn, poll.session_id, sub.id)
-            return poll.id, mirror_payload(view, instance_url=self._config.instance_url, session_jump=jump)
+            return poll.id, mirror_payload(view, instance_url=self._config.instance_url, session_jump=None)
 
         found = await self._db.run(read)
         if found is None:
