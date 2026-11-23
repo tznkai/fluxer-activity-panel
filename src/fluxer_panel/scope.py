@@ -3,8 +3,9 @@
 """Scopes: the unit that owns play-now calls, sessions and polls. Home (sub None) or one local/both subscription.
 
 `resolve_scope` turns a press's surface into a scope, read again inside the caller's transaction, so a mode changed
-since the press was filtered wins. A far redirect copy resolves to `ELSEWHERE`, which keeps the redirect behaviour
-(a DM that points at the card).
+since the press was filtered wins. A surface outside the games community with no scope of its own (a redirect copy,
+or a far card or play-now post) resolves to `ELSEWHERE`, which keeps the redirect behaviour (a DM that points at the
+card).
 """
 
 from __future__ import annotations
@@ -38,7 +39,8 @@ class Scope:
 
 
 class Elsewhere:
-    """The press is on a redirect far copy: today's *_ELSEWHERE behaviour, with no scope of its own."""
+    """The press is on a surface outside the games community with no scope of its own (a redirect copy, or a far card
+    or play-now post): today's *_ELSEWHERE behaviour."""
 
 
 ELSEWHERE = Elsewhere()
