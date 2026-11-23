@@ -43,7 +43,7 @@ async def end_scope_locked(ctx: CardContext, card_id: int, sub_id: int, actor: s
     `counts` maps the scope's live play-now ids to the reactor counts the caller read before taking the lock."""
     _require_wiring(ctx)
     cancelled = await ctx.session_commands.cancel_card_sessions_locked(card_id, actor, scope=sub_id)
-    poll_closed = await _close_scope_poll_locked(ctx, card_id, sub_id)
+    poll_closed = await close_scope_poll_locked(ctx, card_id, sub_id)
     live = await ctx.db.run(lambda c: play_now.live_for_scope(c, card_id, sub_id))
     ended = await ctx.play_now_ender.end_play_now_locked(live, counts)
     mirrors_left = await delete_mirrors_locked(ctx, sub_id)
@@ -58,8 +58,9 @@ async def end_scope_after_lock(ctx: CardContext, ended: ScopeEnded) -> None:
     await ctx.play_now_ender.clear_play_now_reactions(ended.play_now)
 
 
-async def _close_scope_poll_locked(ctx: CardContext, card_id: int, sub_id: int) -> bool:
-    """Closes the scope's open poll with no winner. A failure is logged and the scope's end goes on."""
+async def close_scope_poll_locked(ctx: CardContext, card_id: int, sub_id: int) -> bool:
+    """Closes the scope's open poll with no winner. A failure is logged and the scope's end goes on. The caller holds
+    the card's lock."""
     poll = await ctx.db.run(lambda c: polls.open_for_scope(c, card_id, sub_id))
     if poll is None or ctx.poll_closer is None:
         return False

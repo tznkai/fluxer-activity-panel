@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
@@ -466,10 +467,10 @@ def real_length_id(n: int) -> str:
     return "1" + "0" * 14 + f"{n:04d}"
 
 
-@pytest.mark.xfail(strict=True, reason="archive reply over the message limit at 20 copies; chunked in phase 6 (AC5.5)")
 async def test_archive_reply_with_every_channel_left_stays_under_the_message_limit(world: World) -> None:
     """The most channels an archive can leave is the subscription cap plus the card's own message: one line each.
-    The ids are the real length, so the reply is measured at its realistic worst."""
+    The ids are the real length, so the reply is measured at its realistic worst. The reply is chunked: every message is
+    under the limit, the header opens the first one, and each channel is named exactly once across them."""
     card = await make_card(world)
     channels = tuple(real_length_id(n) for n in range(1, subscriptions.MAX_SUBSCRIPTIONS + 1))
     games = real_length_id(0)
@@ -478,10 +479,14 @@ async def test_archive_reply_with_every_channel_left_stays_under_the_message_lim
     for channel in channels:
         delete_status(world, channel, copy_id(channel), 403)
     delete_status(world, games, MAIN_MESSAGE, 403)
+    world.clear_requests()
     await world.run("!card archive mc")
-    reply = world.last_reply()
-    assert reply == left_reply(*channels, games)
-    assert render.units(reply) <= 2000
+    replies = [payload["content"] for payload in world.payloads()]
+    assert len(replies) >= 2, "21 lines of 19-digit ids cannot fit one message"
+    assert all(render.units(reply) < 2000 for reply in replies)
+    assert replies[0].startswith(text.CARD_ARCHIVED_SOME_LEFT)
+    named = re.findall(r"<#(\d+)>", "\n".join(replies))
+    assert sorted(named) == sorted((*channels, games))
 
 
 async def test_archive_counts_a_copy_already_gone_as_removed(world: World) -> None:
