@@ -203,6 +203,7 @@ SUBSCRIPTION_ROLE_ASK = ("A role with the card's follow name is already in use i
                          "role=<role id>.")
 SUBSCRIPTION_ROLE_FAILED = "The mode is set, but the follow role isn't: {reason}"
 SUBSCRIPTION_ROLE_UNAVAILABLE = "The mode is set, but following isn't available right now, so there's no follow role."
+SUBSCRIPTION_ROLE_GONE = "That channel was unsubscribed, so it has no follow role."
 SUBSCRIPTION_MIRRORS_LEFT = "I couldn't delete my posts in {channels}."
 # The role step's refusal reasons, as one sentence each. Nothing here names the role.
 SUBSCRIPTION_ROLE_REASON = {
@@ -215,7 +216,6 @@ SUBSCRIPTION_ROLE_REASON = {
     "mentionable_failed": "I couldn't create or change the role there (I need Manage Roles, ranked above it).",
     "lookup_failed": "I couldn't reach Fluxer to check that role. Try again in a minute.",
     "no_bot_id": "Try again in a moment.",
-    "missing_subscription": "That channel was unsubscribed before its follow role was set.",
 }
 SUBSCRIPTIONS_HEADING = "Subscribed channels:"
 # `!card show` lines: the mode after each channel, and for a local or both copy the channel it posts in and its role.

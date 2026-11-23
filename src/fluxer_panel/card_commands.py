@@ -896,6 +896,8 @@ async def _role_step_for_sub(ctx: CardContext, card: cards.Card, guild_id: str, 
     if res.outcome in (follow_roles.Ensured.REUSED, follow_roles.Ensured.ADOPTED, follow_roles.Ensured.CREATED,
                        follow_roles.Ensured.SET):
         return text.SUBSCRIPTION_ROLE_OK.format(role_id=res.role_id)
+    if res.reason == "missing_subscription":
+        return text.SUBSCRIPTION_ROLE_GONE
     if res.reason in ("taken", "duplicate_name"):
         return text.SUBSCRIPTION_ROLE_ASK
     reasons = text.SUBSCRIPTION_ROLE_REASON

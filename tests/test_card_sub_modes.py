@@ -15,7 +15,7 @@ import aiohttp
 import pytest
 
 from fluxer_client.roles import RoleCache
-from fluxer_panel import cards, mirrors, play_now, polls, sessions, subscriptions, text
+from fluxer_panel import card_commands, cards, mirrors, play_now, polls, sessions, subscriptions, text
 from fluxer_panel.db import Database
 from fluxer_panel.dm_backoff import DmBackoff
 from fluxer_panel.games import BotIdentity, GamesGuild
@@ -321,6 +321,22 @@ async def test_repeating_the_mode_after_a_failed_role_step_retries_it(modes_worl
     role_row = await sub_role(modes_world, sub.id)
     assert role_row is not None and role_row.role_id == NEW_ROLE
     assert modes_world.last_reply().splitlines()[-1] == text.SUBSCRIPTION_ROLE_OK.format(role_id=NEW_ROLE)
+
+
+async def test_a_subscription_removed_before_its_role_step_replies_that_it_has_no_follow_role(
+        modes_world: World) -> None:
+    card = await make_card(modes_world)
+    await modes_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local")
+    sub = await sub_of(modes_world, card.id)
+    assert sub is not None
+    await modes_world.db.run(lambda c: subscriptions.remove_by_id(c, sub.id))
+    requests_before = len(modes_world.state.requests)
+
+    reply = await card_commands._role_step_for_sub(modes_world.ctx, card, FAR, sub.id, None)
+
+    assert reply == text.SUBSCRIPTION_ROLE_GONE
+    assert [r for r in modes_world.state.requests[requests_before:] if r.path.startswith(ROLES)] == []
+    assert await modes_world.db.run(lambda c: cards.get_subscription_role(c, sub.id)) is None
 
 
 # Mode transitions and cleanup ------------------------------------------------------------------------------

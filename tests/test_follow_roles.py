@@ -5,6 +5,7 @@ publish-time ensure."""
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,7 +35,7 @@ from fluxer_panel.follow_roles import (
     zero_permissions,
 )
 from fluxer_panel.games import BotIdentity
-from tests.fakes import FakeFluxerState, Override, Recorded, make_rest_app
+from tests.fakes import FakeFluxerState, Override, Recorded, make_rest_app, wait_until
 
 TOKEN = "test.token"
 GUILD = "1001"
@@ -588,6 +589,7 @@ FAR_BOT_ROLE = "5050"
 FAR_CREATE_PATH = f"/api/v1/guilds/{FAR}/roles"
 FAR_NEW_ROLE_PATH = f"/api/v1/guilds/{FAR}/roles/7001"
 FAR_OTHER_ROLE = "6700"
+FAR_ROLES_PATH = f"/api/v1/guilds/{FAR}/roles"
 
 
 def add_far_community(state: FakeFluxerState) -> None:
@@ -718,15 +720,24 @@ async def test_sub_role_step_for_a_removed_subscription_is_refused_before_any_re
     assert state.requests_to(f"/api/v1/guilds/{FAR}/roles") == []
 
 
-async def test_store_into_a_subscription_removed_during_the_role_step_stores_nothing(fake, deps, db) -> None:
+async def test_subscription_removed_during_the_role_lookup_is_refused_and_stores_nothing(fake, deps, db) -> None:
+    state, _ = fake
+    add_far_community(state)
     card = await make_card(db, "alpha")
     sub_id = await make_sub(db, card)
-    await db.run(lambda c: subscriptions.remove_by_id(c, sub_id))
+    # Hold the roles GET after the up-front subscription check has passed, then remove the row while it is in flight.
+    gate_key = f"GET {FAR_ROLES_PATH}"
+    state.gates[gate_key] = asyncio.Event()
+    step = asyncio.create_task(ensure_follow_role(deps, FAR, card, sub_id=sub_id))
+    await wait_until(lambda: gate_key in state.gated)
+    assert await db.run(lambda c: subscriptions.remove_by_id(c, sub_id))
+    state.gates[gate_key].set()
 
-    reason = await follow_roles._store(deps, follow_roles.RoleTarget(card, sub_id), FAR, FAR_OTHER_ROLE)
+    result = await asyncio.wait_for(step, timeout=5)
 
-    assert reason == "missing_subscription"
-    assert await db.run(lambda c: cards.get_subscription_role(c, sub_id)) is None
+    assert result == EnsureResult(Ensured.REFUSED, reason="missing_subscription")
+    assert await sub_role(db, sub_id) is None
+    assert await stored(db, card) is None
 
 
 async def test_sub_create_403_is_failed_and_stores_nothing(fake, deps, db) -> None:

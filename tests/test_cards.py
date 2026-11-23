@@ -17,10 +17,10 @@ from fluxer_panel.cards import (
     ChannelLink,
     FollowRole,
     FollowRoleTaken,
-    SubscriptionMissing,
     Location,
     ManagerRef,
     ProbeRef,
+    SubscriptionMissing,
 )
 from fluxer_panel.db import Database
 
