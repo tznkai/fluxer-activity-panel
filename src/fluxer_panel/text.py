@@ -175,7 +175,8 @@ PLAY_NOW_COOLDOWN = "Someone already called for {card}: {link}"
 PLAY_NOW_COOLDOWN_NO_LINK = "Someone already called for {card} a moment ago."
 PROBE_ALERT = "Heads up: card {slug} reports its server running, but the game isn't answering queries."
 # Card subscriptions: a copy of a card in another text channel. The channel is shown as a mention, the only input here.
-SUBSCRIPTION_USAGE = ("Usage: !card subscribe <slug> <channel>, where <channel> is a channel link or "
+SUBSCRIPTION_USAGE = ("Usage: !card subscribe <slug> <channel> [mode=redirect|local|both] "
+                      "[channel=<channel or link>] [role=<role id>], where <channel> is a channel link or "
                       "<community id> <channel id>.")
 UNSUBSCRIBE_USAGE = "Usage: !card unsubscribe <slug> <channel>, with the channel given as for subscribe."
 SUBSCRIBED = "Subscribed. The card will post in that channel on the next check."
@@ -188,6 +189,13 @@ SUBSCRIPTION_NOT_FOUND = "That channel isn't subscribed to this card."
 UNSUBSCRIBED = "Unsubscribed. The copy in that channel is removed."
 UNSUBSCRIBED_COPY_LEFT = ("Unsubscribed, but I couldn't remove the copy in <#{channel_id}>, so it is still there. "
                           "Delete it by hand.")
+SUBSCRIPTION_MODE_IN_GAMES = ("Copies in the games community always point at the card, so they can't be local or "
+                              "both.")
+SUBSCRIPTION_NEEDS_SCOPE = "channel= and role= only work with mode=local or mode=both."
+SUBSCRIPTION_CHANNEL_IS_GAMES = "That's the games channel. Sessions, polls and play-now posts never go there."
+SUBSCRIPTION_MODE_SET = "Copy in <#{channel_id}> is now {mode}."
+SUBSCRIPTION_LOCAL_CHANNEL_SET = "It posts in <#{channel_id}>."
+SUBSCRIPTION_RETRY = "Something changed at the same time. Run the command again."
 SUBSCRIPTIONS_HEADING = "Subscribed channels:"
 SUBSCRIPTION_PAUSED_SUFFIX = " (paused)"
 # The two pause alerts take the card's slug (a-z, 0-9 and -) and the channel, shown as a mention. No other card text.

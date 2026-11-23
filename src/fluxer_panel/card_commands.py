@@ -678,16 +678,18 @@ async def _delete_posted(rest: FluxerREST, channel_id: str, message_id: str) -> 
 # subscribe, unsubscribe ------------------------------------------------------------------------------
 
 async def _subscribe(event: MessageCreate, ctx: CardContext, rest: str) -> _Result:
-    parts = rest.split(maxsplit=1)
-    if len(parts) != 2:
+    tokens = rest.split()
+    parsed = card_fields.subscription_options(tokens[1:]) if tokens else None
+    if parsed is None:
         await _say(ctx, event, text.SUBSCRIPTION_USAGE)
         return _Result()
-    slug_raw, target = parts
+    target_tokens, opts = parsed
     try:
-        guild_id, channel_id = card_fields.channel_target("channel", target)
+        guild_id, channel_id = card_fields.channel_target("channel", " ".join(target_tokens))
     except CardFieldError:
         await _say(ctx, event, text.SUBSCRIPTION_USAGE)
         return _Result()
+    slug_raw = tokens[0]
     card = await _find(ctx, slug_raw)
     if card is None:
         await _say(ctx, event, text.NO_SUCH_CARD)
@@ -697,37 +699,91 @@ async def _subscribe(event: MessageCreate, ctx: CardContext, rest: str) -> _Resu
         return _Result(card.id)
     # The lock is shared with the poller and archive, so a subscription cannot change under a post or an archive.
     async with ctx.locks.get(card.id):
-        reply = await _subscribe_locked(ctx, card.id, guild_id, channel_id)
+        reply = await _subscribe_locked(ctx, card.id, guild_id, channel_id, opts)
     await _say(ctx, event, reply)
     return _Result(card.id)
 
 
-async def _subscribe_locked(ctx: CardContext, card_id: int, guild_id: str, channel_id: str) -> str:
-    """Adds or resumes one subscription, under the card lock. An active one is refused before any Fluxer request, and a
-    full card too. A new or paused channel is checked with the same flow as a card's text channel slot: the bot must be
-    in the community, and the channel must be a text channel of it."""
+def _has_options(opts: card_fields.SubOptions) -> bool:
+    return opts.mode is not None or opts.channel is not None or opts.role is not None
+
+
+async def _in_games_community(ctx: CardContext, guild_id: str) -> bool:
+    """Whether a copy in `guild_id` is in the games community. Without a games lookup, no copy is."""
+    if ctx.games_guild is None:
+        return False
+    return await ctx.games_guild.get() == guild_id
+
+
+async def _local_channel(ctx: CardContext, guild_id: str, value: str) -> tuple[str | None, str]:
+    """The local channel a `channel=` value names. It must be a verified text channel of the copy's community and not
+    the games channel. Returns the channel id to store (None when refused) and the reply. Nothing is written here."""
+    try:
+        link_guild, channel_id = card_fields.local_channel_value(value)
+    except CardFieldError:
+        return None, text.SUBSCRIPTION_USAGE
+    if link_guild is not None and link_guild != guild_id:
+        return None, text.CHANNEL_OTHER_COMMUNITY
+    if channel_id == ctx.config.games_channel_id:
+        return None, text.SUBSCRIPTION_CHANNEL_IS_GAMES
+    link, reply = await _check_channel(ctx.rest, guild_id, channel_id, TEXT_CHANNEL_TYPE)
+    if link is None or not link.verified:
+        return None, reply
+    return channel_id, reply
+
+
+async def _subscribe_locked(ctx: CardContext, card_id: int, guild_id: str, channel_id: str,
+                            opts: card_fields.SubOptions) -> str:
+    """Adds or resumes one subscription and applies its options, under the card lock. Every refusal is decided before
+    the first write, so a refused command changes nothing. An active one with no options is refused before any Fluxer
+    request, and a full card too. A new or paused channel is checked with the same flow as a card's text channel slot:
+    the bot must be in the community, and the channel must be a text channel of it."""
     existing = await ctx.db.run(lambda c: subscriptions.get(c, card_id, channel_id))
-    if existing is not None and not existing.paused:
+    if existing is not None and not existing.paused and not _has_options(opts):
         return text.SUBSCRIPTION_ALREADY
+    current_mode = existing.mode if existing is not None else "redirect"
+    mode = opts.mode or current_mode
+    if mode in subscriptions.LOCAL_MODES and await _in_games_community(ctx, guild_id):
+        return text.SUBSCRIPTION_MODE_IN_GAMES
+    if mode == "redirect" and (opts.channel is not None or opts.role is not None):
+        return text.SUBSCRIPTION_NEEDS_SCOPE
+    local_channel = None
+    if opts.channel is not None:
+        local_channel, refusal = await _local_channel(ctx, guild_id, opts.channel)
+        if local_channel is None:
+            return refusal
     limit_reply = text.SUBSCRIPTION_LIMIT.format(limit=subscriptions.MAX_SUBSCRIPTIONS)
     if existing is None and await ctx.db.run(lambda c: subscriptions.count(c, card_id)) >= subscriptions.MAX_SUBSCRIPTIONS:
         return limit_reply
-    link, reply = await _check_channel(ctx.rest, guild_id, channel_id, TEXT_CHANNEL_TYPE)
-    if link is None:
-        return reply
-    if not link.verified:
-        return text.SUBSCRIPTION_NOT_IN_COMMUNITY
+    if existing is None or existing.paused:
+        link, reply = await _check_channel(ctx.rest, guild_id, channel_id, TEXT_CHANNEL_TYPE)
+        if link is None:
+            return reply
+        if not link.verified:
+            return text.SUBSCRIPTION_NOT_IN_COMMUNITY
+    lines: list[str] = []
     try:
         if existing is None:
-            await ctx.db.run(lambda c: subscriptions.add(c, card_id, guild_id, channel_id))
-            done = text.SUBSCRIBED
+            sub_id = await ctx.db.run(lambda c: subscriptions.add(c, card_id, guild_id, channel_id))
+            lines.append(text.SUBSCRIBED)
         else:
-            await ctx.db.run(lambda c: subscriptions.resume(c, card_id, channel_id))
-            done = text.SUBSCRIPTION_RESUMED
+            sub_id = existing.id
+            if existing.paused:
+                await ctx.db.run(lambda c: subscriptions.resume(c, card_id, channel_id))
+                lines.append(text.SUBSCRIPTION_RESUMED)
     except subscriptions.SubscriptionFull:  # defensive: the count above runs under this card's lock, so this cannot fire
         return limit_reply
+    if opts.mode is not None and opts.mode != current_mode:
+        if not await ctx.db.run(lambda c: subscriptions.set_mode_if(c, sub_id, current_mode, opts.mode)):
+            return text.SUBSCRIPTION_RETRY
+        lines.append(text.SUBSCRIPTION_MODE_SET.format(channel_id=channel_id, mode=opts.mode))
+    if local_channel is not None:
+        await ctx.db.run(lambda c: subscriptions.set_local_channel(c, sub_id, local_channel))
+        lines.append(text.SUBSCRIPTION_LOCAL_CHANNEL_SET.format(channel_id=local_channel))
+    if not lines:   # an active row given options that it already has
+        return text.SUBSCRIPTION_ALREADY
     ctx.kick()
-    return done
+    return "\n".join(lines)
 
 
 async def _unsubscribe(event: MessageCreate, ctx: CardContext, rest: str) -> _Result:

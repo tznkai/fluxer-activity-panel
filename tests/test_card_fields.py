@@ -290,3 +290,33 @@ def test_refusal_reply_uses_a_fixed_label_for_a_field_outside_the_vocabulary() -
     reply = card_fields.refusal_reply(CardFieldError(SENTINEL + "field", "yes_no"))
     assert reply == "Can't set this field: it must be yes or no."
     assert SENTINEL not in reply
+
+
+# subscription options ----------------------------------------------------------------------------------
+
+def test_subscription_options_split_known_keys_and_keep_the_target_tokens() -> None:
+    rest, opts = card_fields.subscription_options(["1001", "2001", "mode=local", "channel=2002", "role=3001"])
+    assert rest == ["1001", "2001"]
+    assert opts == card_fields.SubOptions(mode="local", channel="2002", role="3001")
+
+
+def test_subscription_options_with_no_options_is_empty() -> None:
+    assert card_fields.subscription_options(["1001", "2001"]) == (["1001", "2001"], card_fields.SubOptions())
+
+
+def test_subscription_options_accept_each_mode() -> None:
+    for mode in ("redirect", "local", "both"):
+        assert card_fields.subscription_options([f"mode={mode}"]) == ([], card_fields.SubOptions(mode=mode))
+
+
+@pytest.mark.parametrize("tokens", [
+    ["colour=red"],                    # unknown key
+    ["mode=local", "mode=both"],       # repeated key
+    ["mode=sometimes"],                # mode not in MODES
+    ["mode="],                         # empty value
+    ["channel="],                      # empty value
+    ["role=admins"],                   # not a snowflake
+    ["role=12x"],
+])
+def test_subscription_options_refuse_bad_tokens(tokens: list[str]) -> None:
+    assert card_fields.subscription_options(tokens) is None
