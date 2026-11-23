@@ -14,6 +14,7 @@ still go out if the backoff ends before the close.
 from __future__ import annotations
 
 import logging
+import sqlite3
 import time
 from collections.abc import Callable
 from functools import partial
@@ -25,6 +26,7 @@ from fluxer_panel.db import Database
 from fluxer_panel.dm_backoff import DmBackoff
 from fluxer_panel.logs import log_event
 from fluxer_panel.poll_close import PollCloser
+from fluxer_panel.poll_post import poll_jump
 
 log = logging.getLogger(__name__)
 
@@ -82,14 +84,12 @@ class PollJobs:
             return
         now = int(self._clock())
         pending = await self._db.run(lambda c: polls.reminder_due(c, now))
-        contents: dict[int, str | None] = {}
         sent: dict[int, int] = {}
+        broken: set[int] = set()     # polls whose text failed this pass: their other reminders wait too
         for poll, user_id in pending:
-            if self._backoff.blocked(user_id):
+            if self._backoff.blocked(user_id) or poll.id in broken:
                 continue
-            if poll.id not in contents:
-                contents[poll.id] = await self._reminder_text(poll.id)
-            content = contents[poll.id]
+            content = await self._reminder_text(poll.id, user_id, broken)
             if content is None:
                 continue
             if not await self._db.run(partial(polls.mark_reminded_if, poll_id=poll.id, user_id=user_id)):
@@ -99,24 +99,35 @@ class PollJobs:
         for poll_id, count in sent.items():
             log_event(log, "poll_reminded", poll_id=poll_id, count=count)
 
-    async def _reminder_text(self, poll_id: int) -> str | None:
-        """The reminder text for one poll, built before any ballot is marked. None when the poll is gone or its text cannot
-        be built: that poll's reminders wait, and the other polls still go out."""
+    async def _reminder_text(self, poll_id: int, user_id: str, broken: set[int]) -> str | None:
+        """The reminder text for one recipient, built before their ballot is marked. None when the poll is gone or its
+        text cannot be built: that poll's reminders wait (it is added to `broken` and logged once), and the other polls
+        still go out."""
         try:
-            view = await self._db.run(partial(polls.view, poll_id=poll_id))
-            return None if view is None else self._reminder_content(view)
+            return await self._db.run(partial(self._reminder_read, poll_id=poll_id, user_id=user_id))
         except Exception as exc:  # noqa: BLE001 - one poll's text must not stop the other polls' reminders
-            log_event(log, "poll_job_failed", level=logging.WARNING, kind="remind", poll_id=poll_id,
-                      reason=type(exc).__name__)
+            if poll_id not in broken:
+                broken.add(poll_id)
+                log_event(log, "poll_job_failed", level=logging.WARNING, kind="remind", poll_id=poll_id,
+                          reason=type(exc).__name__)
             return None
 
-    def _reminder_content(self, view: polls.PollView) -> str:
-        """The reminder's text. The card title is escaped, and the link goes to the poll message, or is plain when no
-        instance URL is configured."""
+    def _reminder_read(self, conn: sqlite3.Connection, *, poll_id: int, user_id: str) -> str | None:
+        """Reads the poll and the recipient's ballot, and builds the text with the link that ballot gives."""
+        view = polls.view(conn, poll_id)
+        if view is None:
+            return None
+        found = polls.ballot(conn, poll_id, user_id)
+        jump = poll_jump(conn, view.poll, None if found is None else found.via_sub_id)
+        return self._reminder_content(view, jump)
+
+    def _reminder_content(self, view: polls.PollView, jump: tuple[str, str, str] | None) -> str:
+        """The reminder's text. The card title is escaped. The link goes to `jump` (the recipient's poll message: the
+        home poll, or their mirror), or is plain when there is no jump or no instance URL is configured."""
         poll = view.poll
         instance_url = self._config.instance_url
-        link = (render.jump_link(text.POLL_LINK_LABEL, instance_url, poll.guild_id, poll.channel_id, poll.message_id)
-                if instance_url is not None else text.POLL_LINK_LABEL)
+        link = (render.jump_link(text.POLL_LINK_LABEL, instance_url, *jump)
+                if instance_url is not None and jump is not None else text.POLL_LINK_LABEL)
         return text.POLL_REMINDER_DM.format(card=render.escape(view.card_title), link=link, n=poll.id,
                                             ts=poll.closes_at)
 

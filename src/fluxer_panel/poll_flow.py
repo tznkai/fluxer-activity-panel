@@ -16,12 +16,14 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
+from typing import Any
 
 from fluxer_client.events import MessageCreate
 from fluxer_client.ids import is_snowflake
 from fluxer_client.rest import FluxerREST
 from fluxer_panel import (
-    admin, cards, notify, poll_count, poll_letters, poll_members, poll_reply, polls, render, scope, session_flow, text)
+    admin, cards, notify, poll_count, poll_letters, poll_members, poll_reply, polls, render, scope, session_flow,
+    subscriptions, text)
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.cards import Card
 from fluxer_panel.config import Config
@@ -29,7 +31,8 @@ from fluxer_panel.db import Database
 from fluxer_panel.dm_backoff import DmBackoff
 from fluxer_panel.games import GamesGuild
 from fluxer_panel.logs import log_event
-from fluxer_panel.poll_post import PollPost
+from fluxer_panel.mirror_post import MirrorPost
+from fluxer_panel.poll_post import PollPost, mirror_payload, session_jump
 from fluxer_panel.presses import RUNOFF_EMOJI, SESSION_EMOJI, Press
 
 log = logging.getLogger(__name__)
@@ -109,7 +112,8 @@ class PollFlow:
     def __init__(self, *, db: Database, rest: FluxerREST, config: Config, locks: CardLocks, poll_post: PollPost,
                  backoff: DmBackoff, games_guild: GamesGuild, clock: Callable[[], float] = time.time,
                  kick: Callable[[], None] = lambda: None,
-                 session_flow: session_flow.SessionFlow | None = None) -> None:
+                 session_flow: session_flow.SessionFlow | None = None,
+                 mirror_post: MirrorPost | None = None) -> None:
         self._db = db
         self._rest = rest
         self._config = config
@@ -120,6 +124,7 @@ class PollFlow:
         self._clock = clock
         self._kick = kick
         self._session_flow = session_flow   # the session publish for 📅; without it 📅 on a poll does nothing
+        self._mirror_post = mirror_post   # posts the poll mirrors of both copies; None leaves them out
         self._poll_locks: dict[int, _PollLock] = {}
 
     # The 🗳️ press ----------------------------------------------------------------------------------------------
@@ -214,7 +219,8 @@ class PollFlow:
                     polls.create, card_id=card.id, guild_id=guild_id, channel_id=channel_id, message_id=message_id,
                     starter_id=starter_id, kind=kind, parent_poll_id=parent_poll_id, now=now,
                     closes_at=closes, ballot_size=self._config.poll_ballot_size,
-                    options=list(options), recipients=recipients.user_ids, scope_sub_id=scope_sub_id))
+                    options=list(options), recipients=recipients.user_ids, scope_sub_id=scope_sub_id,
+                    via=recipients.via))
             except Exception as exc:  # noqa: BLE001 - with no row the message would never close: it is deleted
                 await self._poll_post.delete_unstored(channel_id, message_id)
                 log_event(log, "poll_store_failed", level=logging.WARNING, card_id=card.id,
@@ -228,6 +234,8 @@ class PollFlow:
                     await self._already_open(presser_id, stored)
                 return self._refused(card.id, "open")
 
+        if scope_sub_id is None:
+            await self._mirror_new_poll(card, poll_id)
         for uid in recipients.user_ids:
             await self._poll_post.send_ballot(poll_id, uid)
         self._poll_post.changed(poll_id)
@@ -318,9 +326,11 @@ class PollFlow:
             return
         self._poll_post.changed(poll_id)
         await self._poll_post.unseed_closed(poll_id)
-        content = self._scheduled_text(view.card_title, published)
+        via = await self._db.run(lambda c: {b.user_id: b.via_sub_id for b in polls.ballots(c, poll_id)})
+        links = await self._db.run(lambda c: {sub_id: _scheduled_link(c, published, sub_id)
+                                              for sub_id in set(via.values())})
         for uid in sorted({*voters, view.poll.starter_id}, key=int):
-            await self._dm(uid, content)
+            await self._dm(uid, self._scheduled_text(view.card_title, links.get(via.get(uid))))
         log_event(log, "poll_scheduled", poll_id=poll_id, session_id=published.session_id,
                   count=len(voters))
 
@@ -373,14 +383,14 @@ class PollFlow:
                                                           runoff))
         log_event(log, "poll_runoff_started", poll_id=poll_id, count=len(top))
 
-    def _scheduled_text(self, card_title: str, published: session_flow.Published) -> str:
-        """The one DM the starter and each voter get: the session's link, or the no-link text."""
+    def _scheduled_text(self, card_title: str, link: tuple[str, str, str] | None) -> str:
+        """The scheduled DM to one voter or the starter: the link to the session that voter sees (the home session, or
+        their mirror), or the no-link text when there is no link to give."""
         card = render.escape(card_title)
-        if not self._config.instance_url:
+        if not self._config.instance_url or link is None:
             return text.POLL_SCHEDULED_DM_NO_LINK.format(card=card)
-        link = render.jump_link(text.SESSION_LINK_LABEL, self._config.instance_url, published.guild_id,
-                                published.channel_id, published.message_id)
-        return text.POLL_SCHEDULED_DM.format(card=card, link=link)
+        jump = render.jump_link(text.SESSION_LINK_LABEL, self._config.instance_url, *link)
+        return text.POLL_SCHEDULED_DM.format(card=card, link=jump)
 
     def _linked_text(self, with_link: str, without_link: str, poll: polls.Poll) -> str:
         """A text that names a poll by its message link, or the no-link text when the instance URL is not set."""
@@ -456,16 +466,60 @@ class PollFlow:
 
     async def _recipients(self, card: Card, starter: str, resolved: scope.Scope
                           ) -> tuple[poll_members.Recipients, bool] | None:
-        """The starter and the holders of the scope's follow role, capped; with a flag for whether the scope has a
-        follow role. The holders are read from the role's own community. None when the member list could not be read."""
+        """The starter, then the holders of the scope's follow role, then (for a home scope) the holders of each both
+        copy's role, capped. The flag says whether the scope has a follow role. The home role's holders are read from
+        its own community, and a failure there refuses the start. A far community that cannot be read is skipped and
+        logged per subscription, so it never fails the home poll. None when the home member list could not be read."""
         role = resolved.role
-        if role is None:
-            return poll_members.Recipients(user_ids=(starter,), left_out=0), False
+        home: list[str] = []
+        if role is not None:
+            try:
+                home = await poll_members.role_holders(self._rest, role.guild_id, role.role_id)
+            except poll_members.MembersUnavailable:
+                return None
+        far = await self._far_holders(card) if resolved.sub_id is None else []
+        found = poll_members.combined([(None, home), *far], starter_id=starter, cap=self._config.poll_max_recipients)
+        return found, role is not None
+
+    async def _far_holders(self, card: Card) -> list[tuple[int, list[str]]]:
+        """(subscription id, holders of its follow role) for each both copy that has one, in subscription order. The
+        member list is read once per community, for all of that community's roles. A failed read skips that community's
+        subscriptions and logs each one by reason."""
+        pairs = await self._db.run(lambda c: [(sub.id, role) for sub in subscriptions.list_both(c, card.id)
+                                              if (role := cards.get_subscription_role(c, sub.id)) is not None])
+        by_guild: dict[str, list[tuple[int, str]]] = {}
+        for sub_id, role in pairs:
+            by_guild.setdefault(role.guild_id, []).append((sub_id, role.role_id))
+        holders: dict[int, list[str]] = {}
+        for guild_id, members in by_guild.items():
+            try:
+                found = await poll_members.guild_role_holders(self._rest, guild_id, [r for _s, r in members])
+            except poll_members.MembersUnavailable as exc:
+                for sub_id, _role_id in members:
+                    log_event(log, "poll_members_failed", level=logging.WARNING, sub_id=sub_id,
+                              reason=poll_members.failure_reason(exc))
+                continue
+            for sub_id, role_id in members:
+                holders[sub_id] = found[role_id]
+        return sorted(holders.items())
+
+    async def _mirror_new_poll(self, card: Card, poll_id: int) -> None:
+        """Posts the new home poll's mirror in each both copy's channel. The mirror has no session link yet and no 📅
+        or 🔁 seed. It runs after the card lock is released and before the ballots. A failure is logged and never
+        fails the poll."""
+        if self._mirror_post is None:
+            return
         try:
-            holders = await poll_members.role_holders(self._rest, role.guild_id, role.role_id)
-        except poll_members.MembersUnavailable:
-            return None
-        return poll_members.recipients(holders, starter_id=starter, cap=self._config.poll_max_recipients), True
+            targets = await self._db.run(lambda c: self._mirror_post.targets(c, card))
+            view = await self._db.run(lambda c: polls.view(c, poll_id))
+            if view is None:
+                return
+            payload = mirror_payload(view, instance_url=self._config.instance_url, session_jump=None)
+            for sub, channel_id in targets:
+                await self._mirror_post.sync(sub=sub, channel_id=channel_id, kind="poll", object_id=poll_id,
+                                             payload=payload)
+        except Exception as exc:  # noqa: BLE001 - the home poll is already open; a mirror that fails is logged by type
+            log_event(log, "poll_mirror_failed", level=logging.WARNING, poll_id=poll_id, reason=type(exc).__name__)
 
     async def _elsewhere(self, user_id: str, card: Card) -> None:
         """A press on a copy outside the games community: no poll, only a pointer to the card in the games channel."""
@@ -494,6 +548,14 @@ class PollFlow:
     @staticmethod
     def _refused(card_id: int, reason: str) -> None:
         log_event(log, "poll_flow", outcome="refused", card_id=card_id, reason=reason)
+
+
+def _scheduled_link(conn: Any, published: session_flow.Published, sub_id: int | None) -> tuple[str, str, str] | None:
+    """The session link a voter reached through `sub_id` gets: the home session for a home voter (None), else the
+    session's mirror in that subscription, or None when there is no mirror (decision 3)."""
+    if sub_id is None:
+        return published.guild_id, published.channel_id, published.message_id
+    return session_jump(conn, published.session_id, sub_id)
 
 
 def _refusal_text(refused: _Refused) -> str:

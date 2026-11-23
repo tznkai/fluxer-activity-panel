@@ -18,13 +18,14 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
-from fluxer_panel import notify, poll_count, polls, render
+from fluxer_panel import mirrors, notify, poll_count, polls, render, subscriptions
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.dm_backoff import DmBackoff
 from fluxer_panel.games import BotIdentity
 from fluxer_panel.games_guard import GamesChannelRefused
 from fluxer_panel.logs import log_event
+from fluxer_panel.mirror_post import MirrorPost
 from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.polls import Ballot, PollView
 from fluxer_panel.presses import SESSION_EMOJI
@@ -62,6 +63,45 @@ def _read_poll(conn: sqlite3.Connection, poll_id: int) -> tuple[PollView, list[B
     return view, polls.ballots(conn, poll_id)
 
 
+def poll_jump(conn: sqlite3.Connection, poll: polls.Poll, via_sub_id: int | None) -> tuple[str, str, str] | None:
+    """The (guild, channel, message) a ballot or reminder links to. A home ballot (no via) links the home poll. A far
+    ballot links its subscription's mirror, in that subscription's community, or nothing when the mirror is gone. The
+    home poll is never returned for a far ballot (decision 2)."""
+    if via_sub_id is None:
+        return poll.guild_id, poll.channel_id, poll.message_id
+    mirror = mirrors.get(conn, "poll", poll.id, via_sub_id)
+    sub = subscriptions.get_by_id(conn, via_sub_id)
+    if mirror is None or sub is None:
+        return None
+    return sub.guild_id, mirror.channel_id, mirror.message_id
+
+
+def session_jump(conn: sqlite3.Connection, session_id: int, sub_id: int) -> tuple[str, str, str] | None:
+    """The (guild, channel, message) of a session's mirror in one both subscription, or None when it has none."""
+    mirror = mirrors.get(conn, "session", session_id, sub_id)
+    sub = subscriptions.get_by_id(conn, sub_id)
+    if mirror is None or sub is None:
+        return None
+    return sub.guild_id, mirror.channel_id, mirror.message_id
+
+
+def mirror_payload(view: PollView, *, instance_url: str | None,
+                   session_jump: tuple[str, str, str] | None) -> dict[str, Any]:
+    """The poll message as a both copy shows it: the same render as home, with the session link given by the caller (its
+    mirror, or None for plain text). A mirror never gets the home session's jump."""
+    return render.render_poll_message(view, instance_url=instance_url, rounds=_rounds(view),
+                                      session_jump=session_jump)
+
+
+def _mirror_state(conn: sqlite3.Connection, poll: polls.Poll) -> tuple[list[mirrors.Mirror],
+                                                                       dict[int, tuple[str, str, str] | None]]:
+    """The poll's mirrors, and for each subscription the jump to its mirror of the poll's session (None without one)."""
+    rows = mirrors.for_object(conn, "poll", poll.id)
+    jumps = {row.sub_id: None if poll.session_id is None else session_jump(conn, poll.session_id, row.sub_id)
+             for row in rows}
+    return rows, jumps
+
+
 def _rounds(view: PollView) -> poll_count.Rounds | None:
     """A closed runoff's rounds: the instant runoff over the options usable at close, each ballot in its rank order."""
     poll = view.poll
@@ -77,7 +117,8 @@ def _rounds(view: PollView) -> poll_count.Rounds | None:
 class PollPost:
     def __init__(self, *, db: Database, rest: FluxerREST, config: Config, pacer: ChannelPacer,
                  identity: BotIdentity, backoff: DmBackoff | None = None, edit_delay: float = 5.0,
-                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
+                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+                 mirror_post: MirrorPost | None = None) -> None:
         """`identity` is required: unseeding removes the bot's own reactions, so wiring must pass the shared
         BotIdentity. Its user id is None until READY; an unseed before then is logged and skipped."""
         self._db = db
@@ -87,6 +128,7 @@ class PollPost:
         self._backoff = backoff
         self._edit_delay = edit_delay
         self._sleep = sleep
+        self._mirror_post = mirror_post   # the both copies' poll mirrors; None leaves them unedited
         self._identity = identity
         self._on_gone: Callable[[int], Awaitable[None]] | None = None
         self._dirty: dict[int, _Dirty] = {}
@@ -124,9 +166,11 @@ class PollPost:
         if loaded is None:
             return False
         view, ballots = loaded
-        if not any(ballot.user_id == user_id for ballot in ballots):
+        found = next((ballot for ballot in ballots if ballot.user_id == user_id), None)
+        if found is None:
             return False
-        content = self._ballot_content(view, user_id)
+        jump = await self._db.run(lambda conn: poll_jump(conn, view.poll, found.via_sub_id))
+        content = self._ballot_content(view, user_id, jump)
         sent = await notify.dm_user(self._rest, user_id, content, backoff=self._backoff)
         if sent is None:
             await self._db.run(lambda conn: polls.mark_dm_failed(conn, poll_id, user_id))
@@ -255,12 +299,11 @@ class PollPost:
     def _emojis(view: PollView) -> tuple[str, ...]:
         return (POLL_SCHEDULE_EMOJI,) if view.poll.is_runoff else (POLL_SCHEDULE_EMOJI, POLL_RUNOFF_EMOJI)
 
-    def _ballot_content(self, view: PollView, user_id: str) -> str:
+    def _ballot_content(self, view: PollView, user_id: str, jump: tuple[str, str, str] | None) -> str:
+        """The ballot's text. `jump` is the link the ballot gives: the home poll, the recipient's mirror, or None."""
         zone = self._config.session_time_zone.key
-        poll = view.poll
         payload = render.render_poll_ballot(view, user_id=user_id, zone_name=zone,
-                                            instance_url=self._config.instance_url,
-                                            poll_jump=(poll.guild_id, poll.channel_id, poll.message_id))
+                                            instance_url=self._config.instance_url, poll_jump=jump)
         return payload["content"]
 
     def _remember(self, poll_id: int, channel_id: str, message_id: str, canonical: str) -> None:
@@ -335,11 +378,15 @@ class PollPost:
         gone = False
         if dirty.message and view.poll.outcome != "removed":
             gone = await self._edit_poll_message(view)
+        if dirty.message:
+            await self._edit_mirrors(view)
+        jumps = await self._db.run(lambda conn: {ballot.via_sub_id: poll_jump(conn, view.poll, ballot.via_sub_id)
+                                                 for ballot in ballots})
         for ballot in ballots:
             if ballot.dm_channel_id is None or ballot.dm_message_id is None:
                 continue
             if dirty.everyone or ballot.user_id in dirty.ballots:
-                await self._edit_ballot(view, ballot)
+                await self._edit_ballot(view, ballot, jumps[ballot.via_sub_id])
         if view.poll.state == "closed":
             self._last.pop(poll_id, None)   # a later edit re-renders and sends; only the cache is dropped
         return gone
@@ -366,9 +413,23 @@ class PollPost:
         self._remember(poll.id, poll.channel_id, poll.message_id, canonical)
         return False
 
-    async def _edit_ballot(self, view: PollView, ballot: Ballot) -> None:
+    async def _edit_mirrors(self, view: PollView) -> None:
+        """Edits each stored poll mirror to the current poll. Only stored mirrors are edited, never posted: a mirror
+        that answers 404 is dropped by MirrorPost, and the home poll is not closed by it (AC3.8)."""
+        if self._mirror_post is None:
+            return
+        rows, jumps = await self._db.run(lambda conn: _mirror_state(conn, view.poll))
+        for row in rows:
+            payload = mirror_payload(view, instance_url=self._config.instance_url, session_jump=jumps[row.sub_id])
+            try:
+                await self._mirror_post.edit_stored(row, payload)
+            except Exception as exc:  # noqa: BLE001 - one mirror's failure must not stop the home poll or the others
+                log_event(log, "poll_mirror_failed", level=logging.WARNING, poll_id=view.poll.id, sub_id=row.sub_id,
+                          reason=type(exc).__name__)
+
+    async def _edit_ballot(self, view: PollView, ballot: Ballot, jump: tuple[str, str, str] | None) -> None:
         assert ballot.dm_channel_id is not None and ballot.dm_message_id is not None
-        content = self._ballot_content(view, ballot.user_id)
+        content = self._ballot_content(view, ballot.user_id, jump)
         canonical = _canonical({"content": content})
         channel_id, message_id = ballot.dm_channel_id, ballot.dm_message_id
         if self._unchanged(view.poll.id, channel_id, message_id, canonical):

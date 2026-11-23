@@ -102,8 +102,10 @@ async def run(config: Config, db: Database) -> None:
                                 status_of=poller.status_of, kick=poller.kick, backoff=backoff)
             poller.set_wake(wake)
             card_ctx.wake = wake
+            # The both copies' mirrors: one MirrorPost for sessions and polls.
+            mirror_post = MirrorPost(db=db, rest=rest, config=config)
             session_post = SessionPost(db=db, rest=rest, config=config, pacer=pacer, backoff=backoff,
-                                       mirrors=MirrorPost(db=db, rest=rest, config=config))
+                                       mirrors=mirror_post)
             # One limiter for every non-admin DM path: commands, replies and the calendar's DM reactions share its budget.
             limiter = NonAdminLimiter(config)
             # The calendar flow needs the poller's kick, so it is built after the poller and before its users.
@@ -112,10 +114,11 @@ async def run(config: Config, db: Database) -> None:
                                        identity=identity, backoff=backoff, limiter=limiter, kick=poller.kick)
             # The poll posts (the one object that owns the poll messages' debounced edits) and the poll flow, which the
             # 🗳️ press and the DM replies share. Its ballots and edits go through the same poll post at shutdown.
-            poll_post = PollPost(db=db, rest=rest, config=config, pacer=pacer, identity=identity, backoff=backoff)
+            poll_post = PollPost(db=db, rest=rest, config=config, pacer=pacer, identity=identity, backoff=backoff,
+                                 mirror_post=mirror_post)
             poll_flow = PollFlow(db=db, rest=rest, config=config, locks=card_ctx.locks, poll_post=poll_post,
                                  backoff=backoff, games_guild=games_guild, kick=poller.kick,
-                                 session_flow=session_flow)
+                                 session_flow=session_flow, mirror_post=mirror_post)
             # The poll close path (one place every close goes through) and the `!poll` commands, which share the card
             # locks and the poll post with the flow.
             poll_closer = PollCloser(db=db, locks=card_ctx.locks, poll_post=poll_post)
