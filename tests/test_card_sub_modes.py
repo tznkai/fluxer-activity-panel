@@ -15,11 +15,13 @@ import aiohttp
 import pytest
 
 from fluxer_client.roles import RoleCache
-from fluxer_panel import card_commands, cards, mirrors, play_now, polls, sessions, subscriptions, text
+from fluxer_panel import card_commands, cards, mirrors, play_now, polls, rsvp, sessions, subscriptions, text
 from fluxer_panel.db import Database
 from fluxer_panel.dm_backoff import DmBackoff
 from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.interactions import Interactions
+from fluxer_panel.mirror_backfill import MirrorBackfill
+from fluxer_panel.mirror_post import MirrorPost
 from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.poll_close import PollCloser
 from fluxer_panel.poll_post import PollPost
@@ -28,7 +30,7 @@ from fluxer_panel.seeding import Seeder
 from fluxer_panel.session_commands import SessionCommands
 from fluxer_panel.session_post import SessionPost
 from tests.fakes import FakeFluxerState, Override, make_rest_app, wait_until
-from tests.test_card_commands import World, build
+from tests.test_card_commands import DM_MESSAGES, World, build
 
 GAMES = "1101"
 GAMES_CH = "2100"
@@ -46,6 +48,7 @@ NEW_ROLE = "7001"          # the id the fake gives the next role it creates
 NOW = 1_800_000_000
 STARTS = NOW + 86400
 HOME_MSG = "5001"
+HOME_POLL_MSG = "5002"
 SCOPE_SESSION_MSG = "5102"
 SCOPE_POLL_MSG = "5202"
 PLAY_NOW_MSG = "5301"
@@ -113,7 +116,11 @@ async def modes_world(db, session, aiohttp_server) -> AsyncIterator[World]:
     locks = world.ctx.locks
     pacer = ChannelPacer(max_calls=1000)
     backoff = DmBackoff(world.config.dm_backoff_seconds, clock=clock)
-    session_post = SessionPost(db=db, rest=rest, config=world.config, pacer=pacer, backoff=backoff)
+    mirror_post = MirrorPost(db=db, rest=rest, config=world.config)
+    session_post = SessionPost(db=db, rest=rest, config=world.config, pacer=pacer, backoff=backoff,
+                               mirrors=mirror_post)
+    world.ctx.mirror_backfill = MirrorBackfill(db=db, config=world.config, session_post=session_post,
+                                               mirror_post=mirror_post)
     commands = SessionCommands(db=db, rest=rest, config=world.config, locks=locks, session_post=session_post,
                                clock=clock, kick=lambda: None)
     session_post.set_on_gone(commands.on_message_gone)
@@ -487,7 +494,7 @@ async def test_both_to_local_deletes_the_mirrors_and_keeps_the_scope_session_upc
     assert reaction_deletes(modes_world, SESSION_EMOJI) == []   # the copy keeps its calendar: still a scope
 
 
-async def test_local_to_both_changes_the_mode_only_and_posts_nothing_yet(modes_world: World) -> None:
+async def test_local_to_both_posts_no_scope_object_to_the_copy(modes_world: World) -> None:
     card = await make_card(modes_world)
     await modes_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local")
     sub = await sub_of(modes_world, card.id)
@@ -500,6 +507,120 @@ async def test_local_to_both_changes_the_mode_only_and_posts_nothing_yet(modes_w
     posts = [r for r in modes_world.state.requests if r.method == "POST" and "/messages" in r.path
              and f"/channels/{FAR_COPY}/" in r.path]
     assert posts == []
+
+
+async def seed_home(world: World, card_id: int) -> tuple[int, int]:
+    """An upcoming home session and an open home poll: the objects a both copy's back-fill mirrors. The poll's one
+    recipient must get no ballot from the back-fill. Returns (session id, poll id)."""
+    def seed(conn: Any) -> tuple[int, int]:
+        session_id = sessions.add(conn, card_id=card_id, guild_id=GAMES, channel_id=GAMES_CH, message_id=HOME_MSG,
+                                  starts_at=STARTS, ends_at=STARTS + 3600, proposer_id=ADMIN, now=NOW,
+                                  location_text="Hall A")
+        poll_id = polls.create(conn, card_id=card_id, guild_id=GAMES, channel_id=GAMES_CH, message_id=HOME_POLL_MSG,
+                               starter_id=ADMIN, kind="approval", parent_poll_id=None, now=NOW,
+                               closes_at=NOW + 86400, ballot_size=6, options=[(STARTS, "offered"),
+                                                                             (STARTS + 3600, "offered")],
+                               recipients=[PLAYER])
+        assert poll_id is not None
+        return session_id, poll_id
+    return await world.db.run(seed)
+
+
+def mirror_posts_to(world: World, channel: str) -> list[Any]:
+    return [r for r in world.state.requests if r.method == "POST" and r.path == f"/api/v1/channels/{channel}/messages"]
+
+
+async def test_local_to_both_backfills_the_home_session_and_poll_before_the_reply(modes_world: World) -> None:
+    card = await make_card(modes_world)
+    await modes_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local")
+    sub = await sub_of(modes_world, card.id)
+    assert sub is not None
+    session_id, poll_id = await seed_home(modes_world, card.id)
+    modes_world.clear_requests()
+
+    await modes_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=both")
+
+    session_mirror = await modes_world.db.run(lambda c: mirrors.get(c, "session", session_id, sub.id))
+    poll_mirror = await modes_world.db.run(lambda c: mirrors.get(c, "poll", poll_id, sub.id))
+    assert session_mirror is not None and session_mirror.channel_id == FAR_COPY
+    assert poll_mirror is not None and poll_mirror.channel_id == FAR_COPY
+    posts = mirror_posts_to(modes_world, FAR_COPY)
+    assert len(posts) == 2
+    requests = modes_world.state.requests
+    reply = modes_world.state.requests_to(DM_MESSAGES)[-1]
+    assert max(i for i, r in enumerate(requests) if r in posts) < next(i for i, r in enumerate(requests) if r is reply)
+    assert PLAYER not in modes_world.state.dm_channels, "a back-filled poll mirror sends no ballots"
+
+
+async def test_a_new_subscription_created_with_mode_both_backfills_the_same_way(modes_world: World) -> None:
+    card = await make_card(modes_world)
+    session_id, poll_id = await seed_home(modes_world, card.id)
+
+    await modes_world.run(f"!card subscribe mc {FAR} {FAR_SECOND} mode=both")
+
+    sub = await sub_of(modes_world, card.id, FAR_SECOND)
+    assert sub is not None and sub.mode == "both"
+    session_mirror = await modes_world.db.run(lambda c: mirrors.get(c, "session", session_id, sub.id))
+    poll_mirror = await modes_world.db.run(lambda c: mirrors.get(c, "poll", poll_id, sub.id))
+    assert session_mirror is not None and session_mirror.channel_id == FAR_SECOND
+    assert poll_mirror is not None and poll_mirror.channel_id == FAR_SECOND
+
+
+async def test_the_back_fill_goes_to_the_local_channel_named_in_the_same_command(modes_world: World) -> None:
+    card = await make_card(modes_world)
+    await modes_world.run(f"!card subscribe mc {FAR} {FAR_COPY}")
+    sub = await sub_of(modes_world, card.id)
+    assert sub is not None
+    session_id, _ = await seed_home(modes_world, card.id)
+
+    await modes_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=both channel={FAR_LOCAL}")
+
+    session_mirror = await modes_world.db.run(lambda c: mirrors.get(c, "session", session_id, sub.id))
+    assert session_mirror is not None and session_mirror.channel_id == FAR_LOCAL
+    assert mirror_posts_to(modes_world, FAR_COPY) == []
+
+
+async def test_back_fill_reactions_run_after_the_card_lock_is_released(modes_world: World) -> None:
+    card = await make_card(modes_world)
+    await modes_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local")
+    session_id, _ = await seed_home(modes_world, card.id)
+    state = modes_world.state
+    mirror_message = str(state.next_message_id)      # the back-fill's first post: the session mirror
+    key = f"PUT /api/v1/channels/{FAR_COPY}/messages/{mirror_message}/reactions/{rsvp.GOING_EMOJI}/@me"
+    state.gates[key] = asyncio.Event()
+    subscribe = asyncio.create_task(modes_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=both"))
+    try:
+        await wait_until(lambda: key in state.gated, waiting_for="the session mirror's first reaction")
+        # The reaction call has arrived at the fake: the card lock must already be free.
+        assert not modes_world.ctx.locks.get(card.id).locked()
+    finally:
+        state.gates[key].set()
+    await asyncio.wait_for(subscribe, timeout=5)
+    assert any(f"{r.method} {r.path}" == key for r in state.requests)
+    sub = await sub_of(modes_world, card.id)
+    assert sub is not None
+    session_mirror = await modes_world.db.run(lambda c: mirrors.get(c, "session", session_id, sub.id))
+    assert session_mirror is not None and session_mirror.message_id == mirror_message
+
+
+async def test_both_to_local_to_both_posts_the_session_mirror_again(modes_world: World) -> None:
+    card = await make_card(modes_world)
+    await modes_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local")
+    sub = await sub_of(modes_world, card.id)
+    assert sub is not None
+    session_id, _ = await seed_home(modes_world, card.id)
+    await modes_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=both")
+    first = await modes_world.db.run(lambda c: mirrors.get(c, "session", session_id, sub.id))
+    assert first is not None
+    await modes_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local")
+    assert await modes_world.db.run(lambda c: mirrors.get(c, "session", session_id, sub.id)) is None
+
+    await modes_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=both")
+
+    again = await modes_world.db.run(lambda c: mirrors.get(c, "session", session_id, sub.id))
+    assert again is not None and again.message_id != first.message_id
+    # Each entry into both posts the session mirror and the poll mirror: 2 + 2 posts to the copy.
+    assert len(mirror_posts_to(modes_world, FAR_COPY)) == 4
 
 
 # Reactions of a scope copy: its bell follows its own role, and its emoji are the mode's set

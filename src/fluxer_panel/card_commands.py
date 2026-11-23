@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     # wake.py imports CardLocks from this module, so the wake requests are named for type checking only.
     # session_commands imports CardLocks and chunks from this module too, so it is named for type checking only.
     from fluxer_panel.interactions import Interactions
+    from fluxer_panel.mirror_backfill import MirrorBackfill
     from fluxer_panel.poll_close import PollCloser
     from fluxer_panel.session_commands import SessionCommands
     from fluxer_panel.wake import WakeRequests
@@ -101,6 +102,7 @@ class CardContext:
     session_commands: SessionCommands | None = None
     poll_closer: PollCloser | None = None     # `!card archive` closes the card's open poll through it
     play_now_ender: Interactions | None = None   # ends a subscription's play-now posts (scope_cleanup)
+    mirror_backfill: MirrorBackfill | None = None   # mirrors the home objects into a copy that enters both
 
 
 @dataclass(frozen=True)
@@ -746,6 +748,7 @@ class _Followup:
     role_step: bool
     reseed: bool
     change: _ModeChange
+    seeds: tuple[tuple[str, str], ...] = ()   # the session mirrors the back-fill posted, seeded after the lock
 
 
 def _has_options(opts: card_fields.SubOptions) -> bool:
@@ -851,6 +854,11 @@ async def _subscribe_locked(ctx: CardContext, card: cards.Card, actor: str, guil
     if local_channel is not None:
         await ctx.db.run(lambda c: subscriptions.set_local_channel(c, sub_id, local_channel))
         lines.append(text.SUBSCRIPTION_LOCAL_CHANNEL_SET.format(channel_id=local_channel))
+    # A copy that enters both is back-filled after its channel is stored, so the mirrors go to the channel this command
+    # names (decision 5). Its session reactions are seeded after the lock, in _finish_change.
+    seeds: tuple[tuple[str, str], ...] = ()
+    if change is not None and opts.mode == "both" and ctx.mirror_backfill is not None:
+        seeds = tuple(await ctx.mirror_backfill.backfill_locked(card, sub_id))
     final = await ctx.db.run(lambda c: subscriptions.get_by_id(c, sub_id))
     assert final is not None
     stored_role = await ctx.db.run(lambda c: cards.get_subscription_role(c, sub_id))
@@ -861,7 +869,7 @@ async def _subscribe_locked(ctx: CardContext, card: cards.Card, actor: str, guil
         return text.SUBSCRIPTION_ALREADY, None
     ctx.kick()
     follow = _Followup(card_id=card.id, sub_id=sub_id, guild_id=guild_id, role_id=opts.role, role_step=role_step,
-                       reseed=role_step or change is not None, change=change or _ModeChange())
+                       reseed=role_step or change is not None, change=change or _ModeChange(), seeds=seeds)
     return "\n".join(lines), follow
 
 
@@ -912,6 +920,8 @@ def _mirrors_left_line(channels: tuple[str, ...]) -> str:
 async def _finish_change(ctx: CardContext, card: cards.Card, follow: _Followup) -> list[str]:
     """What runs after the card lock is released: the play-now reactions of an ended scope, the calendar and ballot box
     of a copy that left its scope, the role step, the copy's reactions, and the names of any mirror left behind."""
+    if follow.seeds and ctx.mirror_backfill is not None:
+        await ctx.mirror_backfill.seed(follow.seeds)
     if follow.change.ended is not None:
         await scope_cleanup.end_scope_after_lock(ctx, follow.change.ended)
     if follow.change.unseed is not None and ctx.seeder is not None:

@@ -58,10 +58,15 @@ class MirrorPost:
         """(sub, channel_id) for every active both subscription of the card, channel from scope.scope_target."""
         found: list[tuple[Subscription, str]] = []
         for sub in subscriptions.list_both(conn, card.id):
-            channel_id = scope.scope_target(card, self._config, scope.scope_for_sub(conn, card, sub))
+            channel_id = self.target(conn, card, sub)
             if channel_id is not None:
                 found.append((sub, channel_id))
         return found
+
+    def target(self, conn: sqlite3.Connection, card: Card, sub: Subscription) -> str | None:
+        """The channel a both subscription's mirrors go to, read as the caller's transaction sees it (its local channel,
+        else the copy's own channel)."""
+        return scope.scope_target(card, self._config, scope.scope_for_sub(conn, card, sub))
 
     async def sync(self, *, sub: Subscription, channel_id: str, kind: mirrors.Kind, object_id: int,
                    payload: dict[str, Any], allowed_mentions: dict[str, Any] | None = None) -> str | None:

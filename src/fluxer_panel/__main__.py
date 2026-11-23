@@ -29,6 +29,7 @@ from fluxer_panel.dm_router import DmRouter, NonAdminLimiter
 from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.interactions import Interactions
 from fluxer_panel.logs import log_event, setup_logging
+from fluxer_panel.mirror_backfill import MirrorBackfill
 from fluxer_panel.mirror_post import MirrorPost
 from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.poll_close import PollCloser
@@ -102,10 +103,13 @@ async def run(config: Config, db: Database) -> None:
                                 status_of=poller.status_of, kick=poller.kick, backoff=backoff)
             poller.set_wake(wake)
             card_ctx.wake = wake
-            # The both copies' mirrors: one MirrorPost for sessions and polls.
+            # The both copies' mirrors: one MirrorPost for sessions and polls. A copy that enters both is back-filled
+            # by the card commands, under the card lock, through the same posts.
             mirror_post = MirrorPost(db=db, rest=rest, config=config)
             session_post = SessionPost(db=db, rest=rest, config=config, pacer=pacer, backoff=backoff,
                                        mirrors=mirror_post)
+            card_ctx.mirror_backfill = MirrorBackfill(db=db, config=config, session_post=session_post,
+                                                      mirror_post=mirror_post)
             # One limiter for every non-admin DM path: commands, replies and the calendar's DM reactions share its budget.
             limiter = NonAdminLimiter(config)
             # The calendar flow needs the poller's kick, so it is built after the poller and before its users.

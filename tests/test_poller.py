@@ -26,7 +26,19 @@ from fluxer_client.events import MessageCreate, MessageDelete
 from fluxer_client.gateway import Gateway
 from fluxer_client.rest import FluxerREST
 from fluxer_client.roles import RoleCache
-from fluxer_panel import admin, board, cards, play_now, polls, render, sessions, subscriptions, text, wake_requests
+from fluxer_panel import (
+    admin,
+    board,
+    cards,
+    mirrors,
+    play_now,
+    polls,
+    render,
+    sessions,
+    subscriptions,
+    text,
+    wake_requests,
+)
 from fluxer_panel.bot import Bot
 from fluxer_panel.card_commands import CardContext, CardLocks
 from fluxer_panel.config import Config
@@ -2558,3 +2570,92 @@ async def test_a_copy_switched_to_local_after_evaluation_gets_the_shared_payload
     [own] = copy_patches(world.fluxer, LOCAL_COPY)
     assert next_session_value(own.payload["embeds"][0]) is None
     assert_card_writes_safe(world.fluxer)
+
+
+# Both copies (AC4.2): the next-session line is the sooner of the copy's own session and the home session. The home
+# session shows with the link to its mirror in this copy, or with no link when there is none, and never with the home
+# link. The poller never back-fills a missing mirror (decision 5).
+
+BOTH_COPY = "3306"                       # a both copy in the far community
+BOTH_MIRROR_MESSAGE = "5602"             # the mirror of the home session in that copy
+BOTH_MIRROR_LINK = f"[Open](https://fluxer.invalid/channels/{FAR_GUILD}/{BOTH_COPY}/{BOTH_MIRROR_MESSAGE})"
+
+
+async def both_copy_setup(world: World, db: Database, *, mirror: bool) -> tuple[int, int, int]:
+    """A card with a home session at 5000 and a both copy in FAR_GUILD. Returns (card id, both sub id, home session id).
+    With `mirror`, the home session already has its mirror in the copy."""
+    world.clock.now = 1000
+    card_id = await seed(db, "alpha", title="Alpha")
+    home_id = await add_session_with_next_line(db, card_id)
+    await subscribe_in(db, card_id, BOTH_COPY, FAR_GUILD)
+    await db.run(lambda c: set_mode(c, card_id, BOTH_COPY, "both"))
+    sub = await subscription(db, card_id, BOTH_COPY)
+    if mirror:
+        await db.run(lambda c: mirrors.add(c, sub_id=sub.id, channel_id=BOTH_COPY, message_id=BOTH_MIRROR_MESSAGE,
+                                           kind="session", object_id=home_id, content_hash=None))
+    return card_id, sub.id, home_id
+
+
+def set_mode(conn: Any, card_id: int, channel: str, mode: str) -> None:
+    sub = subscriptions.get(conn, card_id, channel)
+    assert sub is not None and subscriptions.set_mode_if(conn, sub.id, "redirect", mode)
+
+
+async def test_a_both_copy_shows_its_own_session_when_it_is_sooner_than_the_home_session(
+        world: World, poller: Poller, db: Database):
+    card_id, sub_id, _ = await both_copy_setup(world, db, mirror=True)
+    await add_local_session(db, card_id, sub_id, starts_at=4000)     # sooner than the home session at 5000
+
+    await poller.tick()
+
+    [copy] = copy_posts(world.fluxer, BOTH_COPY)
+    value = next_session_value(copy.payload["embeds"][0])
+    assert value is not None and value.endswith(LOCAL_LINK)
+    assert_card_writes_safe(world.fluxer)
+
+
+async def test_a_both_copy_shows_the_home_session_linked_to_its_mirror_when_its_own_is_later(
+        world: World, poller: Poller, db: Database):
+    card_id, sub_id, _ = await both_copy_setup(world, db, mirror=True)
+    await add_local_session(db, card_id, sub_id, starts_at=6000)     # later than the home session at 5000
+
+    await poller.tick()
+
+    [copy] = copy_posts(world.fluxer, BOTH_COPY)
+    value = next_session_value(copy.payload["embeds"][0])
+    assert value is not None and value.endswith(BOTH_MIRROR_LINK)
+    assert SESSION_MESSAGE not in json.dumps(copy.payload)
+    assert_card_writes_safe(world.fluxer)
+
+
+async def test_a_both_copy_shows_the_home_session_with_no_link_when_it_has_no_mirror(
+        world: World, poller: Poller, db: Database):
+    await both_copy_setup(world, db, mirror=False)
+
+    await poller.tick()
+
+    [copy] = copy_posts(world.fluxer, BOTH_COPY)
+    value = next_session_value(copy.payload["embeds"][0])
+    assert value is not None and "fluxer.invalid" not in value
+    assert SESSION_MESSAGE not in json.dumps(copy.payload)
+
+
+async def test_a_local_copy_keeps_showing_only_its_own_session_when_the_home_session_is_sooner(
+        world: World, poller: Poller, db: Database):
+    card_id, sub_id = await local_copy_setup(world, db)
+    await add_local_session(db, card_id, sub_id, starts_at=6000)
+
+    await poller.tick()
+
+    [local] = copy_posts(world.fluxer, LOCAL_COPY)
+    assert next_session_value(local.payload["embeds"][0]).endswith(LOCAL_LINK)
+    assert SESSION_MESSAGE not in json.dumps(local.payload)
+
+
+async def test_the_poller_never_back_fills_a_missing_mirror_of_a_both_copy(world: World, poller: Poller, db: Database):
+    _, sub_id, _ = await both_copy_setup(world, db, mirror=False)
+
+    await poller.tick()
+    await poller.tick()
+
+    assert await db.run(lambda c: mirrors.for_sub(c, sub_id)) == []

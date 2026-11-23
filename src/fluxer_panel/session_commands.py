@@ -158,8 +158,9 @@ class SessionCommands:
             return await self._db.run(lambda conn: sessions.get_by_message(conn, message_id))
         return None
 
-    async def _edit(self, session_id: int, *, mirror_new: bool = True) -> None:
-        """The message edit after a change. The change is already stored, so a failed edit is logged by type only."""
+    async def _edit(self, session_id: int, *, mirror_new: bool = False) -> None:
+        """The message edit after a change. The change is already stored, so a failed edit is logged by type only. A
+        change edits the stored mirrors and posts none (see `SessionPost.edit_session`)."""
         try:
             await self._session_post.edit_session(session_id, mirror_new=mirror_new)
         except Exception as exc:  # noqa: BLE001 - the stored change stands; the message keeps its last good form

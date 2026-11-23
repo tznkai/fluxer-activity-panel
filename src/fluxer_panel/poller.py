@@ -393,10 +393,12 @@ class Poller:
 
     @staticmethod
     def _read_next_sessions(conn: Any, card: cards.Card, now: int) -> tuple[Any, Any, dict[int, Any]]:
-        """The card's home next session (near and far views) and each local or both subscription's own next session, in
-        one read."""
+        """The card's home next session (near and far views) and each local or both subscription's next session, in one
+        read. A local copy shows its own sessions only; a both copy shows the sooner of its own and the home session
+        (`sessions.both_session_view`)."""
         near, far = sessions.next_session_views(conn, card, now)
-        scope_views = {sub.id: sessions.scope_session_view(conn, card, sub.id, now)
+        scope_views = {sub.id: (sessions.both_session_view(conn, card, sub, now) if sub.mode == "both"
+                                else sessions.scope_session_view(conn, card, sub.id, now))
                        for sub in subscriptions.list_scopes(conn, card.id)}
         return near, far, scope_views
 

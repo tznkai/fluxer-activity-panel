@@ -14,10 +14,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
-from fluxer_panel import render, rsvp
+from fluxer_panel import mirrors, render, rsvp
 
 if TYPE_CHECKING:
     from fluxer_panel.cards import Card
+    from fluxer_panel.subscriptions import Subscription
 
 MAX_PER_PROPOSER = 3   # upcoming sessions per proposer per card
 MAX_PER_CARD = 10      # upcoming sessions per card
@@ -473,7 +474,27 @@ def scope_session_view(conn: sqlite3.Connection, card: Card, sub_id: int, now: i
     return None if session is None else _next_view(conn, card, session)
 
 
+def both_session_view(conn: sqlite3.Connection, card: Card, sub: Subscription, now: int
+                      ) -> render.NextSession | None:
+    """The next session of a both copy: the sooner (by start, then id) of the copy's own next session, with its own
+    jump, and the card's next home session. The home session is shown with the link to its mirror in this copy, or with
+    no link when the copy has no mirror of it. It never carries the home message's link. None when neither exists."""
+    own = next_for_scope(conn, card.id, sub.id, now)
+    home = next_for_scope(conn, card.id, None, now)
+    if home is None:
+        return None if own is None else _next_view(conn, card, own)
+    if own is not None and (own.starts_at, own.id) < (home.starts_at, home.id):
+        return _next_view(conn, card, own)
+    mirror = mirrors.get(conn, "session", home.id, sub.id)
+    jump = None if mirror is None else (sub.guild_id, mirror.channel_id, mirror.message_id)
+    return _view(conn, card, home, jump)
+
+
 def _next_view(conn: sqlite3.Connection, card: Card, session: Session) -> render.NextSession:
-    return render.NextSession(starts_at=session.starts_at, going=counts_of(conn, session.id).going,
-                              jump=(session.guild_id, session.channel_id, session.message_id),
+    return _view(conn, card, session, (session.guild_id, session.channel_id, session.message_id))
+
+
+def _view(conn: sqlite3.Connection, card: Card, session: Session, jump: tuple[str, str, str] | None
+          ) -> render.NextSession:
+    return render.NextSession(starts_at=session.starts_at, going=counts_of(conn, session.id).going, jump=jump,
                               has_location=effective_location(session, card) is not None)

@@ -76,10 +76,12 @@ class SessionPost:
 
         return await self._db.run(read)
 
-    async def edit_session(self, session_id: int, *, scrubbed: bool = False, mirror_new: bool = True) -> None:
+    async def edit_session(self, session_id: int, *, scrubbed: bool = False, mirror_new: bool = False) -> None:
         """Edits the stored message in the session's own stored channel, rendering the session's state as it is in
-        the DB at send time. Then the mirrors (`sync_mirrors`). `mirror_new=False` is for a caller holding the card's lock:
-        it edits the mirrors that exist and posts none. Raises FluxerHTTPError to the caller."""
+        the DB at send time. Then the mirrors (`sync_mirrors`), which edit the stored ones and post none: a mirror is
+        posted only when its session is published (`sync_mirrors`) or its copy enters both (`back_fill_mirror`), so a
+        mirror the copy lost on a 404 stays gone (decision 5). `mirror_new=True` posts the missing ones too. Raises
+        FluxerHTTPError to the caller."""
         async with self.edit_lock(session_id):
             loaded = await self._load(session_id)
             if loaded is None:
@@ -138,6 +140,28 @@ class SessionPost:
                                                   object_id=session.id, payload=payload)
             if message_id is not None and sub.id not in stored:
                 await self.seed_session(channel_id, message_id)
+
+    async def back_fill_mirror(self, session_id: int, sub: subscriptions.Subscription, channel_id: str
+                               ) -> tuple[str, str] | None:
+        """Brings one both copy's mirror of an upcoming home session up to date, for the back-fill that runs under the
+        card's lock when the copy enters both. It edits a stored mirror and posts none without one, so the reply's
+        reactions are never sent under the lock. Returns (channel, message id) when this call posted the mirror, so the
+        caller seeds it after the lock is released, and None otherwise."""
+        if self._mirrors is None:
+            return None
+        loaded = await self._load(session_id)
+        if loaded is None:
+            return None
+        session, card, counts = loaded
+        if session.scope_sub_id is not None:
+            return None
+        stored = await self._db.run(lambda c: mirrors.get(c, "session", session.id, sub.id))
+        payload = self._render(card, session, counts, far=True)
+        message_id = await self._mirrors.sync(sub=sub, channel_id=channel_id, kind="session", object_id=session.id,
+                                              payload=payload)
+        if stored is None and message_id is not None:
+            return channel_id, message_id
+        return None
 
     def set_on_gone(self, callback: Callable[[int], Awaitable[None]]) -> None:
         """Registers the hook for a session whose message was deleted (a 404 on its edit). Called with the session id,

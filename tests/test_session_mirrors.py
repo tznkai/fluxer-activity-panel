@@ -412,3 +412,21 @@ async def test_a_card_wide_cancel_under_the_lock_posts_no_new_mirror(world: Simp
         assert await world.commands.cancel_card_sessions_locked(world.card, ADMIN) == 1
     assert await mirror_row(world, world.sub_b, session_id) is None
     assert requests(world, "POST", messages_path(FAR_B)) == []
+
+
+async def test_a_mirror_dropped_on_a_404_is_not_posted_again_by_a_later_edit(world: SimpleNamespace) -> None:
+    """Decision 5: a mirror the copy's members deleted stays gone. Later edits of the home session (an RSVP, the end)
+    edit the mirrors that are stored and post none, so only a mode change back into both posts it again."""
+    session_id = await publish(world)
+    row = await mirror_row(world, world.sub_b, session_id)
+    assert row is not None
+    world.state.overrides[f"PATCH {messages_path(FAR_B, row.message_id)}"] = Override(
+        404, b'{"code": "UNKNOWN_MESSAGE", "message": "Unknown Message"}')
+    await world.db.run(lambda c: _add_going(c, sessions.get(c, session_id), "1105"))
+    await edit(world, session_id)                 # the mirror's content changed: the edit gets the 404 and drops it
+    assert await mirror_row(world, world.sub_b, session_id) is None
+
+    await edit(world, session_id)
+    await edit(world, session_id)
+
+    assert len(requests(world, "POST", messages_path(FAR_B))) == 1, "only the publish posted the mirror"
