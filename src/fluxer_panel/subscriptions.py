@@ -36,7 +36,7 @@ class Subscription:
     message_id: str | None
     content_hash: str | None
     paused: bool
-    mode: str
+    mode: Mode
     local_channel_id: str | None
 
     @property
@@ -105,7 +105,7 @@ def count(conn: sqlite3.Connection, card_id: int) -> int:
 
 def add(conn: sqlite3.Connection, card_id: int, guild_id: str, channel_id: str) -> int:
     """Adds an active redirect subscription with no message and returns its id. The cap is checked here, in the same
-    transaction as the insert. A channel already subscribed to the card is refused by the primary key."""
+    transaction as the insert. A channel already subscribed to the card is refused by the UNIQUE (card_id, channel_id) constraint."""
     if count(conn, card_id) >= MAX_SUBSCRIPTIONS:
         raise SubscriptionFull()
     cur = conn.execute("INSERT INTO card_subscription (card_id, guild_id, channel_id, paused) VALUES (?, ?, ?, 0)",
@@ -123,7 +123,7 @@ def remove_by_id(conn: sqlite3.Connection, sub_id: int) -> bool:
     return cur.rowcount == 1
 
 
-def set_mode_if(conn: sqlite3.Connection, sub_id: int, expected: str, mode: str) -> bool:
+def set_mode_if(conn: sqlite3.Connection, sub_id: int, expected: Mode, mode: Mode) -> bool:
     """Changes the mode only while it is still the expected one. Returns whether the row changed."""
     cur = conn.execute("UPDATE card_subscription SET mode = ? WHERE id = ? AND mode = ?", (mode, sub_id, expected))
     return cur.rowcount == 1
