@@ -52,7 +52,7 @@ async def seeded(db: Database) -> Database:
 async def test_v8_database_migrates_to_v9_and_keeps_its_cards(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "panel.db"
     real_migrations = dbmod.load_migrations()
-    assert [version for version, _ in real_migrations] == list(range(1, 10))
+    assert [version for version, _ in real_migrations] == list(range(1, 11))
 
     monkeypatch.setattr(dbmod, "load_migrations", lambda: real_migrations[:8])
     monkeypatch.setattr(dbmod, "LATEST_VERSION", 8)
@@ -82,7 +82,7 @@ async def test_v8_database_migrates_to_v9_and_keeps_its_cards(tmp_path: Path, mo
     finally:
         database.close()
 
-    assert state["version"] == dbmod.LATEST_VERSION == 9
+    assert state["version"] == dbmod.LATEST_VERSION == 10
     assert state["cards"] == [(1, "Game")]
     assert state["strict"] == {name: True for name in POLL_TABLES}
 
