@@ -353,6 +353,7 @@ SESSION_POST_FAILED = "I couldn't post that session. Try again later."
 SESSION_DRAFT_EXPIRED = "This session draft expired. Press \U0001F4C5 on the card to start again."
 SESSION_ELSEWHERE = "Sessions are planned on the card itself: {link}"
 SESSION_ELSEWHERE_NO_LINK = "Sessions are planned on the card itself, in the games channel."
+SESSION_SCOPE_GONE = "That copy no longer runs its own sessions, so nothing was posted."
 SESSION_NO_CHANNEL = "This card has no channel for sessions yet."
 SESSION_CAP = {
     "proposer": "You already have 3 upcoming sessions for {card}.",

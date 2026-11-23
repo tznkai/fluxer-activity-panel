@@ -349,7 +349,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/session_post.py:41` `raise GamesChannelRefused` — the refusal for a session post.
 - `src/fluxer_panel/session_post.py:71` `if session.channel_id == self._config.games_channel_id:` — `edit_session` makes the same check against the session's stored channel.
 - `src/fluxer_panel/session_post.py:72` `raise GamesChannelRefused` — the refusal for a session edit.
-- `src/fluxer_panel/session_jobs.py:253` `send_session(session.channel_id, payload)` — a recurrence posts the next occurrence to the session's own channel, which the guard above keeps out of the games channel.
+- `src/fluxer_panel/session_jobs.py:254` `send_session(session.channel_id, payload)` — a recurrence posts the next occurrence to the session's own channel, which the guard above keeps out of the games channel.
 
 ## Poll channel guard
 
@@ -371,7 +371,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/dm_router.py:151` `if not self._limiter.admit(event.author_id):` — a `!session` command from a non-admin is rate limited before it is parsed.
 - `src/fluxer_panel/dm_router.py:156` `poll_head = _head(event.content, self._config.prefix, "poll")` — a `!poll` command from a non-admin is admitted through the same non-admin limiter as `!session` (the admit call is the next branch), before it is parsed or reaches the poll commands.
 - `src/fluxer_panel/dm_router.py:163` `if admin.parse_head(event.content, self._config.prefix) is not None:` — admin heads (`!admin`, `!card`, `!request`) go to `admin.handle` unchanged, and `authorize` checks them there.
-- `src/fluxer_panel/session_flow.py:223` `if not self._limiter.admit(user):` — a 📅 reaction in a DM uses the same limiter.
+- `src/fluxer_panel/session_flow.py:237` `if not self._limiter.admit(user):` — a 📅 reaction in a DM uses the same limiter.
 - `src/fluxer_panel/session_commands.py:147` `return event.author_id == session.proposer_id or admin.authorize(event, self._config)` — a session change needs the proposer or an admin.
 
 ## DM backoff
@@ -380,7 +380,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/notify.py:34` `and not bypass and backoff.blocked(user_id):` — the skip. It is logged as `user_dm_skipped` with reason `backoff`, and no request is made.
 - `src/fluxer_panel/notify.py:28` `bypass: bool = False)` — the promotion, cancel, move and series-stopped DMs, and the wake request close DMs (ready, expired and cleared), pass `bypass`, so they go out even while the user is in backoff.
 - `src/fluxer_panel/notify.py:18` `async def dm_admins(` — admin DMs never take the backoff path, so an admin is always told.
-- `src/fluxer_panel/session_flow.py:161` `if self._backoff.blocked(user):` — a 📅 start is refused while the proposer is in backoff, before any DM is sent.
+- `src/fluxer_panel/session_flow.py:174` `if self._backoff.blocked(user):` — a 📅 start is refused while the proposer is in backoff, before any DM is sent.
 
 ## What the polls prompt got wrong
 

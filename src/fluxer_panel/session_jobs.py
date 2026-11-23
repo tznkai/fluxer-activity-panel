@@ -105,7 +105,7 @@ def _plan_tx(conn: Any, session_id: int, now: int, zone: ZoneInfo) -> _Plan | No
     starts = int(start.timestamp())
     ends = starts + (session.ends_at - session.starts_at)
     try:
-        sessions.check_caps(conn, session.card_id, None)
+        sessions.check_caps(conn, session.card_id, None, scope_sub_id=session.scope_sub_id)
     except SessionCapReached:
         sessions.set_series_recurrence(conn, session.series_id, None)
         return _Plan(session, card, starts, ends, stop=True)
@@ -121,7 +121,8 @@ def _store_tx(conn: Any, plan: _Plan, message_id: str, now: int) -> int:
     return sessions.add(conn, card_id=session.card_id, guild_id=session.guild_id, channel_id=session.channel_id,
                         message_id=message_id, starts_at=plan.starts, ends_at=plan.ends,
                         proposer_id=session.proposer_id, now=now, location_text=session.location_text,
-                        seats=session.seats, recurrence="weekly", series_id=session.series_id, proposer_cap=False)
+                        seats=session.seats, recurrence="weekly", series_id=session.series_id, proposer_cap=False,
+                        scope_sub_id=session.scope_sub_id)
 
 
 def _headsup_tx(conn: Any, session_id: int, now: int) -> _Alert | None:

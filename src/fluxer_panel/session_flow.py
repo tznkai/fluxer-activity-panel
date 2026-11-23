@@ -17,12 +17,13 @@ from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from fluxer_client import events
 from fluxer_client.ids import is_snowflake
 from fluxer_client.rest import FluxerREST
-from fluxer_panel import cards, notify, render, rsvp, session_time, sessions, text
+from fluxer_panel import cards, notify, render, rsvp, scope, session_time, sessions, subscriptions, text
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.cards import Card
 from fluxer_panel.config import Config
@@ -30,7 +31,6 @@ from fluxer_panel.db import Database
 from fluxer_panel.dm_backoff import DmBackoff
 from fluxer_panel.dm_router import NonAdminLimiter
 from fluxer_panel.games import BotIdentity, GamesGuild
-from fluxer_panel.interactions import card_target, target_channel_id
 from fluxer_panel.logs import log_event
 from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.presses import Press
@@ -59,6 +59,18 @@ class Draft:
     slots: list[int]
     confirm_message_id: str | None = None
     candidate: int | None = None
+    scope_sub_id: int | None = None   # None is the home card; otherwise the local or both subscription
+
+
+def _scope_of(conn: Any, card: Card, scope_sub_id: int | None) -> scope.Scope | None:
+    """The scope a session belongs to, read inside the caller's transaction. None when the subscription is gone, paused
+    or no longer local or both: the copy no longer runs its own sessions."""
+    if scope_sub_id is None:
+        return scope.home_scope(card, None)
+    sub = subscriptions.get_by_id(conn, scope_sub_id)
+    if sub is None or sub.paused or not sub.is_scope:
+        return None
+    return scope.scope_for_sub(conn, card, sub)
 
 
 def _local(now: float, zone: ZoneInfo) -> datetime:
@@ -155,19 +167,21 @@ class SessionFlow:
         card = await self._read_card(press.card_id)
         if card is None or card.state != "live":
             return None
-        if not press.surface.home_community:
+        resolved = await self._db.run(lambda c: scope.resolve_scope(c, card, press.surface, None))
+        if resolved is scope.ELSEWHERE:
             await self._elsewhere(user, card)
             return None
         if self._backoff.blocked(user):
             log_event(log, "session_flow", card_id=card.id, outcome="refused", reason="backoff")
             return None
-        target, reason = await card_target(self._rest, self._config, card, failed_event="session_target_failed")
+        target, reason = await scope.checked_target(self._rest, self._config, card, resolved,
+                                                    failed_event="session_target_failed")
         if target is None:
             await self._dm(user, text.SESSION_NO_CHANNEL)
             log_event(log, "session_flow", card_id=card.id, outcome="refused", reason=reason)
             return None
         try:
-            await self._db.run(lambda c: sessions.check_caps(c, card.id, user))
+            await self._db.run(lambda c: sessions.check_caps(c, card.id, user, scope_sub_id=resolved.sub_id))
         except sessions.SessionCapReached as exc:
             await self._dm(user, text.SESSION_CAP[exc.kind].format(card=render.escape(card.title)))
             log_event(log, "session_flow", card_id=card.id, outcome="refused", reason=f"cap_{exc.kind}")
@@ -185,7 +199,7 @@ class SessionFlow:
             log_event(log, "session_flow", card_id=card.id, outcome="refused", reason="bad_message_id")
             return None
         self._drafts[user] = Draft(card_id=card.id, started_at=now, dm_channel_id=channel_id,
-                                   prompt_message_id=message_id, slots=slots)
+                                   prompt_message_id=message_id, slots=slots, scope_sub_id=resolved.sub_id)
         return channel_id, message_id, len(slots)
 
     async def _elsewhere(self, user_id: str, card: Card) -> None:
@@ -300,12 +314,12 @@ class SessionFlow:
         if slot is None or slot <= now:
             await self._dm(user_id, text.SESSION_TIME_REFUSED["past"])
             return
-        outcome = await self.publish(card.id, user_id, slot)
+        outcome = await self.publish(card.id, user_id, slot, scope_sub_id=draft.scope_sub_id)
         if outcome.reply is not None:
             await self._dm(user_id, outcome.reply)
 
     async def publish(self, card_id: int, proposer_id: str, slot: int, *, maybe: Sequence[str] = (),
-                      notify_proposer: bool = True) -> Published:
+                      notify_proposer: bool = True, scope_sub_id: int | None = None) -> Published:
         """Posts and stores a session at `slot` for `card_id`, with the proposer going and each `maybe` voter an implicit
         maybe in the same transaction as the insert. The caller must not hold the card's lock: the target is read before
         it (it may call REST), the send and the store run under it, and the seeds, the edit, the proposer's DM (only when
@@ -314,17 +328,26 @@ class SessionFlow:
         card = await self._read_card(card_id)
         if card is None or card.state != "live":
             return Published(reply=text.SESSION_POST_FAILED)
-        target, _ = await card_target(self._rest, self._config, card, failed_event="session_target_failed")
+        resolved = await self._db.run(lambda c: _scope_of(c, card, scope_sub_id))
+        if resolved is None:
+            return Published(reply=text.SESSION_SCOPE_GONE)
+        target, _ = await scope.checked_target(self._rest, self._config, card, resolved,
+                                               failed_event="session_target_failed")
         if target is None:
             return Published(reply=text.SESSION_NO_CHANNEL)
         channel_id, guild_id = target
         now = self._clock()
         async with self._locks.get(card_id):
             fresh = await self._read_card(card_id)
-            if fresh is None or fresh.state != "live" or target_channel_id(fresh, self._config) != channel_id:
+            if fresh is None or fresh.state != "live":
+                return Published(reply=text.SESSION_POST_FAILED)
+            fresh_scope = await self._db.run(lambda c: _scope_of(c, fresh, scope_sub_id))
+            if fresh_scope is None:
+                return Published(reply=text.SESSION_SCOPE_GONE)
+            if scope.scope_target(fresh, self._config, fresh_scope) != channel_id:
                 return Published(reply=text.SESSION_POST_FAILED)   # the card changed since the target was read
             try:
-                await self._db.run(lambda c: sessions.check_caps(c, card_id, proposer_id))
+                await self._db.run(lambda c: sessions.check_caps(c, card_id, proposer_id, scope_sub_id=scope_sub_id))
             except sessions.SessionCapReached as exc:
                 return Published(reply=text.SESSION_CAP[exc.kind].format(card=render.escape(fresh.title)),
                                  cap=exc.kind)
@@ -352,7 +375,8 @@ class SessionFlow:
             try:
                 session_id = await self._db.run(lambda c: sessions.add(
                     c, card_id=card_id, guild_id=guild_id, channel_id=channel_id, message_id=message_id,
-                    starts_at=slot, ends_at=slot + length, proposer_id=proposer_id, now=int(now), maybe=maybe))
+                    starts_at=slot, ends_at=slot + length, proposer_id=proposer_id, now=int(now), maybe=maybe,
+                    scope_sub_id=scope_sub_id))
             except Exception as exc:  # noqa: BLE001 - with no row the message would never end: it is deleted
                 await self._session_post.delete_unstored(channel_id, message_id)
                 log_event(log, "session_store_failed", level=logging.WARNING, card_id=card_id,
