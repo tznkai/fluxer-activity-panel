@@ -203,19 +203,19 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   clears a channel-gone pause. `!card archive` first ends every scope, the card's own and each local or both copy's,
   and any object a copy left behind when it became `redirect`, under the card lock: it cancels every upcoming session
   of the card in one `cancel_card_sessions_locked` call, every scope included (their messages are edited and their
-  attendees DMed); it closes every open poll of the card with no winner (`polls.open_for_card_any`, one `close_locked(..., outcome_override="none")` per poll in
-  `_close_open_polls_locked`; a failed close is logged as `poll_archive_failed` and the archive goes on); and it
-  expires every live play-now post of every scope (`play_now.live_for_card`). Before the mirror rows are deleted,
-  `reaction_targets` lists each expired post's message and its mirrors, and their reactions are cleared after the lock
-  (`clear_reactions`), so a mirror whose delete is refused still loses its reactions. It then deletes every mirror, then
-  every copy, and the card's message last. A 404 counts as deleted. Any failed mirror delete, whatever the status, is
-  named in the reply and never stops the archive; its row is forgotten either way. A 403 on a copy or the card's own
-  message leaves that message in place, the archive goes on, and the reply names each channel left:
-  `text.CARD_ARCHIVED_SOME_LEFT` with one `text.ARCHIVE_LEFT_LINE` per channel, split into several messages when long
-  (`card_commands._archive_reply`). `text.CARD_ARCHIVED` is used only when nothing is left. Any other failure on a copy
-  or the card's own message stops the archive while the card stays live, and the copies it already deleted are
-  forgotten so the poller posts them again. `!card unsubscribe` removes the row
-  whatever the delete outcome, and says so when the copy is left. Copies log ids and exception types only.
+  attendees DMed); it closes every open poll of the card with no winner (`polls.open_for_card_any`, one
+  `close_locked(..., outcome_override="none")` per poll in `_close_open_polls_locked`; a failed close is logged as
+  `poll_archive_failed` and the archive goes on); and it expires every live play-now post of every scope
+  (`play_now.live_for_card`). Before the mirror rows are deleted, `reaction_targets` lists each expired post's message
+  and its mirrors, and their reactions are cleared after the lock (`clear_reactions`), so a mirror whose delete fails
+  still loses its reactions. It then deletes every mirror, then every copy, and the card's message last. A 404 counts
+  as deleted. Any failed mirror delete (not a 404) is named in the reply and never stops the archive; its row is
+  forgotten either way. A 403 on a copy or the card's own message leaves that message in place, the archive goes on,
+  and the reply names each channel left: `text.CARD_ARCHIVED_SOME_LEFT` with one `text.ARCHIVE_LEFT_LINE` per channel,
+  split into several messages when long (`card_commands._archive_reply`). `text.CARD_ARCHIVED` is used only when nothing
+  is left. Any other failure on a copy or the card's own message stops the archive while the card stays live, and the
+  copies it already deleted are forgotten so the poller posts them again. `!card unsubscribe` removes the row whatever
+  the delete outcome, and says so when the copy is left. Copies log ids and exception types only.
 - Summary board (`render.board_message`, `board.py`, `poller.py`): one message, always on when `GAMES_CHANNEL_ID` is
   set. It is posted to that channel when none is stored, and then it stays in the channel it was posted in: a changed
   `GAMES_CHANNEL_ID` never moves it, as with cards. Its payload comes only from `render.board_message`, which escapes

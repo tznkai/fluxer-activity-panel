@@ -632,7 +632,7 @@ async def _archive_locked(event: MessageCreate, ctx: CardContext, card_id: int, 
     if live and ctx.play_now_ender is not None:
         ended = await ctx.play_now_ender.end_play_now_locked(live, counts)
         reactions.extend(await ctx.play_now_ender.reaction_targets(ended))
-    # The mirrors go next. A mirror the bot is refused (403) stays and is named in the reply.
+    # The mirrors go next. Any failed mirror delete (not a 404) is named in the reply, and the archive goes on.
     left: list[str] = []
     for sub in subs:
         left.extend(await scope_cleanup.delete_mirrors_locked(ctx, sub.id))

@@ -379,10 +379,10 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/poll_jobs.py:121` `None if found is None else found.via_sub_id` — a reminder links the poll message that the recipient's own ballot came from: home, or their far mirror. Without a ballot it takes the home link.
 - `src/fluxer_panel/scope_cleanup.py:116` `await ctx.session_commands.scrub(session)` — unsubscribe scrubs each scoped session message before any row is deleted, so no location stays in Fluxer.
 - `src/fluxer_panel/scope_cleanup.py:120` `_delete_scope_rows_tx(c, sub_id))` — the scope's play-now, poll and session rows are deleted only after those scrubs, in one transaction.
-- `src/fluxer_panel/card_commands.py:625` `cancel_card_sessions_locked(card_id, actor)` — archive cancels the upcoming sessions of every scope in one call under the card lock, before any poll or message is touched. The default scope is every scope, so a redirect copy's session is cancelled too.
+- `src/fluxer_panel/card_commands.py:625` `cancel_card_sessions_locked(card_id, actor)` — archive cancels the upcoming sessions of every scope in one call under the card lock, before any poll is closed or other message is touched. The default scope is every scope, so a redirect copy's session is cancelled too.
 - `src/fluxer_panel/card_commands.py:691` `close_locked(poll.id, outcome_override="none")` — archive closes every open poll of the card, in every scope, with no winner (`polls.open_for_card_any`). A failed close is logged and the archive goes on.
 - `src/fluxer_panel/card_commands.py:633` `end_play_now_locked(live, counts)` — archive expires every live play-now post of every scope, and their mirrors get the end edit. The reactions of each post and of its mirrors are listed before the mirror rows are deleted, and cleared after the lock.
-- `src/fluxer_panel/card_commands.py:638` `delete_mirrors_locked(ctx, sub.id)` — archive deletes each subscription's mirrors before the copies and the card's message. A mirror the bot is refused (403) stays and is named in the reply.
+- `src/fluxer_panel/card_commands.py:638` `delete_mirrors_locked(ctx, sub.id)` — archive deletes each subscription's mirrors before the copies and the card's message. Any failed mirror delete (not a 404) is named in the reply and never stops the archive.
 
 ## Poll channel guard
 

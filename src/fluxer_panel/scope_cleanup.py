@@ -30,7 +30,7 @@ class ScopeEnded:
     poll_closed: bool
     play_now: tuple[PlayNow, ...]       # ended
     reactions: tuple[tuple[str, str], ...]   # (channel, message) pairs whose reactions are cleared after the lock
-    mirrors_left: tuple[str, ...]       # channel ids where a mirror delete was refused with a 403
+    mirrors_left: tuple[str, ...]       # channel ids where a mirror delete failed (any status but a 404)
 
 
 def _require_wiring(ctx: CardContext) -> None:
