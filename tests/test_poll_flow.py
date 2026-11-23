@@ -482,6 +482,34 @@ async def test_a_card_whose_channel_changes_while_the_post_waits_for_the_lock_ge
     assert dm_contents(world.state, STARTER) == [text.POLL_POST_FAILED]
 
 
+@pytest.mark.parametrize("ending", [
+    "UPDATE card_subscription SET mode = 'redirect' WHERE id = ?",
+    "UPDATE card_subscription SET paused = 1 WHERE id = ?",
+])
+async def test_a_scope_that_ends_while_a_poll_waits_for_the_lock_posts_nothing(build, ending: str) -> None:
+    """The scope is read before the lock and again under it. A scope that ends while the start waits for the lock (its
+    copy turns redirect, or is paused) refuses under the lock: nothing is posted and nothing is stored."""
+    world = await build()
+    far_members(world.state, STARTER)
+    sub_id = await add_scope(world)
+    lock = world.locks.get(world.card_id)
+    await lock.acquire()
+    try:
+        task = asyncio.create_task(world.flow.start(far_press(world.card_id, sub_id)))
+        # The target and the member list are read before the lock, so once the start is queued on
+        # it the change lands after the pre-lock scope read.
+        await wait_until(lambda: bool(lock._waiters), waiting_for="the poll start to wait for the card lock")
+        await world.db.run(lambda c: c.execute(ending, (sub_id,)))
+    finally:
+        lock.release()
+    await asyncio.wait_for(task, timeout=5)
+    await world.post.drain()
+
+    assert dm_contents(world.state, STARTER) == [text.POLL_SCOPE_GONE]
+    assert posts_to(world.state, FAR_LOCAL_POSTS) == []
+    assert await world.db.run(lambda c: polls.open_for_scope(c, world.card_id, sub_id)) is None
+
+
 async def test_a_card_whose_own_channel_is_the_games_channel_gets_no_poll(build) -> None:
     world = await build()
     members(world.state, STARTER, HOLDER_A)
@@ -1012,6 +1040,21 @@ async def test_a_home_poll_and_a_local_poll_can_be_open_together_and_a_second_lo
     await world.flow.start(far_press(world.card_id, sub_id))
 
     await world.flow.start(press(world.card_id))
+    await world.flow.start(far_press(world.card_id, sub_id, user=HOLDER_B))
+
+    assert len(posts_to(world.state, POLL_POSTS)) == 1
+    assert len(posts_to(world.state, FAR_LOCAL_POSTS)) == 1
+    [refusal] = dm_contents(world.state, HOLDER_B)
+    assert refusal.startswith(text.POLL_ALREADY_OPEN.split("{link}")[0])
+
+
+async def test_a_home_poll_opened_first_leaves_a_local_poll_open_and_a_second_local_one_is_refused(build) -> None:
+    world = await build()
+    members(world.state, HOLDER_A)
+    sub_id = await add_scope(world)
+    await world.flow.start(press(world.card_id))
+
+    await world.flow.start(far_press(world.card_id, sub_id))
     await world.flow.start(far_press(world.card_id, sub_id, user=HOLDER_B))
 
     assert len(posts_to(world.state, POLL_POSTS)) == 1

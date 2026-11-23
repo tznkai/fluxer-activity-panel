@@ -88,6 +88,7 @@ class World:
     interactions: Interactions
     card_id: int
     kicks: list[int]
+    locks: CardLocks
 
 
 def config_for(*, play_now: bool) -> Config:
@@ -145,7 +146,7 @@ async def build(tmp_path: Path, aiohttp_server: Any) -> AsyncIterator[Callable[.
                                         session_flow=flow)
             card_id = await database.run(lambda c: seed_card(c, own_channel=own_channel))
             return World(db=database, state=state, rest=rest, clock=clock, config=config, backoff=backoff,
-                         post=post, flow=flow, interactions=interactions, card_id=card_id, kicks=kicks)
+                         post=post, flow=flow, interactions=interactions, card_id=card_id, kicks=kicks, locks=locks)
 
         yield make
     for database in opened:
@@ -1050,6 +1051,34 @@ async def test_a_local_copy_whose_scope_turns_redirect_before_the_check_posts_no
     assert requests(world, "POST", FAR_LOCAL_POSTS) == []
     assert requests(world, "POST", FAR_POSTS) == []
     assert requests(world, "POST", PLAY_NOW_POSTS) == []
+
+
+@pytest.mark.parametrize("ending", [
+    "UPDATE card_subscription SET mode = 'redirect' WHERE id = ?",
+    "UPDATE card_subscription SET paused = 1 WHERE id = ?",
+])
+async def test_a_local_copy_whose_scope_ends_while_the_post_waits_for_the_lock_posts_nothing(build: Any,
+                                                                                            ending: str) -> None:
+    """The scope is read before the lock and again under it. A scope that ends while the post waits for the lock (its
+    copy turns redirect, or is paused) refuses under the lock: nothing is posted and nothing is stored."""
+    world = await build()
+    sub_id = await add_scope(world)
+    lock = world.locks.get(world.card_id)
+    await lock.acquire()
+    try:
+        task = asyncio.create_task(world.flow.publish(world.card_id, PROPOSER, in_two_days(), scope_sub_id=sub_id))
+        # Both reads before the lock are done once the post is queued on it, so the change lands after them.
+        await wait_until(lambda: bool(lock._waiters), waiting_for="the post to wait for the card lock")
+        await world.db.run(lambda c: c.execute(ending, (sub_id,)))
+    finally:
+        lock.release()
+    published = await asyncio.wait_for(task, timeout=5)
+
+    assert published.reply == text.SESSION_SCOPE_GONE
+    assert published.session_id is None
+    assert requests(world, "POST", FAR_LOCAL_POSTS) == []
+    assert await world.db.run(lambda c: c.execute("SELECT COUNT(*) FROM sessions WHERE card_id = ?",
+                                                  (world.card_id,)).fetchone()[0]) == 0
 
 
 async def test_a_redirect_far_copy_still_gets_the_pointer_and_no_draft(build: Any) -> None:
