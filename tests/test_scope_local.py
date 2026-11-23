@@ -20,7 +20,7 @@ import pytest
 from fluxer_client import events
 from fluxer_client.roles import RoleCache
 from fluxer_client.rest import FluxerREST
-from fluxer_panel import cards, play_now, polls, sessions, subscriptions
+from fluxer_panel import cards, play_now, polls, sessions, subscriptions, text
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
@@ -35,7 +35,7 @@ from fluxer_panel.poll_flow import PollFlow
 from fluxer_panel.poll_jobs import PollJobs
 from fluxer_panel.poll_post import PollPost
 from fluxer_panel.poller import Poller
-from fluxer_panel.presses import PLAY_NOW_EMOJI, POLL_EMOJI, SESSION_EMOJI, Presses
+from fluxer_panel.presses import PLAY_NOW_EMOJI, POLL_EMOJI, RUNOFF_EMOJI, SESSION_EMOJI, Presses
 from fluxer_panel.seeding import Seeder
 from fluxer_panel.session_flow import SessionFlow
 from fluxer_panel.session_post import SessionPost
@@ -55,11 +55,12 @@ GUILD = "2001"               # the games community
 OTHER = "2002"               # the far community: the redirect copy, the local copy and their channels
 PLAY = "3200"                # the home play-now channel (PLAY_NOW_CHANNEL_ID), in GUILD
 FAR_COPY = "3005"            # a redirect copy in OTHER
-FAR_LOCAL = "3004"           # a local copy in OTHER, with its own channel
+FAR_LOCAL = "3004"           # the local subscription's own channel (its local_channel_id), in OTHER
+LOCAL_COPY = "3006"          # the local copy's own channel, in OTHER: the copy's message lives here, never in FAR_LOCAL
 HOME_ROLE = "7001"           # the card's follow role in GUILD
 SUB_ROLE = "7002"            # the local subscription's follow role in OTHER
 COPY_MSG = "5003"            # the redirect copy's own message
-LOCAL_MSG = "5004"           # the local copy's own message
+LOCAL_MSG = "5004"           # the local copy's own message, in LOCAL_COPY
 INSTANCE = "https://fluxer.invalid"
 PLAY_MESSAGES = f"/api/v1/channels/{PLAY}/messages"
 GAMES_PATH = f"/api/v1/channels/{GAMES}/"
@@ -88,8 +89,9 @@ async def scenario(tmp_path: Path, aiohttp_server: Any) -> AsyncIterator[Scenari
     state.channels[PLAY] = {"id": PLAY, "name": "play-now", "type": 0, "guild_id": GUILD}
     state.channels[FAR_COPY] = {"id": FAR_COPY, "name": "lounge", "type": 0, "guild_id": OTHER}
     state.channels[FAR_LOCAL] = {"id": FAR_LOCAL, "name": "local", "type": 0, "guild_id": OTHER}
+    state.channels[LOCAL_COPY] = {"id": LOCAL_COPY, "name": "local-copy", "type": 0, "guild_id": OTHER}
     state.messages[(FAR_COPY, COPY_MSG)] = {"embeds": []}
-    state.messages[(FAR_LOCAL, LOCAL_MSG)] = {"embeds": []}
+    state.messages[(LOCAL_COPY, LOCAL_MSG)] = {"embeds": []}
     for uid in HOME_HOLDERS:
         state.members[(GUILD, uid)] = {"user": {"username": "home", "bot": False}, "roles": [HOME_ROLE]}
     for uid in LOCAL_HOLDERS:
@@ -146,9 +148,10 @@ async def scenario(tmp_path: Path, aiohttp_server: Any) -> AsyncIterator[Scenari
                 cards.set_follow_role(conn, card_id, GUILD, HOME_ROLE)
                 redirect = subscriptions.add(conn, card_id, OTHER, FAR_COPY)
                 subscriptions.set_message(conn, card_id, FAR_COPY, COPY_MSG, "a" * 64)
-                local = subscriptions.add(conn, card_id, OTHER, FAR_LOCAL)
-                subscriptions.set_message(conn, card_id, FAR_LOCAL, LOCAL_MSG, "a" * 64)
+                local = subscriptions.add(conn, card_id, OTHER, LOCAL_COPY)
+                subscriptions.set_message(conn, card_id, LOCAL_COPY, LOCAL_MSG, "a" * 64)
                 subscriptions.set_mode_if(conn, local, "redirect", "local")
+                subscriptions.set_local_channel(conn, local, FAR_LOCAL)
                 cards.set_subscription_role(conn, local, SUB_ROLE)
                 assert redirect != local
                 return card_id, redirect, local
@@ -156,7 +159,7 @@ async def scenario(tmp_path: Path, aiohttp_server: Any) -> AsyncIterator[Scenari
             card_id, redirect_id, local_id = await database.run(make_card)
             yield Scenario(db=database, state=state, rest=rest, clock=clock, config=config, poller=poller,
                            presses=presses, router=router, poll_post=poll_post, session_flow=session_flow,
-                           card_id=card_id,
+                           poll_flow=poll_flow, poll_closer=poll_closer, card_id=card_id,
                            redirect_id=redirect_id, local_id=local_id)
     finally:
         database.close()
@@ -262,20 +265,21 @@ async def test_home_objects_never_reach_a_local_channel_and_local_objects_never_
 
     # AC2.6, home side: nothing from the home objects reaches the far local channel. The local copy's own message may
     # be edited and seeded by the card, and the redirect copy's own message likewise. Any other write is a leak.
-    assert foreign_writes(s, home_mark, FAR_LOCAL, LOCAL_MSG) == [], "a home object reached the far local channel"
+    assert writes_since(s, home_mark, FAR_LOCAL) == [], "a home object reached the local channel"
+    assert foreign_writes(s, home_mark, LOCAL_COPY, LOCAL_MSG) == [], "a home object reached the local copy's channel"
     assert foreign_writes(s, home_mark, FAR_COPY, COPY_MSG) == [], "a home object reached the far redirect copy"
 
     # 4. Local 🙋 on the local copy: its play-now post is in the local channel, not in the home play channel.
     local_mark = len(s.state.requests)
     home_play_before = len(posts_to(s, PLAY))
     s.clock.now += 61
-    await s.presses.on_reaction(reaction(LOCAL_PRESSER, FAR_LOCAL, LOCAL_MSG, PLAY_NOW_EMOJI, guild=OTHER))
+    await s.presses.on_reaction(reaction(LOCAL_PRESSER, LOCAL_COPY, LOCAL_MSG, PLAY_NOW_EMOJI, guild=OTHER))
     local_play = await s.db.run(lambda c: play_now.latest_for_scope(c, s.card_id, s.local_id))
     assert local_play is not None and local_play.channel_id == FAR_LOCAL, "the local 🙋 posts in the local channel"
 
     # 5. Local 📅 on the local copy: the DM flow, and a session in the local channel.
     s.clock.now += 61
-    await s.presses.on_reaction(reaction(LOCAL_SESSION, FAR_LOCAL, LOCAL_MSG, SESSION_EMOJI, guild=OTHER))
+    await s.presses.on_reaction(reaction(LOCAL_SESSION, LOCAL_COPY, LOCAL_MSG, SESSION_EMOJI, guild=OTHER))
     local_channel = dm_channel(s, LOCAL_SESSION)
     await s.session_flow.on_dm_reaction(reaction(LOCAL_SESSION, local_channel,
                                          last_dm(s, LOCAL_SESSION, "Pick a time"), keycap(1), guild=None))
@@ -286,7 +290,7 @@ async def test_home_objects_never_reach_a_local_channel_and_local_objects_never_
 
     # 6. Local 🗳️ on the local copy: a poll in the local channel, ballots to the local holders only.
     s.clock.now += 61
-    await s.presses.on_reaction(reaction(LOCAL_POLL, FAR_LOCAL, LOCAL_MSG, POLL_EMOJI, guild=OTHER))
+    await s.presses.on_reaction(reaction(LOCAL_POLL, LOCAL_COPY, LOCAL_MSG, POLL_EMOJI, guild=OTHER))
     await s.poll_post.drain()
     local_poll = await s.db.run(lambda c: polls.open_for_scope(c, s.card_id, s.local_id))
     assert local_poll is not None and local_poll.channel_id == FAR_LOCAL
@@ -295,6 +299,12 @@ async def test_home_objects_never_reach_a_local_channel_and_local_objects_never_
 
     # Positive control: the local objects were written to the local channel.
     assert len(posts_to(s, FAR_LOCAL)) >= 3, "the local 🙋, 📅 and 🗳️ should each post in the local channel"
+
+    # The local copy's own channel gets no post: its message is only edited, and the local objects went to FAR_LOCAL.
+    assert posts_to(s, LOCAL_COPY) == [], "a local object was posted into the copy's channel"
+    assert foreign_writes(s, 0, LOCAL_COPY, LOCAL_MSG) == [], "a write reached the copy's channel besides its message"
+    assert any(r.method == "PATCH" and r.path == f"/api/v1/channels/{LOCAL_COPY}/messages/{LOCAL_MSG}"
+               for r in s.state.requests), "the copy's own message is edited in its channel"
 
     # AC2.6, local side: none of the local objects' writes reach the home play channel or the games channel.
     assert len(posts_to(s, PLAY)) == home_play_before, "a local object reached the home play channel"
@@ -312,3 +322,70 @@ async def test_home_objects_never_reach_a_local_channel_and_local_objects_never_
     for request in s.state.requests[local_mark:]:
         if request.path.startswith((PLAY_MESSAGES, GAMES_PATH)):
             assert not any(f"/messages/{mid}" in request.path for mid in local_message_ids), request.path
+
+
+# A closed local poll whose copy then turns redirect: the 🔁 and 📅 presses are refused before the lock ----------------
+
+def dm_texts(s: Scenario, user: str) -> list[str]:
+    """The text of every DM the bot sent to the user, in order."""
+    channel = s.state.dm_channels.get(user)
+    if channel is None:
+        return []
+    path = f"/api/v1/channels/{channel}/messages"
+    return [r.payload["content"] for r in s.state.requests if r.method == "POST" and r.path == path]
+
+
+async def closed_local_poll(s: Scenario) -> polls.Poll:
+    """A local poll the local starter opens from the local copy, closed at its close time with a winner. The winner gets
+    two votes and the runner-up one, both times more than two hours after the close, so a runoff of two candidates is
+    usable at that close."""
+    await s.presses.on_reaction(reaction(LOCAL_POLL, LOCAL_COPY, LOCAL_MSG, POLL_EMOJI, guild=OTHER))
+    await s.poll_post.drain()
+    poll = await s.db.run(lambda c: polls.open_for_scope(c, s.card_id, s.local_id))
+    assert poll is not None, "the local 🗳️ should open a poll"
+    options = await s.db.run(lambda c: polls.options(c, poll.id))
+    late = [option for option in options if option.starts_at >= poll.closes_at + 2 * 3600]
+    assert len(late) >= 2, "the offered times need two that stay usable after the poll closes"
+    winner, runner_up = late[0].id, late[1].id
+    votes = ((LOCAL_HOLDERS[0], winner), (LOCAL_HOLDERS[1], winner), (LOCAL_POLL, runner_up))
+
+    def cast(c: Any) -> bool:
+        return all(polls.replace_picks_if_open(c, poll.id, user, [option], ranked=False) for user, option in votes)
+
+    assert await s.db.run(cast)
+    s.clock.now = poll.closes_at
+    closed = await s.poll_closer.close(poll.id)
+    assert closed is not None and closed.outcome == "winner"
+    await s.poll_post.drain()
+    return poll
+
+
+async def turn_redirect(s: Scenario) -> None:
+    assert await s.db.run(lambda c: subscriptions.set_mode_if(c, s.local_id, "local", "redirect"))
+
+
+async def test_a_runoff_pressed_after_the_copy_turns_redirect_is_refused_as_scope_gone(scenario: Scenario) -> None:
+    s = scenario
+    poll = await closed_local_poll(s)
+    await turn_redirect(s)
+    posted_before = len(posts_to(s, FAR_LOCAL))
+
+    await s.poll_flow.on_poll_reaction(poll.id, LOCAL_POLL, RUNOFF_EMOJI, poll.channel_id, poll.message_id)
+
+    assert dm_texts(s, LOCAL_POLL)[-1] == text.POLL_SCOPE_GONE
+    assert len(posts_to(s, FAR_LOCAL)) == posted_before, "no runoff poll was posted"
+    assert await s.db.run(lambda c: polls.child_of(c, poll.id)) is None
+
+
+async def test_a_schedule_pressed_after_the_copy_turns_redirect_is_refused_as_scope_gone(scenario: Scenario) -> None:
+    s = scenario
+    poll = await closed_local_poll(s)
+    await turn_redirect(s)
+    posted_before = len(posts_to(s, FAR_LOCAL))
+
+    await s.poll_flow.on_poll_reaction(poll.id, LOCAL_POLL, SESSION_EMOJI, poll.channel_id, poll.message_id)
+
+    assert dm_texts(s, LOCAL_POLL)[-1] == text.SESSION_SCOPE_GONE
+    assert len(posts_to(s, FAR_LOCAL)) == posted_before, "no session was posted"
+    stored = await s.db.run(lambda c: polls.get(c, poll.id))
+    assert stored is not None and stored.session_id is None
