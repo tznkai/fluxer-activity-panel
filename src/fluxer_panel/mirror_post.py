@@ -4,7 +4,7 @@
 channel. It posts when no row is stored, edits only when the content hash changed, and forgets a mirror on a 404.
 A 403 or another failure is logged and the row is kept, so the home object and the other mirrors are unaffected.
 A dropped or failed mirror comes back only when its object is first published or its copy enters `both` again. The
-poller and later edits never repost it (decision 5)."""
+poller and later edits never repost it."""
 
 from __future__ import annotations
 

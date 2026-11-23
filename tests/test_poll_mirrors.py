@@ -1,10 +1,10 @@
 # SPDX-FileCopyrightText: 2026 K. Chen
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Poll fan-out into both subscriptions (AC3.5, AC3.6, AC3.7 and decision 3): a home poll reaches the holders of each both
-copy's role, its message is mirrored once per both copy, a far ballot, reminder and closed notice link only to that copy's
-mirror, a scope poll started by a both copy is never mirrored, and a failed member list in a far community does not fail
-the home poll. Runs the production PollFlow, PollPost, PollCloser, PollJobs, SessionFlow and MirrorPost against the fake
-REST server and a SQLite file."""
+"""Poll fan-out into both subscriptions (AC3.5, AC3.6, AC3.7 and far-origin links): a home poll reaches the holders of
+each both copy's role, its message is mirrored once per both copy, a far ballot, reminder and closed notice link only to
+that copy's mirror, a scope poll started by a both copy is never mirrored, and a failed member list in a far community
+does not fail the home poll. Runs the production PollFlow, PollPost, PollCloser, PollJobs, SessionFlow and MirrorPost
+against the fake REST server and a SQLite file."""
 
 from __future__ import annotations
 
@@ -396,7 +396,7 @@ async def test_a_mirror_404_drops_its_row_and_the_home_poll_stays_open(world: Wo
     assert poll is not None and poll.state == "open"
 
 
-# The session link of a poll mirror: its own copy's session mirror, never the home session (AC3.6, decision 2) ---------
+# The session link of a poll mirror: its own copy's session mirror, never the home session (AC3.6) ---------
 
 async def schedule_home_poll(world: World) -> tuple[int, sessions.Session]:
     """A home poll with two votes for its first time, closed and scheduled. Returns the poll id and its session."""

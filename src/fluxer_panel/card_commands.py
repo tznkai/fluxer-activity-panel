@@ -892,7 +892,7 @@ async def _subscribe_locked(ctx: CardContext, card: cards.Card, actor: str, guil
         await ctx.db.run(lambda c: subscriptions.set_local_channel(c, sub_id, local_channel))
         lines.append(text.SUBSCRIPTION_LOCAL_CHANNEL_SET.format(channel_id=local_channel))
     # A copy that enters both is back-filled after its channel is stored, so the mirrors go to the channel this command
-    # names (decision 5). Its session reactions are seeded after the lock, in _finish_change.
+    # names, and no other path posts them. Its session reactions are seeded after the lock, in _finish_change.
     seeds: tuple[tuple[str, str], ...] = ()
     if change is not None and opts.mode == "both" and ctx.mirror_backfill is not None:
         seeds = tuple(await ctx.mirror_backfill.backfill_locked(card, sub_id))

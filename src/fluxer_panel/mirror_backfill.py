@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 K. Chen
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""The back-fill of a both copy's mirrors, run when the copy enters both (decision 5). The poller never back-fills, so a
+"""The back-fill of a both copy's mirrors, run when the copy enters both. The poller never back-fills, so a
 mirror that is lost on a 404 stays gone until the copy enters both again.
 
 The caller holds the card's lock. The back-fill posts and stores the mirrors under it, and returns the session mirrors

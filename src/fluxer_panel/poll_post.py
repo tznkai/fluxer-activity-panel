@@ -66,7 +66,7 @@ def _read_poll(conn: sqlite3.Connection, poll_id: int) -> tuple[PollView, list[B
 def poll_jump(conn: sqlite3.Connection, poll: polls.Poll, via_sub_id: int | None) -> tuple[str, str, str] | None:
     """The (guild, channel, message) a ballot or reminder links to. A home ballot (no via) links the home poll. A far
     ballot links its subscription's mirror, in that subscription's community, or nothing when the mirror is gone. The
-    home poll is never returned for a far ballot (decision 2)."""
+    home poll is never returned for a far ballot: a far ballot has no fallback to a home link."""
     if via_sub_id is None:
         return poll.guild_id, poll.channel_id, poll.message_id
     mirror = mirrors.get(conn, "poll", poll.id, via_sub_id)

@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 
 
 def session_link_for(conn: sqlite3.Connection, session: Session, user_id: str) -> tuple[str, str, str] | None:
-    """The (guild id, channel id, message id) a session DM to this user links to (decision 3). A home user, or anyone
+    """The (guild id, channel id, message id) a session DM to this user links to. A home user, or anyone
     with no far origin, gets the home message. A far user gets the mirror in the subscription they came through, in that
     subscription's community. None when that mirror or subscription is gone, so the DM carries no link."""
     via = sessions.presence_via(conn, session.id, user_id)
@@ -80,7 +80,7 @@ class SessionPost:
         """Edits the stored message in the session's own stored channel, rendering the session's state as it is in
         the DB at send time. Then the mirrors (`sync_mirrors`), which edit the stored ones and post none: a mirror is
         posted only when its session is published (`sync_mirrors`) or its copy enters both (`back_fill_mirror`), so a
-        mirror the copy lost on a 404 stays gone (decision 5). `mirror_new=True` posts the missing ones too. Raises
+        mirror the copy lost on a 404 stays gone. `mirror_new=True` posts the missing ones too. Raises
         FluxerHTTPError to the caller."""
         async with self.edit_lock(session_id):
             loaded = await self._load(session_id)

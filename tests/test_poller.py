@@ -2574,7 +2574,7 @@ async def test_a_copy_switched_to_local_after_evaluation_gets_the_shared_payload
 
 # Both copies (AC4.2): the next-session line is the sooner of the copy's own session and the home session. The home
 # session shows with the link to its mirror in this copy, or with no link when there is none, and never with the home
-# link. The poller never back-fills a missing mirror (decision 5).
+# link. The poller never back-fills a missing mirror.
 
 BOTH_COPY = "3306"                       # a both copy in the far community
 BOTH_MIRROR_MESSAGE = "5602"             # the mirror of the home session in that copy

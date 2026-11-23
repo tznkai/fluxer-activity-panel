@@ -552,7 +552,7 @@ class PollFlow:
 
 def _scheduled_link(conn: Any, published: session_flow.Published, sub_id: int | None) -> tuple[str, str, str] | None:
     """The session link a voter reached through `sub_id` gets: the home session for a home voter (None), else the
-    session's mirror in that subscription, or None when there is no mirror (decision 3)."""
+    session's mirror in that subscription, or None when there is no mirror. A far voter never gets the home link."""
     if sub_id is None:
         return published.guild_id, published.channel_id, published.message_id
     return session_jump(conn, published.session_id, sub_id)
