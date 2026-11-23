@@ -333,6 +333,27 @@ async def test_no_reaction_request_runs_between_the_archive_lock_and_the_card_me
         assert index < first_locked or index > card_delete, (index, method, first_locked, card_delete)
 
 
+async def test_no_reaction_request_is_answered_while_the_card_lock_is_held(scenario: Scenario) -> None:
+    """Each reaction request is checked as the fake answers it: the reactor reads come before the lock, and the clears
+    come after it, so none is answered with the card lock held."""
+    world = scenario.world
+    card = await world.card("mc")
+    assert card is not None
+    lock = world.ctx.locks.get(card.id)
+    held: list[tuple[str, str, bool]] = []
+
+    def note_lock_state(request: Any) -> None:
+        if "/reactions" in request.path:
+            held.append((request.method, request.path, lock.locked()))
+
+    world.state.observers.append(note_lock_state)
+    await world.run("!card archive mc")
+
+    assert any(method == "GET" for method, _, _ in held)   # reactor reads, before the lock
+    assert any(method == "DELETE" for method, _, _ in held)   # clears, after the lock
+    assert [(method, path) for method, path, locked in held if locked] == []
+
+
 async def test_a_refused_play_now_mirror_still_has_its_reactions_cleared_after_the_lock(scenario: Scenario) -> None:
     world = scenario.world
     refuse_delete(world, BOTH_CH, MIRROR_PLAY_NOW_MSG)
@@ -342,12 +363,15 @@ async def test_a_refused_play_now_mirror_still_has_its_reactions_cleared_after_t
     assert world.last_reply() == text.CARD_ARCHIVED_SOME_LEFT + "\n" + text.ARCHIVE_LEFT_LINE.format(channel_id=BOTH_CH)
 
 
-async def test_a_reaction_clear_answering_404_on_a_gone_mirror_is_harmless(scenario: Scenario) -> None:
+async def test_a_reaction_clear_answering_404_on_a_gone_mirror_is_harmless(scenario: Scenario,
+                                                                          caplog: pytest.LogCaptureFixture) -> None:
     world = scenario.world
-    world.state.overrides[f"DELETE {reactions_path(BOTH_CH, MIRROR_PLAY_NOW_MSG)}"] = Override(
-        404, b'{"code": "X", "message": "gone"}')
+    gone = reactions_path(BOTH_CH, MIRROR_PLAY_NOW_MSG)
+    world.state.overrides[f"DELETE {gone}"] = Override(404, b'{"code": "X", "message": "gone"}')
     await world.run("!card archive mc")
 
+    assert gone in deletes(world)   # the clear was made, and answered 404
+    assert [r for r in caplog.records if r.getMessage() == "play_now_reactions_not_removed"] == []
     assert world.last_reply() == text.CARD_ARCHIVED
     card = await world.card("mc")
     assert card is not None and card.state == "archived"

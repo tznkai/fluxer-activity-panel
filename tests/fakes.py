@@ -89,6 +89,9 @@ class FakeFluxerState:
     # ClientError. A dropped request is recorded with status 0 and changes no state (no handler runs).
     drops: set[str] = field(default_factory=set)
     requests: list[Recorded] = field(default_factory=list)
+    # Called with each request as it is recorded, while the fake is answering it: a test reads the state of the bot
+    # at that moment (a lock held, say) through the closure it passes.
+    observers: list[Callable[[Recorded], None]] = field(default_factory=list)
     # Gateway fake: when False the fake never ACKs heartbeats (op 1 gets no op 11).
     ack: bool = True
     # One entry per websocket connection: the client frames it received, in order.
@@ -101,6 +104,13 @@ class FakeFluxerState:
 
     def requests_to(self, path: str) -> list[Recorded]:
         return [r for r in self.requests if r.path == path]
+
+
+def _note(state: FakeFluxerState, recorded: Recorded) -> None:
+    """Records one request and tells the observers, in the order requests are answered."""
+    state.requests.append(recorded)
+    for observer in state.observers:
+        observer(recorded)
 
 
 def _send(
@@ -118,7 +128,7 @@ def _send(
     key = f"{request.method} {request.path}"
     override = state.overrides.get(key)
     if override is not None:
-        state.requests.append(_record(request, override.status, payload, files))
+        _note(state, _record(request, override.status, payload, files))
         return web.Response(
             status=override.status,
             body=override.body,
@@ -127,11 +137,11 @@ def _send(
         )
     if state.rate_limit.get(key, 0) > 0:
         state.rate_limit[key] -= 1
-        state.requests.append(_record(request, 429, payload, files))
+        _note(state, _record(request, 429, payload, files))
         return web.json_response(RATE_LIMIT_BODY, status=429)
     if commit is not None:
         commit()
-    state.requests.append(_record(request, status, payload, files))
+    _note(state, _record(request, status, payload, files))
     if status == 204:
         return web.Response(status=204)
     return web.json_response(body, status=status)
@@ -376,7 +386,7 @@ def make_rest_app(state: FakeFluxerState) -> web.Application:
     async def _delay_or_drop(request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]]):
         key = f"{request.method} {request.path}"
         if key in state.drops:
-            state.requests.append(_record(request, 0, None, None))
+            _note(state, _record(request, 0, None, None))
             request.transport.close()
             raise web.HTTPOk()  # never written: the client sees the connection closed before a response
         delay = state.delays.get(key, 0.0)
