@@ -23,7 +23,7 @@ from fluxer_panel.interactions import Interactions
 from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.poll_close import PollCloser
 from fluxer_panel.poll_post import PollPost
-from fluxer_panel.presses import POLL_EMOJI, SESSION_EMOJI
+from fluxer_panel.presses import FOLLOW_EMOJI, PLAY_NOW_EMOJI, POLL_EMOJI, SESSION_EMOJI, WAKE_EMOJI
 from fluxer_panel.seeding import Seeder
 from fluxer_panel.session_commands import SessionCommands
 from fluxer_panel.session_post import SessionPost
@@ -483,3 +483,45 @@ async def test_local_to_both_changes_the_mode_only_and_posts_nothing_yet(modes_w
     posts = [r for r in modes_world.state.requests if r.method == "POST" and "/messages" in r.path
              and f"/channels/{FAR_COPY}/" in r.path]
     assert posts == []
+
+
+# Reactions of a scope copy: its bell follows its own role, and its emoji are the mode's set
+
+def copy_emoji(world: World, method: str) -> list[str]:
+    """The emoji named by each request of this method on the far copy's message, in the order they were sent."""
+    prefix = f"/api/v1/channels/{FAR_COPY}/messages/{COPY_MSG}/reactions/"
+    return [r.path[len(prefix):].split("/")[0] for r in world.state.requests
+            if r.method == method and r.path.startswith(prefix)]
+
+
+async def test_interactions_on_seeds_a_local_copy_with_its_mode_set(modes_world: World) -> None:
+    card = await make_card(modes_world)
+    await modes_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local")
+    sub = await sub_of(modes_world, card.id)
+    assert sub is not None
+    await modes_world.db.run(lambda c: subscriptions.set_message(c, card.id, FAR_COPY, COPY_MSG, "a" * 64))
+    await modes_world.run("!card interactions off")
+    modes_world.state.requests.clear()
+
+    await modes_world.run("!card interactions on")
+
+    assert copy_emoji(modes_world, "PUT") == [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI]
+
+
+async def test_a_redirect_copy_loses_its_bell_when_its_role_step_fails_on_switching_to_local(
+        modes_world: World) -> None:
+    card = await make_card(modes_world)
+    await modes_world.run(f"!card subscribe mc {FAR} {FAR_COPY}")
+    sub = await sub_of(modes_world, card.id)
+    assert sub is not None and sub.mode == "redirect"
+    await modes_world.db.run(lambda c: cards.set_follow_role(c, card.id, GAMES, "7300"))
+    await modes_world.db.run(lambda c: subscriptions.set_message(c, card.id, FAR_COPY, COPY_MSG, "b" * 64))
+    modes_world.state.reactions[(FAR_COPY, COPY_MSG)] = {FOLLOW_EMOJI: [BOT]}
+    modes_world.state.overrides[f"POST {ROLES}"] = Override(403, FORBIDDEN)
+
+    await modes_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local")
+
+    assert copy_emoji(modes_world, "DELETE") == [FOLLOW_EMOJI]
+    assert FOLLOW_EMOJI not in copy_emoji(modes_world, "PUT")
+    assert modes_world.last_reply().splitlines()[-1] == text.SUBSCRIPTION_ROLE_FAILED.format(
+        reason=text.SUBSCRIPTION_ROLE_REASON["create_failed"])

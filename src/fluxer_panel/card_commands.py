@@ -27,7 +27,7 @@ from fluxer_panel.db import Database
 from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.logs import log_event
 from fluxer_panel.presses import FOLLOW_EMOJI, PLAY_NOW_EMOJI, POLL_EMOJI, SESSION_EMOJI, WAKE_EMOJI
-from fluxer_panel.seeding import Seeder, has_play_now_target, has_session_channel, wanted_emoji
+from fluxer_panel.seeding import Seeder, follow_for, has_play_now_target, has_session_channel, wanted_emoji
 from fluxer_panel.sources.registry import PROBES, Sources, known_manager_kinds, manager_ref_hints
 
 if TYPE_CHECKING:
@@ -983,6 +983,8 @@ class _Target:
     channel_id: str
     message_id: str
     guild_id: str | None    # a copy's community; None for the card's own message, which is always at home
+    sub: subscriptions.Subscription | None = None   # a copy's subscription; None for the card's own message
+    has_role: bool = False                          # whether that subscription has a stored follow role
 
 
 def _targets(conn: Any, listed: list[cards.Card]) -> list[_Target]:
@@ -993,7 +995,8 @@ def _targets(conn: Any, listed: list[cards.Card]) -> list[_Target]:
             targets.append(_Target(card, "card", card.channel_id, card.message_id, None))
         for sub in subscriptions.list_active(conn, card.id):
             if sub.message_id is not None:
-                targets.append(_Target(card, "copy", sub.channel_id, sub.message_id, sub.guild_id))
+                has_role = cards.get_subscription_role(conn, sub.id) is not None
+                targets.append(_Target(card, "copy", sub.channel_id, sub.message_id, sub.guild_id, sub, has_role))
     return targets
 
 
@@ -1015,14 +1018,19 @@ async def _apply_interactions(ctx: CardContext, targets: list[_Target], *, on: b
 
 
 async def _seed_targets(ctx: CardContext, seeder: Seeder, targets: list[_Target], games_guild_id: str | None) -> None:
-    """Adds the emoji each target should carry. Being home decides only a copy's play-now target."""
+    """Adds the emoji each target should carry. Being home decides only a copy's play-now target. A local or both copy
+    with no stored role loses a bell its card's rule seeded before the mode changed (AC2.8), so its bell is removed
+    first. Callers hold no card lock, and the removal is a command-path action only: the poller never removes."""
     for target in targets:
         home = target.kind == "card" or target.guild_id == games_guild_id
-        play_now = has_play_now_target(target.card, ctx.config, surface_kind=target.kind, home=home)
-        session = has_session_channel(target.card, ctx.config, surface_kind=target.kind, home=home)
+        play_now = has_play_now_target(target.card, ctx.config, surface_kind=target.kind, home=home, sub=target.sub)
+        session = has_session_channel(target.card, ctx.config, surface_kind=target.kind, home=home, sub=target.sub)
+        follow = follow_for(target.sub, has_role=target.has_role)
+        if follow is False and target.card.follow_role is not None:
+            await seeder.unseed(target.channel_id, target.message_id, (FOLLOW_EMOJI,))
         await seeder.seed(target.channel_id, target.message_id,
                           wanted_emoji(target.card, play_now_target=play_now, session_target=session,
-                                       poll_target=session),
+                                       poll_target=session, follow=follow),
                           card_id=target.card.id)
 
 

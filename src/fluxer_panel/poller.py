@@ -29,7 +29,7 @@ from fluxer_panel.db import Database
 from fluxer_panel.games import GamesGuild
 from fluxer_panel.logs import log_event
 from fluxer_panel.resolver import CardStatus, next_action_text, resolve
-from fluxer_panel.seeding import Seeder, has_play_now_target, has_session_channel, wanted_emoji
+from fluxer_panel.seeding import Seeder, follow_for, has_play_now_target, has_session_channel, wanted_emoji
 from fluxer_panel.sources.base import HostManager, PowerAction, PowerState, ProbeFailed, ProbeResult
 from fluxer_panel.sources.registry import Sources
 from fluxer_panel.wake import WakeRequests
@@ -694,14 +694,28 @@ class Poller:
             if not await self._seeder.enabled_for(card.id):
                 return
             home = await self._is_home(kind, guild_id)
-            play_now = has_play_now_target(card, self._config, surface_kind=kind, home=home)
-            session = has_session_channel(card, self._config, surface_kind=kind, home=home)
-            wanted = wanted_emoji(card, play_now_target=play_now, session_target=session, poll_target=session)
+            sub, has_role = await self._copy_scope(kind, message_id)
+            play_now = has_play_now_target(card, self._config, surface_kind=kind, home=home, sub=sub)
+            session = has_session_channel(card, self._config, surface_kind=kind, home=home, sub=sub)
+            wanted = wanted_emoji(card, play_now_target=play_now, session_target=session, poll_target=session,
+                                  follow=follow_for(sub, has_role=has_role))
             await self._seeder.seed(channel_id, message_id, wanted, message, card_id=card.id)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - one surface's failed seeding must not stop the others
             log_event(log, "seed_failed", level=logging.WARNING, card_id=card.id, reason=type(exc).__name__)
+
+    async def _copy_scope(self, kind: str, message_id: str) -> tuple[subscriptions.Subscription | None, bool]:
+        """A copy's subscription and whether that subscription has a stored follow role. A card's own message has
+        neither, so both come back empty for it."""
+        if kind != "copy":
+            return None, False
+
+        def read(conn: Any) -> tuple[subscriptions.Subscription | None, bool]:
+            sub = subscriptions.get_by_message_id(conn, message_id)
+            return sub, sub is not None and cards.get_subscription_role(conn, sub.id) is not None
+
+        return await self._db.run(read)
 
     async def _is_home(self, kind: str, guild_id: str | None) -> bool:
         """Whether the surface sits in the games community: every card message does, and a copy does when its community is
