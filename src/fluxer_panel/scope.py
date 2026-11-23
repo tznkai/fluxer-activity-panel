@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Scopes: the unit that owns play-now calls, sessions and polls. Home (sub None) or one local/both subscription.
 
-`resolve_scope` turns a press's surface into a scope, read again inside the caller's transaction, so a mode changed since
-the press was filtered wins. A far redirect copy resolves to `ELSEWHERE`, which keeps the redirect behaviour (a DM that
-points at the card).
+`resolve_scope` turns a press's surface into a scope, read again inside the caller's transaction, so a mode changed
+since the press was filtered wins. A far redirect copy resolves to `ELSEWHERE`, which keeps the redirect behaviour
+(a DM that points at the card).
 """
 
 from __future__ import annotations
@@ -80,9 +80,9 @@ def scope_target(card: Card, config: Config, scope: Scope) -> str | None:
 
 async def checked_target(rest: FluxerREST, config: Config, card: Card, scope: Scope, *,
                          failed_event: str = "play_now_failed") -> tuple[tuple[str, str] | None, str | None]:
-    """Home: the card's target channel as (channel id, community id), with the reason there is none: "no_channel" or
-    "unavailable". The verified channel the card links to, else PLAY_NOW_CHANNEL_ID, looked up over REST. A failed lookup
-    is logged under `failed_event`, with ids and the exception type only.
+    """Home: the card's target channel as (channel id, community id), with the reason there is none: "no_channel"
+    or "unavailable". The verified channel the card links to, else PLAY_NOW_CHANNEL_ID, looked up over REST. A failed
+    lookup is logged under `failed_event`, with ids and the exception type only.
     Subscription: (scope_target, sub.guild_id) with no REST call, since the channel was verified when it was set."""
     if scope.sub is not None:
         channel_id = scope_target(card, config, scope)

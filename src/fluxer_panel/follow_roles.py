@@ -101,20 +101,23 @@ def _role_ids(member: Mapping[str, Any]) -> frozenset[str]:
     return frozenset(str(r) for r in roles) if isinstance(roles, list) else frozenset()
 
 
-def _refused(card: Card, reason: str) -> ToggleResult:
-    log_event(log, "follow_refused", card_id=card.id, reason=reason)
+def _refused(card: Card, reason: str, sub_id: int | None) -> ToggleResult:
+    log_event(log, "follow_refused", card_id=card.id, sub_id=sub_id, reason=reason)
     return ToggleResult(Toggle.UNAVAILABLE, reason)
 
 
 async def toggle_follow(deps: FollowDeps, guild_id: str, user_id: str, card: Card, *,
-                        member_role_ids: frozenset[str] | None) -> ToggleResult:
-    # 1. Fresh allowlist and stored role. Nothing from the event or the card snapshot reaches the REST call.
-    stored, allow = await deps.db.run(lambda c: (cards.get_follow_role(c, card.id), cards.follow_role_ids(c)))
-    if stored is None or stored.role_id not in allow or stored.guild_id != guild_id or card.follow_role != stored:
-        return _refused(card, "not_allowlisted")
+                        member_role_ids: frozenset[str] | None, sub_id: int | None = None) -> ToggleResult:
+    """Toggles the follow role of the card (sub_id None) or of one subscription, in the community `guild_id`."""
+    # 1. Fresh allowlist and stored role. Nothing from the event or the card snapshot reaches the REST call. The card's
+    # snapshot is checked only for the card's own role: a subscription's role is not on the card.
+    stored, allow = await deps.db.run(lambda c: (_stored(c, RoleTarget(card, sub_id)), cards.follow_role_ids(c)))
+    if (stored is None or stored.role_id not in allow or stored.guild_id != guild_id
+            or (sub_id is None and card.follow_role != stored)):
+        return _refused(card, "not_allowlisted", sub_id)
     bot_id = deps.identity.user_id
     if bot_id is None:
-        return _refused(card, "no_bot_id")
+        return _refused(card, "no_bot_id", sub_id)
     role_id = stored.role_id
 
     # 2. Hierarchy against freshly fetched roles and the bot's own roles.
@@ -122,12 +125,12 @@ async def toggle_follow(deps: FollowDeps, guild_id: str, user_id: str, card: Car
     roles = await rest.get_roles(guild_id)
     target = next((r for r in roles if str(r.get("id")) == role_id), None)
     if target is None:
-        return _refused(card, "role_missing")
+        return _refused(card, "role_missing", sub_id)
     if not zero_permissions(target):
-        return _refused(card, "role_permissions")
+        return _refused(card, "role_permissions", sub_id)
     bot = await rest.get_member(guild_id, bot_id)
     if not manageable(target, roles, _role_ids(bot), guild_id):
-        return _refused(card, "hierarchy")
+        return _refused(card, "hierarchy", sub_id)
 
     # 3. The presser's current roles, from the event when it carries them.
     if member_role_ids is None:
@@ -143,9 +146,9 @@ async def toggle_follow(deps: FollowDeps, guild_id: str, user_id: str, card: Car
     except FluxerHTTPError as exc:
         if exc.status != 403:
             raise
-        return _refused(card, "forbidden")
+        return _refused(card, "forbidden", sub_id)
     outcome = Toggle.REMOVED if has else Toggle.ADDED
-    log_event(log, "follow_toggled", card_id=card.id, outcome=outcome.value, role_id=role_id)
+    log_event(log, "follow_toggled", card_id=card.id, sub_id=sub_id, outcome=outcome.value, role_id=role_id)
     return ToggleResult(outcome)
 
 

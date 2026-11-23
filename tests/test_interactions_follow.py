@@ -58,6 +58,12 @@ ROLE_PATH_2 = f"/api/v1/guilds/{GUILD}/members/{PRESSER_2}/roles/{ALPHA_ROLE}"
 ROLES_PATH = f"/api/v1/guilds/{GUILD}/roles"
 JUMP_URL = "https://fluxer.invalid"
 FORBIDDEN = b'{"code":"MISSING_PERMISSIONS","message":"no"}'
+FAR_LOCAL = "3004"       # a local copy's channel, in OTHER_GUILD
+LOCAL_MSG = "5007"
+SUB_ROLE = "7002"        # the local copy's own follow role, in OTHER_GUILD
+OTHER_EVERYONE = {"id": OTHER_GUILD, "name": "@everyone", "permissions": "0", "position": 0, "mentionable": False}
+SUB_DATA = {"id": SUB_ROLE, "name": "card_subscription_mc", "permissions": "0", "position": 5, "mentionable": True}
+SUB_PATH = f"/api/v1/guilds/{OTHER_GUILD}/members/{PRESSER}/roles/{SUB_ROLE}"
 
 
 class Clock:
@@ -105,6 +111,8 @@ async def fake(aiohttp_server):
     })
     state.roles = {GUILD: [dict(EVERYONE), dict(BOT_ROLE_DATA), dict(ALPHA_DATA)]}
     state.members = {(GUILD, BOT_ID): {"roles": [BOT_ROLE]}}
+    state.roles[OTHER_GUILD] = [dict(OTHER_EVERYONE), dict(BOT_ROLE_DATA), dict(SUB_DATA)]
+    state.members[(OTHER_GUILD, BOT_ID)] = {"roles": [BOT_ROLE]}
     server = await aiohttp_server(make_rest_app(state))
     return state, f"{str(server.make_url('/')).rstrip('/')}/api"
 
@@ -324,3 +332,66 @@ async def test_a_copy_elsewhere_with_no_card_message_gets_the_plain_text(harness
     assert dm_channel_texts(h.state, PRESSER) == [
         text.FOLLOW_ELSEWHERE_NO_LINK.format(card=render.escape(CARD_TITLE))]
     assert "](" not in dm_channel_texts(h.state, PRESSER)[0]
+
+
+# A local or both copy: its own community, its own follow role ----------------------------------------
+
+async def local_copy(h: Harness, mode: str = "local", role: str | None = SUB_ROLE) -> int:
+    def build(conn) -> int:
+        sub = subscriptions.add(conn, CARD_ID, OTHER_GUILD, FAR_LOCAL)
+        subscriptions.set_message(conn, CARD_ID, FAR_LOCAL, LOCAL_MSG, "a" * 64)
+        subscriptions.set_mode_if(conn, sub, "redirect", mode)
+        if role is not None:
+            cards.set_subscription_role(conn, sub, role)
+        return sub
+    return await h.db.run(build)
+
+
+def local_press(member_roles: frozenset[str] = frozenset(), user: str = PRESSER) -> events.ReactionAdd:
+    return follow_press(user, channel=FAR_LOCAL, message=LOCAL_MSG, guild=OTHER_GUILD, member_roles=member_roles)
+
+
+@pytest.mark.parametrize("mode", ["local", "both"])
+async def test_bell_on_a_scoped_copy_toggles_its_subscription_role_in_its_community(harness, mode: str) -> None:
+    h = await harness()
+    await local_copy(h, mode)
+    await h.presses.on_reaction(local_press())
+    assert role_writes(h.state) == [("PUT", SUB_PATH)]
+    assert dm_channel_texts(h.state, PRESSER) == [text.FOLLOW_ADDED.format(card=render.escape(CARD_TITLE))]
+    h.clock.now += 100   # the presser's window has passed
+    await h.presses.on_reaction(local_press(member_roles=frozenset({SUB_ROLE})))
+    assert role_writes(h.state) == [("PUT", SUB_PATH), ("DELETE", SUB_PATH)]
+    assert dm_channel_texts(h.state, PRESSER)[-1] == text.FOLLOW_REMOVED.format(card=render.escape(CARD_TITLE))
+
+
+async def test_bell_on_a_scoped_copy_never_names_the_home_role_or_the_games_community(harness) -> None:
+    h = await harness()
+    await local_copy(h)
+    await h.presses.on_reaction(local_press())
+    assert role_requests(h.state)
+    for request in h.state.requests:
+        assert ALPHA_ROLE not in request.path
+        assert f"/guilds/{GUILD}/" not in request.path
+
+
+async def test_bell_on_a_scoped_copy_with_no_stored_role_does_nothing(harness) -> None:
+    h = await harness()
+    await local_copy(h, role=None)
+    await h.presses.on_reaction(local_press())
+    assert role_requests(h.state) == []
+    assert dm_channel_texts(h.state, PRESSER) == []
+
+
+async def test_a_scoped_copy_admin_alert_is_keyed_apart_from_the_home_alert(harness) -> None:
+    h = await harness()
+    await local_copy(h)
+    forbid_adds(h.state)
+    h.state.overrides[f"PUT {SUB_PATH}"] = Override(403, FORBIDDEN)
+    await h.presses.on_reaction(local_press())
+    assert len(dm_channel_texts(h.state, ADMIN)) == 1
+    h.clock.now += 100
+    await h.presses.on_reaction(follow_press(user=PRESSER_2))   # the home card: its own alert
+    assert len(dm_channel_texts(h.state, ADMIN)) == 2
+    h.clock.now += 100
+    await h.presses.on_reaction(local_press(user=PRESSER_2))    # the scope's alert was already sent
+    assert len(dm_channel_texts(h.state, ADMIN)) == 2

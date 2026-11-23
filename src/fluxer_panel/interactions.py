@@ -160,8 +160,12 @@ class Interactions:
         if card is None or card.state != "live":
             return
         guild = await self._games_guild.get()
-        if not press.surface.home_community:
+        resolved = await self._db.run(lambda c: scope.resolve_scope(c, card, press.surface, guild))
+        if resolved is scope.ELSEWHERE:
             await self._follow_elsewhere(press.user_id, card, guild)
+            return
+        if resolved.sub is not None:
+            await self._follow_scope(press, card, resolved)
             return
         if guild is None:   # no games community to toggle in: nothing is changed
             await self._dm_presser(press.user_id, text.FOLLOW_UNAVAILABLE, card)
@@ -169,16 +173,31 @@ class Interactions:
         async with self._locks.get(card.id):
             result = await follow_roles.toggle_follow(self._follow_deps, guild, press.user_id, card,
                                                       member_role_ids=press.member_role_ids)
+        await self._follow_reply(press.user_id, card, result, sub_id=None)
+
+    async def _follow_scope(self, press: Press, card: Card, resolved: scope.Scope) -> None:
+        """A bell on a local or both copy: its subscription's role, in the subscription's community. With no stored role
+        the press does nothing, and nothing is said."""
+        if resolved.role is None or resolved.guild_id is None:
+            log_event(log, "press_ignored", card_id=card.id, sub_id=resolved.sub_id, reason="no_role")
+            return
+        async with self._locks.get(card.id):
+            result = await follow_roles.toggle_follow(self._follow_deps, resolved.guild_id, press.user_id, card,
+                                                      member_role_ids=press.member_role_ids, sub_id=resolved.sub_id)
+        await self._follow_reply(press.user_id, card, result, sub_id=resolved.sub_id)
+
+    async def _follow_reply(self, user_id: str, card: Card, result: follow_roles.ToggleResult,
+                            *, sub_id: int | None) -> None:
         if result.outcome is Toggle.ADDED:
-            await self._dm_presser(press.user_id, text.FOLLOW_ADDED, card)
+            await self._dm_presser(user_id, text.FOLLOW_ADDED, card)
         elif result.outcome is Toggle.REMOVED:
-            await self._dm_presser(press.user_id, text.FOLLOW_REMOVED, card)
+            await self._dm_presser(user_id, text.FOLLOW_REMOVED, card)
         else:
-            await self._dm_presser(press.user_id, text.FOLLOW_UNAVAILABLE, card)
+            await self._dm_presser(user_id, text.FOLLOW_UNAVAILABLE, card)
             # A card with no follow role was cleared on purpose: the press is unavailable, and nothing is wrong to report.
-            cleared = result.reason == "not_allowlisted" and card.follow_role is None
+            cleared = result.reason == "not_allowlisted" and card.follow_role is None and sub_id is None
             if result.reason is not None and result.reason != "no_bot_id" and not cleared:
-                await self._alert_admins_once(card, result.reason)
+                await self._alert_admins_once(card, result.reason, sub_id)
 
     async def _follow_elsewhere(self, user_id: str, card: Card, guild: str | None) -> None:
         """A copy outside the games community: no role call, only a DM that points at the card in the games channel."""
@@ -195,9 +214,10 @@ class Interactions:
         await notify.dm_user(self._rest, user_id, template.format(card=render.escape(card.title)),
                              backoff=self._backoff)
 
-    async def _alert_admins_once(self, card: Card, reason: str) -> None:
-        """One admin DM per card per reason. The mark is set before the send, so a failed DM is not retried by a press."""
-        key = (card.id, reason)
+    async def _alert_admins_once(self, card: Card, reason: str, sub_id: int | None) -> None:
+        """One admin DM per card, subscription and reason, so a scope's failure never hides the home alert or the
+        reverse. The mark is set before the send, so a failed DM is not retried by a press."""
+        key = (card.id, sub_id, reason)
         if key in self._follow_alerted:
             return
         self._follow_alerted.add(key)

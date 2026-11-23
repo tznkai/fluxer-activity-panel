@@ -751,3 +751,36 @@ async def test_sub_create_403_is_failed_and_stores_nothing(fake, deps, db) -> No
     assert result == EnsureResult(Ensured.FAILED, reason="create_failed")
     assert await sub_role(db, sub_id) is None
     assert requests_of(state, "PATCH", FAR_NEW_ROLE_PATH) == []
+
+
+# A subscription's own follow role ----------------------------------------------------------------------
+
+SUB_ROLE_PATH = f"/api/v1/guilds/{FAR}/members/{USER}/roles/7001"
+
+
+async def test_sub_toggle_adds_the_subscription_role_without_the_home_role(fake, deps, db) -> None:
+    state, _ = fake
+    add_far_community(state)
+    state.roles[FAR].append({"id": "7001", "name": "card_subscription_alpha", "permissions": "0", "position": 5,
+                             "mentionable": True})
+    card = await make_card(db)   # no home role at all
+    sub_id = await make_sub(db, card)
+    await db.run(lambda c: cards.set_subscription_role(c, sub_id, "7001"))
+
+    result = await toggle_follow(deps, FAR, USER, card, member_role_ids=frozenset(), sub_id=sub_id)
+
+    assert result == ToggleResult(Toggle.ADDED)
+    assert writes(state) == [("PUT", SUB_ROLE_PATH)]
+
+
+async def test_sub_toggle_with_a_role_stored_in_another_community_is_refused(fake, deps, db) -> None:
+    state, _ = fake
+    add_far_community(state)
+    card = await make_card(db)
+    sub_id = await make_sub(db, card)
+    await db.run(lambda c: cards.set_subscription_role(c, sub_id, "7001"))
+
+    result = await toggle_follow(deps, GUILD, USER, card, member_role_ids=frozenset(), sub_id=sub_id)
+
+    assert result == ToggleResult(Toggle.UNAVAILABLE, "not_allowlisted")
+    assert writes(state) == []
