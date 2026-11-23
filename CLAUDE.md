@@ -202,7 +202,8 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   reposts the copy. `!card subscribe` on a paused channel resumes it, which clears a 403 pause; `!card unsubscribe`
   clears a channel-gone pause. `!card archive` first ends every scope, the card's own and each local or both copy's,
   and any object a copy left behind when it became `redirect`, under the card lock: it cancels every upcoming session
-  of the card in one `cancel_card_sessions_locked` call, every scope included (their messages are edited and their
+  of the card in one `cancel_card_sessions_locked` call, every scope included, and clears every weekly series of the
+  card, ended occurrences included (their successors would still post). Their messages are edited and their
   attendees DMed); it closes every open poll of the card with no winner (`polls.open_for_card_any`, one
   `close_locked(..., outcome_override="none")` per poll in `_close_open_polls_locked`; a failed close is logged as
   `poll_archive_failed` and the archive goes on); and it expires every live play-now post of every scope
@@ -259,7 +260,9 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   (`sessions.check_caps`), so a full home scope never blocks a subscription's scope. A scope has one open poll at a time
   (`polls_open_once`).
 - Leaving a scope (a mode change away from `local` or `both`, or unsubscribe) goes through `scope_cleanup`: it ends the
-  scope's upcoming sessions and open poll, expires its play-now posts, and deletes its mirrors. Unsubscribe then deletes
+  scope's upcoming sessions and open poll, clears every weekly series in the scope (ended occurrences included,
+  through `cancel_card_sessions_locked`), expires its play-now posts, and deletes its mirrors. A series whose scope
+  no longer resolves (`scope.scope_of` is None) is cleared by `session_jobs._plan_tx` and posts nothing. Unsubscribe then deletes
   the scope's rows, so `scope_sub_id ... ON DELETE RESTRICT` never blocks it.
 
 ## Mirror rules

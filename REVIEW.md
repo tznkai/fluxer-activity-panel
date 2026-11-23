@@ -342,7 +342,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/rsvp.py:61` `newcomers = sorted(` — a new reaction is queued by the order it was added. A newcomer who finds the seats full joins the back of the waiting list.
 - `src/fluxer_panel/rsvp.py:69` `while waiting and (seats is None or len(going) < seats):` — the promotion loop fills free seats from the front of the waiting list.
 - `src/fluxer_panel/rsvp.py:72` `if state[u] == "waiting":` — `promoted` lists only users who were waiting before this run. A newcomer who takes a free seat is not reported as promoted.
-- `src/fluxer_panel/sessions.py:345` `DELETE FROM rsvp_reaction WHERE session_id` — a user's first real reaction replaces their implicit row (the proposer's going, or a poll voter's maybe), so both rows never coexist.
+- `src/fluxer_panel/sessions.py:359` `DELETE FROM rsvp_reaction WHERE session_id` — a user's first real reaction replaces their implicit row (the proposer's going, or a poll voter's maybe), so both rows never coexist.
 - `src/fluxer_panel/session_post.py:264` `async def dm_promoted(` — one promotion DM per promoted user. It bypasses the DM backoff.
 
 ## Session channel guard
@@ -351,7 +351,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/session_post.py:57` `raise GamesChannelRefused` — the refusal for a session post.
 - `src/fluxer_panel/session_post.py:90` `if session.channel_id == self._config.games_channel_id:` — `edit_session` makes the same check against the session's stored channel.
 - `src/fluxer_panel/session_post.py:91` `raise GamesChannelRefused` — the refusal for a session edit.
-- `src/fluxer_panel/session_jobs.py:254` `send_session(session.channel_id, payload)` — a recurrence posts the next occurrence to the session's own channel, which the guard above keeps out of the games channel.
+- `src/fluxer_panel/session_jobs.py:257` `send_session(session.channel_id, payload)` — a recurrence posts the next occurrence to the session's own channel, which the guard above keeps out of the games channel.
 - `src/fluxer_panel/mirror_post.py:163` `if channel_id == self._config.games_channel_id:` — `MirrorPost` checks the games channel before any post, edit or delete of a mirror, so a mirror never reaches the games community's channel.
 
 ## Mirror links and mentions
@@ -364,7 +364,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/poll_post.py:100` `None if poll.session_id is None else session_jump(conn, poll.session_id, row.sub_id)` — each poll mirror's session link is its own copy's session mirror, or plain text: never the home session (AC3.6).
 - `src/fluxer_panel/session_post.py:33` `via = sessions.presence_via(conn, session.id, user_id)` — a session DM links a far user's own mirror, and the home message only for a user with no far origin.
 - `src/fluxer_panel/poll_flow.py:556` `if sub_id is None:` — the scheduled DM links the home session only to a home voter; a far voter gets their mirror, or no link.
-- `src/fluxer_panel/sessions.py:510` `mirror = mirrors.get(conn, "session", home.id, sub.id)` — a both copy's next-session line shows the home session with its mirror's jump in this copy, never the home message.
+- `src/fluxer_panel/sessions.py:524` `mirror = mirrors.get(conn, "session", home.id, sub.id)` — a both copy's next-session line shows the home session with its mirror's jump in this copy, never the home message.
 - `src/fluxer_panel/render.py:660` `if instance_url is not None and poll_jump is not None` — a ballot with no jump gets no link, in both the open and the closed form.
 - `src/fluxer_panel/mirrors.py:63` `WHERE EXISTS ` — a mirror row is stored only while its subscription is an active both copy, so a copy that left both cannot keep one.
 

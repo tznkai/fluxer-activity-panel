@@ -22,6 +22,7 @@ from fluxer_panel.card_commands import CardContext, CardLocks
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.dm_backoff import DmBackoff
+from fluxer_panel.dm_router import NonAdminLimiter
 from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.interactions import Interactions
 from fluxer_panel.pacer import ChannelPacer
@@ -29,6 +30,8 @@ from fluxer_panel.poll_close import PollCloser
 from fluxer_panel.poll_post import PollPost
 from fluxer_panel.seeding import Seeder
 from fluxer_panel.session_commands import SessionCommands
+from fluxer_panel.session_flow import SessionFlow
+from fluxer_panel.session_jobs import SessionJobs
 from fluxer_panel.session_post import SessionPost
 from fluxer_panel.sources.registry import build_sources
 from tests.fakes import FakeFluxerState, Override, make_rest_app
@@ -299,3 +302,86 @@ async def test_delete_scope_rows_scrubs_each_session_message_before_the_delete(w
     assert patches, "the scope's session message was not edited"
     assert all(LOCATION not in json.dumps(r.payload) for r in patches)
     assert await world.db.run(lambda c: sessions.list_for_scope(c, world.sub_id)) == []
+
+
+# A weekly series whose latest occurrence has ended, so the scope's cancel no longer reaches it ---------------------
+
+WEEKLY_MSG = "5501"
+DAY = 86400
+FAR_POSTS = f"/api/v1/channels/{FAR_CH}/messages"
+
+
+class _Tick:
+    """A clock the test moves by hand."""
+
+    def __init__(self, now: float) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _session_jobs(world: World, tick: _Tick) -> SessionJobs:
+    config = world.ctx.config
+    backoff = DmBackoff(config.dm_backoff_seconds, clock=tick)
+    flow = SessionFlow(db=world.db, rest=world.ctx.rest, config=config, locks=world.locks,
+                       session_post=world.session_post, games_guild=GamesGuild(world.ctx.rest, config),
+                       pacer=ChannelPacer(max_calls=1000), identity=BotIdentity(user_id=BOT), backoff=backoff,
+                       limiter=NonAdminLimiter(config, clock=tick), clock=tick)
+    return SessionJobs(db=world.db, rest=world.ctx.rest, config=config, locks=world.locks,
+                       session_post=world.session_post, session_flow=flow, status_of=lambda _card: None,
+                       clock=tick, backoff=backoff, kick=lambda: None)
+
+
+def _add_ended_weekly(conn: Any, world: World) -> int:
+    """A scope's weekly occurrence that has ended: the scope's end cancels only upcoming rows, so its series stays."""
+    session_id = sessions.add(conn, card_id=world.card_id, guild_id=FAR_GUILD, channel_id=FAR_CH,
+                              message_id=WEEKLY_MSG, starts_at=STARTS, ends_at=STARTS + 3600, proposer_id=PROPOSER,
+                              now=NOW, recurrence="weekly", scope_sub_id=world.sub_id)
+    assert sessions.end_if(conn, session_id, STARTS + 3600)
+    return session_id
+
+
+async def _recurrence(world: World, session_id: int) -> str | None:
+    session = await world.db.run(lambda c: sessions.get(c, session_id))
+    assert session is not None
+    return session.recurrence
+
+
+def _far_posts(world: World) -> list[Any]:
+    return [r for r in world.state.requests if r.method == "POST" and r.path == FAR_POSTS]
+
+
+async def test_ending_a_scope_stops_its_weekly_series_so_a_later_run_posts_nothing_in_the_old_channel(
+        world: World) -> None:
+    world.state.messages[(FAR_CH, WEEKLY_MSG)] = {"embeds": []}
+    weekly = await world.db.run(lambda c: _add_ended_weekly(c, world))
+    await end_scope(world)
+    await world.db.run(lambda c: subscriptions.set_mode_if(c, world.sub_id, "local", "redirect"))
+
+    tick = _Tick(float(STARTS + DAY))
+    await _session_jobs(world, tick).run()
+
+    assert _far_posts(world) == []
+    assert await _recurrence(world, weekly) is None
+
+
+async def test_a_series_whose_scope_no_longer_resolves_is_cleared_and_posts_nothing(world: World) -> None:
+    world.state.messages[(FAR_CH, WEEKLY_MSG)] = {"embeds": []}
+    weekly = await world.db.run(lambda c: _add_ended_weekly(c, world))
+    await world.db.run(lambda c: subscriptions.set_mode_if(c, world.sub_id, "local", "redirect"))
+
+    tick = _Tick(float(STARTS + DAY))
+    await _session_jobs(world, tick).run()
+
+    assert _far_posts(world) == []
+    assert await _recurrence(world, weekly) is None
+
+
+async def test_cancelling_every_scope_clears_the_series_of_an_ended_occurrence_too(world: World) -> None:
+    weekly = await world.db.run(lambda c: _add_ended_weekly(c, world))
+
+    async with world.locks.get(world.card_id):
+        await world.ctx.session_commands.cancel_card_sessions_locked(world.card_id, ADMIN)
+
+    assert await _recurrence(world, weekly) is None

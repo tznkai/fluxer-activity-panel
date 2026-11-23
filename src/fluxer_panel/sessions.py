@@ -309,6 +309,20 @@ def set_series_recurrence(conn: sqlite3.Connection, series_id: int, recurrence: 
     return cur.rowcount
 
 
+def clear_card_series(conn: sqlite3.Connection, card_id: int) -> int:
+    """Stops every weekly series of the card, whatever each occurrence's state: an ended occurrence still posts its
+    successor, so an upcoming-only cancel is not enough. Returns how many rows changed."""
+    cur = conn.execute("UPDATE sessions SET recurrence = NULL WHERE card_id = ? AND recurrence = 'weekly'", (card_id,))
+    return cur.rowcount
+
+
+def clear_scope_series(conn: sqlite3.Connection, card_id: int, scope_sub_id: int | None) -> int:
+    """Stops every weekly series of one scope of the card (None is the home scope), whatever each occurrence's state."""
+    cur = conn.execute("UPDATE sessions SET recurrence = NULL WHERE card_id = ? AND scope_sub_id IS ? "
+                       "AND recurrence = 'weekly'", (card_id, scope_sub_id))
+    return cur.rowcount
+
+
 def set_location_if(conn: sqlite3.Connection, session_id: int, text: str | None) -> bool:
     cur = conn.execute("UPDATE sessions SET location_text = ? WHERE id = ? AND state = 'upcoming'",
                        (text, session_id))

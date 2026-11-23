@@ -349,13 +349,16 @@ class SessionCommands:
             if card is None:
                 return []
             done: list[tuple[Session, Card]] = []
+            # The series stop with the cancel: an occurrence that has already ended is not upcoming, but its successor
+            # is still due, so every weekly series in the scope is cleared whatever each occurrence's state.
             if isinstance(scope, _AllScopes):
                 upcoming = sessions.upcoming_for_card(conn, card_id)
+                sessions.clear_card_series(conn, card_id)
             else:
                 upcoming = sessions.upcoming_for_scope(conn, card_id, scope)
+                sessions.clear_scope_series(conn, card_id, scope)
             for session in upcoming:
                 if sessions.cancel_if(conn, session.id, now):
-                    sessions.set_series_recurrence(conn, session.series_id, None)
                     done.append((session, card))
             return done
 

@@ -28,7 +28,7 @@ from zoneinfo import ZoneInfo
 
 from fluxer_client.ids import is_snowflake
 from fluxer_client.rest import FluxerREST
-from fluxer_panel import cards, notify, render, rsvp, session_time, sessions, text
+from fluxer_panel import cards, notify, render, rsvp, scope, session_time, sessions, text
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.cards import Card
 from fluxer_panel.config import Config
@@ -100,7 +100,10 @@ def _plan_tx(conn: Any, session_id: int, now: int, zone: ZoneInfo) -> _Plan | No
     if card is None or card.state != "live":
         sessions.set_series_recurrence(conn, session.series_id, None)
         return None
-    start = session_time.next_weekly(datetime.fromtimestamp(session.starts_at, zone), tz=zone,
+    if scope.scope_of(conn, card, session.scope_sub_id) is None:   # the scope is gone, paused or no longer a scope
+        sessions.set_series_recurrence(conn, session.series_id, None)
+        return None
+    start =session_time.next_weekly(datetime.fromtimestamp(session.starts_at, zone), tz=zone,
                                      now=datetime.fromtimestamp(now, zone))
     starts = int(start.timestamp())
     ends = starts + (session.ends_at - session.starts_at)
