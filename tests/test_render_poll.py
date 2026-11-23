@@ -73,7 +73,8 @@ def test_ballot_shows_the_first_ballot_size_options_then_a_link_to_the_rest() ->
     options = options_at(8)
     votes = (Vote("1002", options[0].id, None), Vote("1003", options[0].id, None))
     view = make_view(options=options, votes=votes, poll=make_poll(ballot_size=6))
-    content = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL, poll_jump=home_jump(view))["content"]
+    content = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL,
+                                        poll_jump=home_jump(view))["content"]
     lines = lines_of(content)
     assert f"a. <t:{options[0].starts_at}:F> (2 votes)" in lines
     assert f"b. <t:{options[1].starts_at}:F> (0 votes)" in lines
@@ -84,7 +85,8 @@ def test_ballot_shows_the_first_ballot_size_options_then_a_link_to_the_rest() ->
 
 def test_ballot_has_no_more_line_when_every_option_fits() -> None:
     view = make_view(options=options_at(6), poll=make_poll(ballot_size=6))
-    content = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL, poll_jump=home_jump(view))["content"]
+    content = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL,
+                                        poll_jump=home_jump(view))["content"]
     assert "more options" not in content
 
 
@@ -101,7 +103,8 @@ def test_runoff_ballot_counts_only_first_choices() -> None:
     poll = make_poll(kind="runoff", parent_poll_id=1)
     votes = (Vote("1002", options[1].id, 1), Vote("1002", options[0].id, 2), Vote("1003", options[0].id, 1))
     view = make_view(options=options, votes=votes, poll=poll)
-    content = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL, poll_jump=home_jump(view))["content"]
+    content = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL,
+                                        poll_jump=home_jump(view))["content"]
     lines = lines_of(content)
     assert f"a. <t:{options[0].starts_at}:F> (1 vote)" in lines
     assert f"b. <t:{options[1].starts_at}:F> (1 vote)" in lines
@@ -111,7 +114,8 @@ def test_runoff_ballot_counts_only_first_choices() -> None:
 
 def test_approval_ballot_carries_every_instruction() -> None:
     view = make_view(options=options_at(3))
-    content = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL, poll_jump=home_jump(view))["content"]
+    content = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL,
+                                        poll_jump=home_jump(view))["content"]
     assert "Pick by letter, like `a, c`." in content
     assert "`sat 14:00`" in content
     assert "`2026-11-14 14:00`" in content
@@ -124,7 +128,8 @@ def test_approval_ballot_carries_every_instruction() -> None:
 
 def test_runoff_ballot_omits_the_own_time_line_and_all_and_says_favourite_first() -> None:
     view = make_view(options=options_at(3), poll=make_poll(kind="runoff", parent_poll_id=1))
-    content = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL, poll_jump=home_jump(view))["content"]
+    content = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL,
+                                        poll_jump=home_jump(view))["content"]
     assert "favourite first" in content
     assert "`b, a, c`" in content
     assert "Each reply replaces your earlier answer." in content
@@ -137,7 +142,8 @@ def test_ballot_shows_the_voters_own_picks_and_the_relettered_note() -> None:
     options = options_at(3)
     votes = (Vote("1004", options[2].id, None), Vote("1004", options[0].id, None), Vote("1002", options[1].id, None))
     view = make_view(options=options, votes=votes, poll=make_poll(sorted_at=NOW))
-    content = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL, poll_jump=home_jump(view))["content"]
+    content = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL,
+                                        poll_jump=home_jump(view))["content"]
     assert "Your picks: a, c" in content
     assert f"Options were re-lettered <t:{NOW}:R>." in content
     assert f"Closes <t:{CLOSES}:F> (<t:{CLOSES}:R>)." in content
@@ -145,27 +151,31 @@ def test_ballot_shows_the_voters_own_picks_and_the_relettered_note() -> None:
 
 def test_ballot_says_when_the_voter_has_not_answered() -> None:
     view = make_view(options=options_at(3))
-    content = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL, poll_jump=home_jump(view))["content"]
+    content = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL,
+                                        poll_jump=home_jump(view))["content"]
     assert "You haven't answered yet." in content
 
 
 def test_closed_ballot_says_the_poll_is_closed_with_a_link() -> None:
     view = make_view(options=options_at(3), poll=make_poll(state="closed", closed_at=NOW, outcome="none"))
-    content = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL, poll_jump=home_jump(view))["content"]
+    content = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL,
+                                        poll_jump=home_jump(view))["content"]
     assert "This poll is closed: [Open the poll](https://fluxer.invalid/channels/2001/2002/5001)" in content
     assert "`all`" not in content
 
 
 def test_removed_ballot_says_the_poll_was_removed() -> None:
     view = make_view(options=options_at(3), poll=make_poll(state="closed", closed_at=NOW, outcome="removed"))
-    content = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL, poll_jump=home_jump(view))["content"]
+    content = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL,
+                                        poll_jump=home_jump(view))["content"]
     assert content == text.POLL_BALLOT_REMOVED
 
 
 def test_a_hostile_title_is_escaped_and_the_ballot_stays_within_its_limit() -> None:
     title = "@everyone <@1> " * 40
     view = make_view(options=options_at(702), poll=make_poll(ballot_size=20), title=title)
-    payload = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL, poll_jump=home_jump(view))
+    payload = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL,
+                                        poll_jump=home_jump(view))
     assert "@everyone" not in payload["content"]
     assert "<@1>" not in payload["content"]
     assert render.units(payload["content"]) <= render.POLL_BALLOT_LIMIT
@@ -175,7 +185,8 @@ def test_a_full_ballot_of_long_picks_stays_within_its_limit_and_keeps_the_instru
     options = options_at(702)
     votes = tuple(Vote("1004", option.id, None) for option in options)
     view = make_view(options=options, votes=votes, poll=make_poll(ballot_size=20))
-    content = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL, poll_jump=home_jump(view))["content"]
+    content = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL,
+                                        poll_jump=home_jump(view))["content"]
     assert render.units(content) <= render.POLL_BALLOT_LIMIT
     assert "Each reply replaces your earlier answer." in content
 
@@ -247,7 +258,8 @@ def test_a_ballot_heading_names_its_poll_number() -> None:
 
 def test_a_runoff_ballot_heading_names_its_poll_number() -> None:
     view = make_view(options=options_at(3), poll=make_poll(kind="runoff", parent_poll_id=3))
-    content = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL, poll_jump=home_jump(view))["content"]
+    content = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL,
+                                        poll_jump=home_jump(view))["content"]
     assert content.splitlines()[0] == "Runoff 7 for Lobby."
 
 
@@ -329,7 +341,8 @@ def test_a_closed_message_links_the_session_when_there_is_one_and_an_instance_ur
 def test_both_renderers_send_empty_allowed_mentions() -> None:
     view = make_view()
     message = render.render_poll_message(view, instance_url=URL)
-    ballot = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL, poll_jump=home_jump(view))
+    ballot = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL,
+                                       poll_jump=home_jump(view))
     assert message["allowed_mentions"] == {"parse": []}
     assert ballot["allowed_mentions"] == {"parse": []}
 
@@ -337,7 +350,8 @@ def test_both_renderers_send_empty_allowed_mentions() -> None:
 def test_a_hostile_title_is_neutralised_in_the_message_and_the_ballot() -> None:
     view = make_view(title="@everyone <@1>")
     message = render.render_poll_message(view, instance_url=URL)
-    ballot = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL, poll_jump=home_jump(view))
+    ballot = render.render_poll_ballot(view, user_id="1004", zone_name=ZONE, instance_url=URL,
+                                       poll_jump=home_jump(view))
     for payload in (message, ballot):
         dumped = json.dumps(payload)
         assert "@everyone" not in dumped
