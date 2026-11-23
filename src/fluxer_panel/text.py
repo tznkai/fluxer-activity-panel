@@ -86,7 +86,8 @@ HELP_COMMANDS = (
     "!card list: every card, by sort order\n"
     "!card publish <slug>: make the card live\n"
     "!card archive <slug>: remove the posted message and keep the card\n"
-    "!card subscribe <slug> <channel>: post a copy of the card in another text channel\n"
+    "!card subscribe <slug> <channel> [mode=redirect|local|both] [channel=<channel>] [role=<role id>]: post a copy "
+    "of the card in another text channel, or run its sessions and polls there\n"
     "!card unsubscribe <slug> <channel>: remove that copy and stop posting there\n"
     "!card interactions on|off [slug]: turn the reaction taps on or off, for every card or for one\n"
     "!card help fields: each field, its format and its limits\n"
@@ -215,6 +216,11 @@ SUBSCRIPTION_ROLE_REASON = {
     "no_bot_id": "Try again in a moment.",
 }
 SUBSCRIPTIONS_HEADING = "Subscribed channels:"
+# `!card show` lines: the mode after each channel, and for a local or both copy the channel it posts in and its role.
+SUBSCRIPTION_LINE_MODE = " · {mode}"
+SUBSCRIPTION_LINE_SCOPE = " · posts in <#{channel_id}> · {role}"
+SUBSCRIPTION_LINE_ROLE = "role <@&{role_id}>"
+SUBSCRIPTION_LINE_NO_ROLE = "no follow role"
 SUBSCRIPTION_PAUSED_SUFFIX = " (paused)"
 # The two pause alerts take the card's slug (a-z, 0-9 and -) and the channel, shown as a mention. No other card text.
 SUBSCRIPTION_PAUSED_ALERT = ("Heads up: Fluxer refused the bot's post of card {slug} in <#{channel_id}>, so that copy is "

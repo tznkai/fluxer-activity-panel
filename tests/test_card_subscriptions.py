@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
+from typing import Any
 
 import aiohttp
 import pytest
@@ -602,7 +603,8 @@ async def test_show_lists_the_subscribed_channels_with_paused_marked(world: Worl
     await world.run("!card show mc")
     listing = world.payloads()[-1]
     assert listing["content"] == (text.SUBSCRIPTIONS_HEADING + "\n"
-                                  f"<#{CHANNELS[0]}>\n<#{CHANNELS[1]}>{text.SUBSCRIPTION_PAUSED_SUFFIX}")
+                                  f"<#{CHANNELS[0]}> · redirect\n"
+                                  f"<#{CHANNELS[1]}>{text.SUBSCRIPTION_PAUSED_SUFFIX} · redirect")
     assert listing["allowed_mentions"] == {"parse": []}
 
 
@@ -619,8 +621,11 @@ def test_every_subcommand_is_named_in_the_help() -> None:
 
 
 def test_the_help_lists_subscribe_and_unsubscribe_with_their_arguments() -> None:
-    assert "!card subscribe <slug> <channel>:" in text.HELP_COMMANDS
     assert "!card unsubscribe <slug> <channel>:" in text.HELP_COMMANDS
+    (subscribe_line,) = [line for line in text.HELP_COMMANDS.splitlines() if line.startswith("!card subscribe ")]
+    assert "<slug> <channel>" in subscribe_line
+    for option in ("mode=", "channel=", "role="):
+        assert option in subscribe_line
 
 
 async def test_subscribe_and_unsubscribe_are_logged_under_their_own_command_names(
@@ -664,6 +669,7 @@ FAR_COPY = "2201"
 FAR_LOCAL = "2202"
 FAR_VOICE = "2203"
 OTHER_CH = "2204"   # a text channel of OTHER_GUILD, a community the card's copy is not in
+FAR_SECOND = "2205"  # a second text channel of FAR, for a both copy
 
 
 @pytest.fixture
@@ -681,6 +687,7 @@ async def far_world(db, fake, session) -> World:
     state.channels[FAR_LOCAL] = {"id": FAR_LOCAL, "type": 0, "guild_id": FAR, "name": "local"}
     state.channels[FAR_VOICE] = {"id": FAR_VOICE, "type": 2, "guild_id": FAR, "name": "voice"}
     state.channels[OTHER_CH] = {"id": OTHER_CH, "type": 0, "guild_id": OTHER_GUILD, "name": "elsewhere"}
+    state.channels[FAR_SECOND] = {"id": FAR_SECOND, "type": 0, "guild_id": FAR, "name": "second"}
     world = await build(db, state, base, session, GAMES_CHANNEL_ID=GAMES_CHANNEL)
     world.ctx.games_guild = GamesGuild(world.rest, world.config)
     return world
@@ -804,3 +811,64 @@ async def test_channel_on_a_plain_redirect_row_is_refused_and_keeps_the_row(far_
     assert far_world.last_reply() == text.SUBSCRIPTION_NEEDS_SCOPE
     sub = await stored(far_world, card.id, FAR_COPY)
     assert sub is not None and (sub.mode, sub.local_channel_id) == ("redirect", None)
+
+
+# show: each subscription's mode, posting channel and follow role ---------------------------------------
+
+async def test_show_lists_each_subscriptions_mode_posting_channel_and_role(far_world: World) -> None:
+    card = await make_card(far_world)
+    await far_world.run(f"!card subscribe mc {GUILD} {CHANNELS[0]}")
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local channel={FAR_LOCAL}")
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_SECOND} mode=both")
+    sub = await stored(far_world, card.id, FAR_COPY)
+    assert sub is not None
+    await far_world.db.run(lambda c: cards.set_subscription_role(c, sub.id, "7001"))
+    far_world.clear_requests()
+    await far_world.run("!card show mc")
+    listing = far_world.payloads()[-1]
+    assert listing["content"] == "\n".join([
+        text.SUBSCRIPTIONS_HEADING,
+        f"<#{CHANNELS[0]}> · redirect",
+        f"<#{FAR_COPY}> · local · posts in <#{FAR_LOCAL}> · role <@&7001>",
+        f"<#{FAR_SECOND}> · both · posts in <#{FAR_SECOND}> · no follow role",
+    ])
+    assert listing["allowed_mentions"] == {"parse": []}
+
+
+async def test_show_marks_a_paused_scope_copy_and_keeps_its_mode(far_world: World) -> None:
+    card = await make_card(far_world)
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local")
+    await far_world.db.run(lambda c: subscriptions.pause(c, card.id, FAR_COPY))
+    await far_world.run("!card show mc")
+    assert far_world.payloads()[-1]["content"] == "\n".join([
+        text.SUBSCRIPTIONS_HEADING,
+        f"<#{FAR_COPY}>{text.SUBSCRIPTION_PAUSED_SUFFIX} · local · posts in <#{FAR_COPY}> · no follow role",
+    ])
+
+
+def long_scope_copy(card_id: int, n: int) -> Callable[[Any], None]:
+    """A paused both copy with a 19-digit local channel and role: one of the longest lines `!card show` can list."""
+    channel, role_id = f"3{n:018d}", f"4{n:018d}"
+
+    def add(conn: Any) -> None:
+        sub_id = subscriptions.add(conn, card_id, FAR, channel)
+        assert subscriptions.set_mode_if(conn, sub_id, "redirect", "both")
+        subscriptions.set_local_channel(conn, sub_id, channel)
+        cards.set_subscription_role(conn, sub_id, role_id)
+        subscriptions.pause(conn, card_id, channel)
+
+    return add
+
+
+async def test_show_splits_a_full_list_of_long_scope_lines_into_messages_under_the_limit(far_world: World) -> None:
+    card = await make_card(far_world)
+    for n in range(subscriptions.MAX_SUBSCRIPTIONS):
+        await far_world.db.run(long_scope_copy(card.id, n))
+    far_world.clear_requests()
+    await far_world.run("!card show mc")
+    embed, outside, *listing = [payload["content"] for payload in far_world.payloads()
+                                if payload.get("content") is not None]
+    assert len(listing) >= 2
+    assert all(render.units(content) < 2000 for content in listing)
+    assert listing[0].startswith(text.SUBSCRIPTIONS_HEADING)
+    assert sum(content.count("<#") for content in listing) == 2 * subscriptions.MAX_SUBSCRIPTIONS   # copy and channel

@@ -192,8 +192,8 @@ class SubOptions:
 
 def subscription_options(tokens: Sequence[str]) -> tuple[list[str], SubOptions] | None:
     """Splits the `key=value` tokens off a subscribe command. Returns the other tokens (the target) and the options, or
-    None when a token is an unknown key, a repeated key, an empty value, a mode that is not a subscription mode, or a role
-    that is not a snowflake. The target tokens are returned unchanged."""
+    None when a token is an unknown key, a repeated key, an empty value, a mode that is not a subscription mode, or a
+    role that is not a snowflake. The target tokens are returned unchanged."""
     rest: list[str] = []
     values: dict[str, str] = {}
     for token in tokens:

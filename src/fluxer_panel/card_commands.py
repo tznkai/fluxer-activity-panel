@@ -454,12 +454,29 @@ async def _show(event: MessageCreate, ctx: CardContext, rest: str) -> _Result:
                       PREVIEW_LIMIT - render.units(label) - 1)
     await _say(ctx, event, label + "\n" + body)
     # Only a card with subscriptions gets this message, so a card without them shows exactly what it always did.
-    subs = await ctx.db.run(lambda c: subscriptions.list_for_card(c, card.id))
+    subs, roles = await ctx.db.run(lambda c: _subscriptions_with_roles(c, card.id))
     if subs:
-        lines = [text.SUBSCRIPTIONS_HEADING]
-        lines += [f"<#{sub.channel_id}>" + (text.SUBSCRIPTION_PAUSED_SUFFIX if sub.paused else "") for sub in subs]
-        await _say(ctx, event, "\n".join(lines))
+        lines = [text.SUBSCRIPTIONS_HEADING] + [_subscription_line(sub, roles.get(sub.id)) for sub in subs]
+        for chunk in chunks(lines):   # a card with many copies can pass one message's limit
+            await _say(ctx, event, chunk)
     return _Result(card.id)
+
+
+def _subscriptions_with_roles(conn: Any, card_id: int) -> tuple[list[subscriptions.Subscription],
+                                                              dict[int, cards.FollowRole | None]]:
+    subs = subscriptions.list_for_card(conn, card_id)
+    return subs, {sub.id: cards.get_subscription_role(conn, sub.id) for sub in subs}
+
+
+def _subscription_line(sub: subscriptions.Subscription, role: cards.FollowRole | None) -> str:
+    """One channel of `!card show`: its mode, and for a local or both copy the channel it posts in and its role."""
+    line = f"<#{sub.channel_id}>" + (text.SUBSCRIPTION_PAUSED_SUFFIX if sub.paused else "")
+    line += text.SUBSCRIPTION_LINE_MODE.format(mode=sub.mode)
+    if sub.is_scope:
+        role_text = (text.SUBSCRIPTION_LINE_ROLE.format(role_id=role.role_id) if role is not None
+                     else text.SUBSCRIPTION_LINE_NO_ROLE)
+        line += text.SUBSCRIPTION_LINE_SCOPE.format(channel_id=sub.local_channel_id or sub.channel_id, role=role_text)
+    return line
 
 
 async def _list(event: MessageCreate, ctx: CardContext, rest: str) -> _Result:
@@ -794,7 +811,8 @@ async def _subscribe_locked(ctx: CardContext, card: cards.Card, actor: str, guil
         if local_channel is None:
             return refusal, None
     limit_reply = text.SUBSCRIPTION_LIMIT.format(limit=subscriptions.MAX_SUBSCRIPTIONS)
-    if existing is None and await ctx.db.run(lambda c: subscriptions.count(c, card.id)) >= subscriptions.MAX_SUBSCRIPTIONS:
+    count = await ctx.db.run(lambda c: subscriptions.count(c, card.id)) if existing is None else 0
+    if existing is None and count >= subscriptions.MAX_SUBSCRIPTIONS:
         return limit_reply, None
     if existing is None or existing.paused:
         link, reply = await _check_channel(ctx.rest, guild_id, channel_id, TEXT_CHANNEL_TYPE)
@@ -812,7 +830,7 @@ async def _subscribe_locked(ctx: CardContext, card: cards.Card, actor: str, guil
             if existing.paused:
                 await ctx.db.run(lambda c: subscriptions.resume(c, card.id, channel_id))
                 lines.append(text.SUBSCRIPTION_RESUMED)
-    except subscriptions.SubscriptionFull:  # defensive: the count above runs under this card's lock, so this cannot fire
+    except subscriptions.SubscriptionFull:  # defensive: the count above runs under the card's lock, so: cannot fire
         return limit_reply, None
     change: _ModeChange | None = None
     if opts.mode is not None and opts.mode != current_mode:
@@ -872,8 +890,8 @@ async def _role_step_for_sub(ctx: CardContext, card: cards.Card, guild_id: str, 
         return text.SUBSCRIPTION_ROLE_OK.format(role_id=res.role_id)
     if res.reason in ("taken", "duplicate_name"):
         return text.SUBSCRIPTION_ROLE_ASK
-    reason = text.SUBSCRIPTION_ROLE_REASON.get(res.reason or "lookup_failed", text.SUBSCRIPTION_ROLE_REASON["lookup_failed"])
-    return text.SUBSCRIPTION_ROLE_FAILED.format(reason=reason)
+    reasons = text.SUBSCRIPTION_ROLE_REASON
+    return text.SUBSCRIPTION_ROLE_FAILED.format(reason=reasons.get(res.reason or "lookup_failed", reasons["lookup_failed"]))
 
 
 def _mirrors_left_line(channels: tuple[str, ...]) -> str:

@@ -221,7 +221,26 @@ games channel.
   channel field. The bot must be in that community, and the channel must be a text channel there. A
   channel the bot cannot check gets the retry reply, and `GAMES_CHANNEL_ID` is refused, since the card
   is already posted there.
-- **Limit:** a card has at most five subscribed channels. A paused channel counts toward the five.
+- **Limit:** a card has at most twenty subscribed channels. A paused channel counts toward the twenty.
+- **Modes:** `mode=` sets what the channel does, and takes `redirect`, `local` or `both`. The default is `redirect`.
+  - `redirect`: the copy of the card, and nothing else. Its sessions, polls and play-now posts stay in the games
+    channel's community.
+  - `local`: the copy also runs its own sessions, polls and play-now posts. They are kept apart from the card's
+    (the home sessions and polls are not shown there). A local copy gets a follow role in its own community, so
+    members of that community can follow it with the bell. The role is created, or an unmanaged role with the
+    same name is adopted, and it must be mentionable, below the bot's top role, and have no permissions. A
+    second subscription of the same card in the same community clashes on that name, so it is refused with a
+    reply that asks for `role=<role id>`.
+  - `both`: `local`, and the home sessions and the open home poll are mirrored into the copy's channel as well.
+    Changing from `local` to `both` posts no mirrors straight away. Changing back from `both` to `local` deletes
+    them.
+- **Channel and role options:** `channel=<channel>` sets the channel a local or both copy posts in, as a link or
+  a channel id. The channel must be a text channel of the copy's community, and not the games channel. Without
+  it, the copy's own channel is used. `role=<role id>` gives the copy a follow role that already exists in its
+  community, in place of the one the bot would create. Both need `mode=local` or `mode=both`, and a refused
+  option changes nothing.
+- **Games community:** a copy in the games community always points at the card, so `local` and `both` are
+  refused there.
 - **Already subscribed:** subscribing an active channel again changes nothing and says so.
 - **Pause:** when Fluxer refuses a copy's post or edit with 403, or its post returns 404 (the channel is gone),
   that copy is paused and the bot stops posting and editing there. Each pause sends each admin one direct
@@ -243,7 +262,15 @@ games channel.
   already gone) stops the archive while the card is still live: the copies deleted before the stop are posted
   again by the next check, and the card's message stays in place, so running it again is safe. The
   subscriptions are kept. Publishing again posts every subscription that is not paused.
-- **Show:** `!card show` lists the subscribed channels, with "(paused)" after each paused one.
+- **Leaving a scope:** changing a copy from `local` or `both` back to `redirect` cancels its upcoming sessions (with
+  DMs to their attendees), closes its open poll with no winner, expires its play-now posts, and deletes its
+  mirrors. Its calendar and ballot-box reactions come off the copy. Its follow role is kept.
+- **Unsubscribe and scope history:** unsubscribing a copy that is `local` or `both` first ends its scope as above.
+  Then it deletes the scope's sessions, polls and play-now posts, scrubbing each session's location first, and
+  removes the subscription. A copy that was local and is now `redirect` is deleted the same way. Its follow role
+  is kept in Fluxer, since the bot never deletes a role.
+- **Show:** `!card show` lists each subscribed channel with its mode. A `local` or `both` copy also shows the
+  channel it posts in and its follow role (or "no follow role"). A paused channel is marked "(paused)".
 - **Rate:** each copy costs one send, or one edit, each time the card's content changes, and nothing
   when it does not. Each poll compares every copy's stored hash, but sends nothing for an unchanged copy.
   A card with five copies sends six messages in one burst. The poller does not throttle copies. Fluxer's
@@ -295,7 +322,9 @@ message. The board is laid out for the desktop and web clients. Phones show the 
                                            messages, each under 1900 UTF-16 code units
 !card publish <slug>                       draft or archived -> live
 !card archive <slug>                       deletes the message and every subscription copy, keeps the card
-!card subscribe <slug> <channel>           posts a copy of the card in another text channel
+!card subscribe <slug> <channel> [mode=redirect|local|both] [channel=<channel>] [role=<role id>]
+                                            posts a copy of the card in another text channel, and with
+                                            mode=local or both runs its own sessions and polls there
 !card unsubscribe <slug> <channel>         deletes that copy and stops posting there
 !card interactions on|off [slug]           turns the reaction taps off or on, for every card or for one
 !card help                                 the subcommands and the field names
