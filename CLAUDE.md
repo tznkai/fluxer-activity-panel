@@ -36,7 +36,8 @@ user-facing description, the purge status file format and the "Exit 3" recovery 
   subcommands), `resolver.py` (status from manager and probe results), `render.py` (embed, outside text and the
   summary board's payload), `text.py` (user-facing strings), `poller.py` (the single card poller, which also keeps
   the board and each card's subscription copies). The summary board's single-row store is `board.py`. Card
-  subscriptions (copies of a card in other text channels) are stored by `subscriptions.py`.
+  subscriptions (copies of a card in other text channels) are stored by `subscriptions.py`. The mirrors of home
+  sessions, polls and play-now posts in a `both` copy are stored by `mirrors.py`.
   Reactions: `presses.py` (filters, rate limits and removals for presses; the only module that knows presses are
   reactions), `interactions.py` (the press handler), `seeding.py` (adds and removes the bot's own reactions),
   `pacer.py` (the per-channel reaction budget), `games.py` (the games community lookup and the bot's identity),
