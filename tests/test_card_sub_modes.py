@@ -27,7 +27,7 @@ from fluxer_panel.presses import POLL_EMOJI, SESSION_EMOJI
 from fluxer_panel.seeding import Seeder
 from fluxer_panel.session_commands import SessionCommands
 from fluxer_panel.session_post import SessionPost
-from tests.fakes import FakeFluxerState, Override, make_rest_app
+from tests.fakes import FakeFluxerState, Override, make_rest_app, wait_until
 from tests.test_card_commands import World, build
 
 GAMES = "1101"
@@ -323,8 +323,30 @@ async def test_repeating_the_mode_after_a_failed_role_step_retries_it(modes_worl
     assert modes_world.last_reply().splitlines()[-1] == text.SUBSCRIPTION_ROLE_OK.format(role_id=NEW_ROLE)
 
 
+async def test_a_subscription_removed_while_its_role_step_waits_replies_that_it_has_no_follow_role(
+        modes_world: World) -> None:
+    card = await make_card(modes_world)
+    state = modes_world.state
+    gate_key = f"GET {ROLES}"
+    state.gates[gate_key] = asyncio.Event()
+    subscribe = asyncio.create_task(modes_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local"))
+    try:
+        await wait_until(lambda: gate_key in state.gated)
+        sub = await sub_of(modes_world, card.id)
+        assert sub is not None
+        assert await modes_world.db.run(lambda c: subscriptions.remove_by_id(c, sub.id))
+    finally:
+        state.gates[gate_key].set()
+    await asyncio.wait_for(subscribe, timeout=5)
+
+    assert modes_world.last_reply().splitlines()[-1] == text.SUBSCRIPTION_ROLE_GONE
+    assert await modes_world.db.run(lambda c: cards.get_subscription_role(c, sub.id)) is None
+
+
 async def test_a_subscription_removed_before_its_role_step_replies_that_it_has_no_follow_role(
         modes_world: World) -> None:
+    # Calls the private role step directly on purpose: it is the only way to check that no roles request is made when
+    # the row is already gone before the step starts. The public-path test above covers the reply.
     card = await make_card(modes_world)
     await modes_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local")
     sub = await sub_of(modes_world, card.id)

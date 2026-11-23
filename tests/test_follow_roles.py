@@ -586,7 +586,6 @@ async def test_set_refuses_a_role_another_card_already_follows(fake, deps, db) -
 FAR = "1002"
 FAR_CHANNEL = "1100"
 FAR_BOT_ROLE = "5050"
-FAR_CREATE_PATH = f"/api/v1/guilds/{FAR}/roles"
 FAR_NEW_ROLE_PATH = f"/api/v1/guilds/{FAR}/roles/7001"
 FAR_OTHER_ROLE = "6700"
 FAR_ROLES_PATH = f"/api/v1/guilds/{FAR}/roles"
@@ -617,7 +616,7 @@ async def test_sub_publish_creates_a_mentionable_role_in_its_community(fake, dep
     result = await ensure_follow_role(deps, FAR, card, sub_id=sub_id)
 
     assert result == EnsureResult(Ensured.CREATED, role_id="7001")
-    assert requests_of(state, "POST", FAR_CREATE_PATH)[0].payload["name"] == "card_subscription_alpha"
+    assert requests_of(state, "POST", FAR_ROLES_PATH)[0].payload["name"] == "card_subscription_alpha"
     assert requests_of(state, "PATCH", FAR_NEW_ROLE_PATH)[0].payload == {"mentionable": True}
     assert await sub_role(db, sub_id) == FollowRole(FAR, "7001")
     assert await stored(db, card) is None
@@ -635,7 +634,7 @@ async def test_sub_publish_adopts_a_same_named_role_in_its_community(fake, deps,
 
     assert result == EnsureResult(Ensured.ADOPTED, role_id="6400")
     assert await sub_role(db, sub_id) == FollowRole(FAR, "6400")
-    assert requests_of(state, "POST", FAR_CREATE_PATH) == []
+    assert requests_of(state, "POST", FAR_ROLES_PATH) == []
     assert await stored(db, card) is None
 
 
@@ -717,7 +716,7 @@ async def test_sub_role_step_for_a_removed_subscription_is_refused_before_any_re
 
     assert result == EnsureResult(Ensured.REFUSED, reason="missing_subscription")
     assert writes(state) == []
-    assert state.requests_to(f"/api/v1/guilds/{FAR}/roles") == []
+    assert state.requests_to(FAR_ROLES_PATH) == []
 
 
 async def test_subscription_removed_during_the_role_lookup_is_refused_and_stores_nothing(fake, deps, db) -> None:
@@ -743,7 +742,7 @@ async def test_subscription_removed_during_the_role_lookup_is_refused_and_stores
 async def test_sub_create_403_is_failed_and_stores_nothing(fake, deps, db) -> None:
     state, _ = fake
     add_far_community(state)
-    state.overrides[f"POST {FAR_CREATE_PATH}"] = Override(403, b'{"code":"MISSING_PERMISSIONS","message":"no"}')
+    state.overrides[f"POST {FAR_ROLES_PATH}"] = Override(403, b'{"code":"MISSING_PERMISSIONS","message":"no"}')
     card = await make_card(db, "alpha")
     sub_id = await make_sub(db, card)
 
