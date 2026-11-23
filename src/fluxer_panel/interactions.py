@@ -13,12 +13,15 @@ import itertools
 import logging
 import time
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from fluxer_client.ids import is_snowflake
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
 from fluxer_client.roles import RoleCache
-from fluxer_panel import cards, follow_roles, notify, play_now, render, rsvp, scope, sessions, subscriptions, text
+from fluxer_panel import (
+    cards, follow_roles, mirrors, notify, play_now, render, rsvp, scope, sessions, subscriptions, text,
+)
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.cards import Card
 from fluxer_panel.config import Config
@@ -47,6 +50,25 @@ MAX_REACTOR_PAGES = 20   # the most pages one count reads: at most 2000 reactors
 # The RSVP reactions the startup reconcile reads, with the choice each one stands for.
 _RSVP_READINGS: tuple[tuple[str, rsvp.Choice], ...] = (
     (rsvp.GOING_EMOJI, "going"), (rsvp.MAYBE_EMOJI, "maybe"), (rsvp.NO_EMOJI, "no"))
+_EMOJI_FOR: dict[rsvp.Choice, str] = {choice: emoji for emoji, choice in _RSVP_READINGS}
+
+
+@dataclass(frozen=True)
+class _Holds:
+    """Where a user still holds one RSVP emoji, on the messages other than the one a removal came from."""
+    home_holds: bool
+    mirror_subs: tuple[int, ...]   # the subscriptions whose mirror still holds it, ascending
+
+    @property
+    def elsewhere(self) -> bool:
+        return self.home_holds or bool(self.mirror_subs)
+
+    @property
+    def origin(self) -> int | None:
+        """Home wins: None when the home message holds it, else the smallest mirror subscription that does."""
+        if self.home_holds or not self.mirror_subs:
+            return None
+        return self.mirror_subs[0]
 
 
 def play_now_mentions(role_id: str | None) -> dict[str, Any]:
@@ -525,16 +547,23 @@ class Interactions:
         row_scope = await self._db.run(tx)
         return None if row_scope is None else _scope_role_in(row_scope, pn.guild_id)
 
-    async def rsvp_changed(self, session_id: int, user_id: str, choice: rsvp.Choice, added: bool) -> None:
-        """An RSVP reaction was added or removed on a session message. The presence row and the states change in one
-        transaction under the card's lock, and only while the session is upcoming (AC4.10). The message is then edited,
-        and each promoted user is DMed. RSVPs bypass the kill switch and the rate limits, and never kick the poller: the
-        card's count updates on its next scheduled tick. `user_id` is stored and never logged."""
+    async def rsvp_changed(self, session_id: int, user_id: str, choice: rsvp.Choice, added: bool, *,
+                           via_sub_id: int | None = None, message_id: str | None = None) -> None:
+        """An RSVP reaction was added or removed on a session message, the home message or a mirror (`via_sub_id` is the
+        mirror's subscription, None for home; `message_id` is the message the reaction came from). The presence row and
+        the states change in one transaction under the card's lock, and only while the session is upcoming (AC4.10). The
+        message is then edited, and each promoted user is DMed. A removal is rechecked before the lock: while the user
+        still holds the emoji on another message of the session, the removal is ignored and their origin moves to the
+        holder. A failed recheck keeps the RSVP. RSVPs bypass the kill switch and the rate limits, and never kick the
+        poller: the card's count updates on its next scheduled tick. `user_id` is stored and never logged."""
         if self._session_post is None:
             return
         found = await self._db.run(lambda c: sessions.get(c, session_id))
         if found is None:
             return
+        holds = None if added else await self._remove_recheck(found, user_id, choice, message_id)
+        if not added and holds is None:
+            return                                            # the recheck could not read: keep the RSVP
         now = int(self._clock())
 
         def tx(c: Any) -> tuple[Session, Card, rsvp.Outcome] | None:
@@ -544,7 +573,10 @@ class Interactions:
             card = cards.get_by_id(c, s.card_id)
             if card is None:
                 return None                                   # checked before any write, so no half-change commits
-            changed = (sessions.add_presence(c, s, user_id, choice, now) if added
+            if holds is not None and holds.elsewhere:
+                sessions.set_presence_via(c, session_id, user_id, holds.origin)   # an ignored remove: no count change
+                return None
+            changed = (sessions.add_presence(c, s, user_id, choice, now, via_sub_id=via_sub_id) if added
                        else sessions.remove_presence(c, session_id, user_id, choice))
             if not changed:
                 return None
@@ -561,6 +593,26 @@ class Interactions:
                   outcome="added" if added else "removed", count=len(outcome.promoted))
         await self._edit_session_coalesced(session, ticket)
         await self._session_post.dm_promoted(session, card, outcome.promoted)
+
+    async def _remove_recheck(self, session: Session, user_id: str, choice: rsvp.Choice,
+                              message_id: str | None) -> _Holds | None:
+        """Whether the user still holds this RSVP emoji on another message of the session: the home message or a mirror,
+        other than `message_id`, the message the removal came from. Only this one emoji is read, and nothing is read under
+        the card lock. None when a read fails, so the caller keeps the RSVP. Logs the reason key only."""
+        emoji = _EMOJI_FOR[choice]
+        mirror_rows = await self._db.run(lambda c: mirrors.for_object(c, "session", session.id))
+        try:
+            home = (session.message_id != message_id
+                    and user_id in await self._reactor_ids(session.channel_id, session.message_id, emoji))
+            subs: list[int] = []
+            for row in sorted(mirror_rows, key=lambda r: r.sub_id):
+                if row.message_id != message_id and user_id in await self._reactor_ids(
+                        row.channel_id, row.message_id, emoji):
+                    subs.append(row.sub_id)
+        except _ReactorsUnreadable as exc:
+            log_event(log, "rsvp_recheck_failed", level=logging.WARNING, session_id=session.id, **exc.fields)
+            return None
+        return _Holds(home_holds=home, mirror_subs=tuple(subs))
 
     async def _edit_session_coalesced(self, session: Session, ticket: int) -> None:
         """Edits the session message unless a newer RSVP change has already committed: that change's edit renders after
@@ -593,12 +645,18 @@ class Interactions:
                           **_failure_fields(exc))
 
     async def _reconcile_session(self, listed: Session) -> None:
+        try:
+            mirror_readings = await self._read_mirror_reactions(listed)   # before the card lock, as no reactor read is under it
+        except _ReactorsUnreadable as exc:
+            log_event(log, "session_reconcile_skipped", level=logging.WARNING, session_id=listed.id, **exc.fields)
+            return
         async with self._locks.get(listed.card_id):
             try:
-                readings = await self._read_reactions(listed)
+                home = await self._read_reactions(listed)
             except _ReactorsUnreadable as exc:
                 log_event(log, "session_reconcile_skipped", level=logging.WARNING, session_id=listed.id, **exc.fields)
                 return
+            readings, via = _merge_readings(home, mirror_readings)
             now = int(self._clock())
 
             def tx(c: Any) -> tuple[Session, Card, rsvp.Outcome | None] | None:
@@ -608,7 +666,7 @@ class Interactions:
                 card = cards.get_by_id(c, s.card_id)
                 if card is None:
                     return None
-                if not sessions.reconcile_presence(c, s, readings, now):
+                if not sessions.reconcile_presence(c, s, readings, now, via=via):
                     return s, card, None
                 return s, card, sessions.recompute(c, s, sessions.effective_seats(s, card), now)
 
@@ -628,12 +686,22 @@ class Interactions:
         await self._session_post.dm_promoted(session, card, outcome.promoted)
 
     async def _read_reactions(self, listed: Session) -> dict[rsvp.Choice, set[str]]:
-        """The reactors on each RSVP reaction of the session's message. Raises _ReactorsUnreadable if any list is not read in
-        full, so the caller can leave every row alone."""
+        """The reactors on each RSVP reaction of the session's home message. Raises _ReactorsUnreadable if any list is not
+        read in full, so the caller can leave every row alone."""
+        return await self._read_message_reactions(listed.channel_id, listed.message_id)
+
+    async def _read_message_reactions(self, channel_id: str, message_id: str) -> dict[rsvp.Choice, set[str]]:
         readings: dict[rsvp.Choice, set[str]] = {}
         for emoji, choice in _RSVP_READINGS:
-            readings[choice] = await self._reactor_ids(listed.channel_id, listed.message_id, emoji)
+            readings[choice] = await self._reactor_ids(channel_id, message_id, emoji)
         return readings
+
+    async def _read_mirror_reactions(self, listed: Session) -> list[tuple[int, dict[rsvp.Choice, set[str]]]]:
+        """The RSVP reactors on each mirror of the session, as (subscription id, readings). Raises _ReactorsUnreadable if
+        any mirror cannot be read in full, so the whole session is skipped, as for the home message."""
+        rows = await self._db.run(lambda c: mirrors.for_object(c, "session", listed.id))
+        return [(row.sub_id, await self._read_message_reactions(row.channel_id, row.message_id))
+                for row in sorted(rows, key=lambda r: r.sub_id)]
 
     async def _reactor_ids(self, channel_id: str, message_id: str, emoji: str) -> set[str]:
         """The non-bot users on one reaction of a message, paged the way `_count_playing` pages them: each page waits for
@@ -664,6 +732,24 @@ class Interactions:
                 raise _ReactorsUnreadable({"reason": "reactors_stalled"})
             after = cursor
         raise _ReactorsUnreadable({"reason": "reactors_truncated"})
+
+
+def _merge_readings(home: dict[rsvp.Choice, set[str]],
+                    mirror_readings: list[tuple[int, dict[rsvp.Choice, set[str]]]],
+                    ) -> tuple[dict[rsvp.Choice, set[str]], dict[str, int | None]]:
+    """The union of the home and mirror readings per choice, and each user's origin: None when the home message holds any
+    RSVP of theirs (home wins), else the smallest mirror subscription they reacted through."""
+    readings: dict[rsvp.Choice, set[str]] = {choice: set(users) for choice, users in home.items()}
+    origin: dict[str, int] = {}
+    for sub_id, per_choice in sorted(mirror_readings, key=lambda item: item[0]):
+        for choice, users in per_choice.items():
+            readings.setdefault(choice, set()).update(users)
+            for user_id in users:
+                origin.setdefault(user_id, sub_id)
+    home_users = {user_id for users in home.values() for user_id in users}
+    everyone = {user_id for users in readings.values() for user_id in users}
+    via: dict[str, int | None] = {user_id: None if user_id in home_users else origin[user_id] for user_id in everyone}
+    return readings, via
 
 
 class _ReactorsUnreadable(Exception):

@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
-from fluxer_panel import cards, mirrors, notify, render, rsvp, sessions, text
+from fluxer_panel import cards, mirrors, notify, render, rsvp, sessions, subscriptions, text
 from fluxer_panel.cards import Card
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
@@ -24,6 +24,20 @@ from fluxer_panel.rsvp import Counts
 from fluxer_panel.sessions import Session
 
 log = logging.getLogger(__name__)
+
+
+def session_link_for(conn: sqlite3.Connection, session: Session, user_id: str) -> tuple[str, str, str] | None:
+    """The (guild id, channel id, message id) a session DM to this user links to (decision 3). A home user, or anyone
+    with no far origin, gets the home message. A far user gets the mirror in the subscription they came through, in that
+    subscription's community. None when that mirror or subscription is gone, so the DM carries no link."""
+    via = sessions.presence_via(conn, session.id, user_id)
+    if via is None:
+        return session.guild_id, session.channel_id, session.message_id
+    mirror = mirrors.get(conn, "session", session.id, via)
+    sub = subscriptions.get_by_id(conn, via)
+    if mirror is None or sub is None:
+        return None
+    return sub.guild_id, mirror.channel_id, mirror.message_id
 
 
 class SessionPost:
@@ -62,9 +76,10 @@ class SessionPost:
 
         return await self._db.run(read)
 
-    async def edit_session(self, session_id: int, *, scrubbed: bool = False) -> None:
+    async def edit_session(self, session_id: int, *, scrubbed: bool = False, mirror_new: bool = True) -> None:
         """Edits the stored message in the session's own stored channel, rendering the session's state as it is in
-        the DB at send time. Raises FluxerHTTPError to the caller."""
+        the DB at send time. Then the mirrors (`sync_mirrors`). `mirror_new=False` is for a caller holding the card's lock:
+        it edits the mirrors that exist and posts none. Raises FluxerHTTPError to the caller."""
         async with self.edit_lock(session_id):
             loaded = await self._load(session_id)
             if loaded is None:
@@ -80,7 +95,7 @@ class SessionPost:
                 if exc.status == 404:
                     await self._note_gone(session_id)
                 raise
-            await self.sync_mirrors(session_id, scrubbed=scrubbed)
+            await self.sync_mirrors(session_id, scrubbed=scrubbed, mirror_new=mirror_new)
 
     def _render(self, card: Card, session: Session, counts: Counts, *, scrubbed: bool = False,
                 far: bool = False) -> dict[str, Any]:
@@ -93,19 +108,19 @@ class SessionPost:
             scrubbed=scrubbed, far=far,
         )
 
-    async def sync_mirrors(self, session_id: int, *, scrubbed: bool = False) -> None:
+    async def sync_mirrors(self, session_id: int, *, scrubbed: bool = False, mirror_new: bool = True) -> None:
         """Pushes the home session's current state into the mirror of every active both copy of its card (AC3.3). A
         no-op for a session that a both scope started (AC3.7) and when no MirrorPost is wired. A failure is logged and
         never raised: the home action that calls this has already happened."""
         if self._mirrors is None:
             return
         try:
-            await self._sync_mirrors(session_id, scrubbed=scrubbed)
+            await self._sync_mirrors(session_id, scrubbed=scrubbed, mirror_new=mirror_new)
         except Exception as exc:  # noqa: BLE001 - the mirrors are best effort; the home object is already right
             log_event(log, "mirror_sync_failed", level=logging.WARNING, session_id=session_id,
                       reason=type(exc).__name__)
 
-    async def _sync_mirrors(self, session_id: int, *, scrubbed: bool) -> None:
+    async def _sync_mirrors(self, session_id: int, *, scrubbed: bool, mirror_new: bool) -> None:
         assert self._mirrors is not None
         loaded = await self._load(session_id)
         if loaded is None:
@@ -117,6 +132,8 @@ class SessionPost:
         stored = await self._db.run(lambda c: {m.sub_id for m in mirrors.for_object(c, "session", session.id)})
         payload = self._render(card, session, counts, scrubbed=scrubbed, far=True)
         for sub, channel_id in targets:
+            if sub.id not in stored and not mirror_new:
+                continue
             message_id = await self._mirrors.sync(sub=sub, channel_id=channel_id, kind="session",
                                                   object_id=session.id, payload=payload)
             if message_id is not None and sub.id not in stored:
@@ -199,15 +216,36 @@ class SessionPost:
                 log_event(log, "mirror_scrub_failed", level=logging.WARNING, session_id=session_id, mirror_id=row.id,
                           reason=type(exc).__name__)
 
+    async def link_for(self, session: Session, user_id: str) -> str | None:
+        """The masked jump link a session DM to this user carries: the home message, or for a far user their mirror (see
+        `session_link_for`). None when there is no instance URL or no link to give."""
+        if not self._config.instance_url:
+            return None
+        jump = await self._db.run(lambda c: session_link_for(c, session, user_id))
+        if jump is None:
+            return None
+        return render.jump_link(text.SESSION_LINK_LABEL, self._config.instance_url, *jump)
+
+    async def dm_attendees_linked(self, session: Session, *, exclude: str | None,
+                                  content_for: Callable[[str | None], str]) -> int:
+        """Like `dm_attendees`, but each attendee's DM is built from the link it carries: `content_for` gets the user's
+        `link_for` (None when there is none). Bypasses the DM backoff (AC7.2). Returns how many DMs were attempted."""
+        attendees = await self._db.run(lambda c: sessions.attendees(c, session.id))
+        targets = [user_id for user_id in attendees if user_id != exclude]
+        for user_id in targets:
+            link = await self.link_for(session, user_id)
+            await notify.dm_user(self._rest, user_id, content_for(link), backoff=self._backoff, bypass=True)
+        return len(targets)
+
     async def dm_promoted(self, session: Session, card: Card, user_ids: list[str]) -> None:
-        """One promotion DM per user, in order, each with a jump link to the session's stored message. Shared by the RSVP
-        path, the reconcile and the seats command. A promotion DM never consults the DM backoff (AC7.2)."""
+        """One promotion DM per user, in order, each with the jump link its user is given (`link_for`): the home message,
+        or the mirror for a far user. Shared by the RSVP path, the reconcile and the seats command. A promotion DM never
+        consults the DM backoff (AC7.2)."""
         title = render.escape(card.title)
-        if self._config.instance_url:
-            link = render.jump_link(text.SESSION_LINK_LABEL, self._config.instance_url, session.guild_id,
-                                    session.channel_id, session.message_id)
-            content = text.SESSION_PROMOTED.format(card=title, link=link)
-        else:
-            content = text.SESSION_PROMOTED_NO_LINK.format(card=title)
         for user_id in user_ids:
+            link = await self.link_for(session, user_id)
+            if link is None:
+                content = text.SESSION_PROMOTED_NO_LINK.format(card=title)
+            else:
+                content = text.SESSION_PROMOTED.format(card=title, link=link)
             await notify.dm_user(self._rest, user_id, content, backoff=self._backoff, bypass=True)

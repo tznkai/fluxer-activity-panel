@@ -158,16 +158,10 @@ class SessionCommands:
             return await self._db.run(lambda conn: sessions.get_by_message(conn, message_id))
         return None
 
-    def _link(self, session: Session) -> str | None:
-        if not self._config.instance_url:
-            return None
-        return render.jump_link(text.SESSION_LINK_LABEL, self._config.instance_url, session.guild_id,
-                                session.channel_id, session.message_id)
-
-    async def _edit(self, session_id: int) -> None:
+    async def _edit(self, session_id: int, *, mirror_new: bool = True) -> None:
         """The message edit after a change. The change is already stored, so a failed edit is logged by type only."""
         try:
-            await self._session_post.edit_session(session_id)
+            await self._session_post.edit_session(session_id, mirror_new=mirror_new)
         except Exception as exc:  # noqa: BLE001 - the stored change stands; the message keeps its last good form
             log_event(log, "session_edit_failed", level=logging.WARNING, session_id=session_id,
                       reason=type(exc).__name__)
@@ -232,13 +226,14 @@ class SessionCommands:
         fresh, card = moved
         if not await self._edit_while_upcoming(session.id):
             return text.SESSION_NOT_UPCOMING, "not_upcoming"
-        link = self._link(fresh)
         title = render.escape(card.title)
-        if link is not None:
-            content = text.SESSION_MOVED_DM.format(card=title, ts=fresh.starts_at, link=link)
-        else:
-            content = text.SESSION_MOVED_DM_NO_LINK.format(card=title, ts=fresh.starts_at)
-        await self._session_post.dm_attendees(fresh, content, exclude=event.author_id)
+
+        def content_for(link: str | None) -> str:
+            if link is None:
+                return text.SESSION_MOVED_DM_NO_LINK.format(card=title, ts=fresh.starts_at)
+            return text.SESSION_MOVED_DM.format(card=title, ts=fresh.starts_at, link=link)
+
+        await self._session_post.dm_attendees_linked(fresh, exclude=event.author_id, content_for=content_for)
         self._kick()
         return text.SESSION_MOVE_DONE.format(n=session.id, ts=starts), "done"
 
@@ -365,7 +360,7 @@ class SessionCommands:
 
         cancelled = await self._db.run(cancel_all)
         for session, card in cancelled:
-            await self._edit(session.id)
+            await self._edit(session.id, mirror_new=False)   # the card's lock is held: no new mirror, no seed
             await self._session_post.dm_attendees(session, _cancelled_text(session, card), exclude=actor)
         log_event(log, "session_card_cancelled", card_id=card_id, count=len(cancelled))
         return len(cancelled)

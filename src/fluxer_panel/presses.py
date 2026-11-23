@@ -22,7 +22,9 @@ from typing import Literal, Protocol
 
 from fluxer_client import events
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
-from fluxer_panel import board, cards, interaction_settings, notify, play_now, polls, rsvp, sessions, subscriptions, text
+from fluxer_panel import (
+    board, cards, interaction_settings, mirrors, notify, play_now, polls, rsvp, sessions, subscriptions, text,
+)
 from fluxer_panel.subscriptions import Subscription
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
@@ -89,7 +91,8 @@ class Press:
 class PressHandler(Protocol):
     async def handle(self, press: Press) -> None: ...
     async def me_too_changed(self, card_id: int, surface: Surface, user_id: str) -> None: ...
-    async def rsvp_changed(self, session_id: int, user_id: str, choice: rsvp.Choice, added: bool) -> None: ...
+    async def rsvp_changed(self, session_id: int, user_id: str, choice: rsvp.Choice, added: bool, *,
+                           via_sub_id: int | None = None, message_id: str | None = None) -> None: ...
     async def poll_reaction(self, poll_id: int, user_id: str, emoji: str, channel_id: str,
                             message_id: str) -> None: ...
 
@@ -147,13 +150,17 @@ def _find_poll(conn, channel_id: str, message_id: str) -> int | None:
     return poll.id
 
 
-def _find_session(conn, channel_id: str, message_id: str) -> int | None:
-    """The id of the session whose message this is, when it is in this channel. The state is not checked here:
+def _find_session(conn, channel_id: str, message_id: str) -> tuple[int, int | None] | None:
+    """The session whose message this is, in this channel: its home message, or else one of its mirrors. Returns the
+    session id and the mirror's subscription (None for the home message). The state is not checked here:
     `Interactions.rsvp_changed` reads it under the card's lock."""
     session = sessions.get_by_message(conn, message_id)
-    if session is None or session.channel_id != channel_id:
-        return None
-    return session.id
+    if session is not None and session.channel_id == channel_id:
+        return session.id, None
+    mirror = mirrors.get_by_message_id(conn, message_id)
+    if mirror is not None and mirror.kind == "session" and mirror.channel_id == channel_id:
+        return mirror.object_id, mirror.sub_id
+    return None
 
 
 class Presses:
@@ -180,11 +187,13 @@ class Presses:
         # 1b. RSVP reactions on a session message are state, not presses: no kill switch, no rate limit, no removal.
         choice = rsvp.choice_for(event.emoji.name) if event.emoji.id is None else None
         if choice is not None:
-            session_id = await self._db.run(lambda c: _find_session(c, event.channel_id, event.message_id))
-            if session_id is not None:
+            found = await self._db.run(lambda c: _find_session(c, event.channel_id, event.message_id))
+            if found is not None:
+                session_id, via_sub_id = found
                 try:
                     await self._handler.rsvp_changed(session_id, event.user_id, choice,
-                                                     isinstance(event, events.ReactionAdd))
+                                                     isinstance(event, events.ReactionAdd),
+                                                     via_sub_id=via_sub_id, message_id=event.message_id)
                 except Exception as exc:  # noqa: BLE001 - a failed RSVP is logged, never raised into the gateway
                     log_event(log, "rsvp_failed", level=logging.WARNING, session_id=session_id,
                               reason=type(exc).__name__)

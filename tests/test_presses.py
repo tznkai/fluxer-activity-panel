@@ -101,7 +101,8 @@ class RecordingHandler:
     async def poll_reaction(self, poll_id: int, user_id: str, emoji: str, channel_id: str, message_id: str) -> None:
         self.poll_reactions.append((poll_id, user_id, emoji, channel_id, message_id))
 
-    async def rsvp_changed(self, session_id: int, user_id: str, choice: str, added: bool) -> None:
+    async def rsvp_changed(self, session_id: int, user_id: str, choice: str, added: bool, *,
+                           via_sub_id: int | None = None, message_id: str | None = None) -> None:
         self.rsvps.append((session_id, user_id, choice, added))
         if self.rsvp_fail:
             raise RuntimeError("the rsvp handler broke")

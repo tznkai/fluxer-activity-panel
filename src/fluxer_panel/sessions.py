@@ -10,7 +10,7 @@ expects, so a second command or a late event cannot undo a change that already h
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
@@ -376,13 +376,22 @@ def remove_presence(conn: sqlite3.Connection, session_id: int, user_id: str, cho
 RECONCILE_ORDER: tuple[rsvp.Choice, ...] = ("going", "maybe", "no")
 
 
-def reconcile_presence(conn: sqlite3.Connection, session: Session, actual: dict[rsvp.Choice, set[str]], now: int) -> bool:
-    """Makes the real (implicit = 0) presence rows match the reactions read from the message. A row whose reaction is
-    gone is deleted, and a reaction with no row is added. Each user who has any reaction on the message loses their
-    implicit row first (the proposer's going, or a voter's maybe), since it can share a key with a real row. Missing
+def set_presence_via(conn: sqlite3.Connection, session_id: int, user_id: str, via_sub_id: int | None) -> None:
+    """Sets where a user's real RSVP rows came from: None for the home message, else the mirror's subscription. Only the
+    startup reconcile and an ignored remove call it, so home always wins when the reconcile computes it."""
+    conn.execute("UPDATE rsvp_reaction SET via_sub_id = ? WHERE session_id = ? AND user_id = ? AND implicit = 0",
+                 (via_sub_id, session_id, user_id))
+
+
+def reconcile_presence(conn: sqlite3.Connection, session: Session, actual: dict[rsvp.Choice, set[str]], now: int,
+                       via: Mapping[str, int | None] | None = None) -> bool:
+    """Makes the real (implicit = 0) presence rows match the reactions read from the message and its mirrors. A row whose
+    reaction is gone is deleted, and a reaction with no row is added. Each user who has any reaction on the message loses
+    their implicit row first (the proposer's going, or a voter's maybe), since it can share a key with a real row. Missing
     rows go in the fixed order going, maybe, no, and ascending user id within a choice, so the seqs are deterministic.
+    `via` gives each user's origin (None for home): new rows take it, and the rows of users still reacting are set to it.
     The order in which reactions were made while the bot was down is unknown, so this order is accepted. Returns
-    whether anything changed."""
+    whether a row changed (an origin change alone is not a change to the roster)."""
     changed = False
     for user_id in sorted({user for users in actual.values() for user in users}, key=int):
         cur = conn.execute("DELETE FROM rsvp_reaction WHERE session_id = ? AND user_id = ? AND implicit = 1",
@@ -396,8 +405,12 @@ def reconcile_presence(conn: sqlite3.Connection, session: Session, actual: dict[
             changed = True
     for choice in RECONCILE_ORDER:
         for user_id in sorted(actual.get(choice, set()), key=int):
-            if add_presence(conn, session, user_id, choice, now):
+            origin = None if via is None else via.get(user_id)
+            if add_presence(conn, session, user_id, choice, now, via_sub_id=origin):
                 changed = True
+    if via is not None:
+        for user_id in sorted({user for users in actual.values() for user in users}, key=int):
+            set_presence_via(conn, session.id, user_id, via.get(user_id))
     return changed
 
 

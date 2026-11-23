@@ -13,6 +13,8 @@ from typing import Any
 import aiohttp
 import pytest
 
+from fluxer_client import events
+from fluxer_client.roles import RoleCache
 from fluxer_client.rest import FluxerREST
 from fluxer_panel import cards, mirrors, rsvp, sessions, subscriptions
 from fluxer_panel.card_commands import CardLocks
@@ -21,11 +23,15 @@ from fluxer_panel.db import Database
 from fluxer_panel.dm_backoff import DmBackoff
 from fluxer_panel.dm_router import NonAdminLimiter
 from fluxer_panel.games import BotIdentity, GamesGuild
+from fluxer_panel.interactions import Interactions
 from fluxer_panel.mirror_post import MirrorPost
 from fluxer_panel.pacer import ChannelPacer
+from fluxer_panel.presses import Presses
+from fluxer_panel.seeding import Seeder
+from fluxer_panel.session_commands import SessionCommands
 from fluxer_panel.session_flow import SessionFlow
 from fluxer_panel.session_post import SessionPost
-from tests.fakes import FakeFluxerState, make_rest_app
+from tests.fakes import FakeFluxerState, Override, make_rest_app
 
 TOKEN = "session-mirror-token"
 ADMIN = "1001"
@@ -69,10 +75,20 @@ async def world(tmp_path: Path, aiohttp_server: Any) -> AsyncIterator[SimpleName
         mirror = MirrorPost(db=database, rest=rest, config=config)
         post = SessionPost(db=database, rest=rest, config=config, pacer=pacer, backoff=backoff, mirrors=mirror)
         games_guild = GamesGuild(rest, config)
-        flow = SessionFlow(db=database, rest=rest, config=config, locks=CardLocks(), session_post=post,
-                           games_guild=games_guild, pacer=pacer, identity=BotIdentity(user_id="1900"),
+        locks = CardLocks()
+        identity = BotIdentity(user_id="1900")
+        flow = SessionFlow(db=database, rest=rest, config=config, locks=locks, session_post=post,
+                           games_guild=games_guild, pacer=pacer, identity=identity,
                            backoff=backoff, limiter=NonAdminLimiter(config, clock=lambda: NOW),
                            clock=lambda: NOW, kick=lambda: None)
+        interactions = Interactions(db=database, rest=rest, config=config, locks=locks, games_guild=games_guild,
+                                    seeder=Seeder(rest=rest, pacer=pacer, db=database), pacer=pacer,
+                                    identity=identity, roles=RoleCache(rest), clock=lambda: NOW,
+                                    kick=lambda: None, session_post=post, backoff=backoff, session_flow=flow)
+        presses = Presses(db=database, rest=rest, config=config, handler=interactions, games_guild=games_guild,
+                          pacer=pacer, identity=identity, clock=lambda: NOW, backoff=backoff)
+        commands = SessionCommands(db=database, rest=rest, config=config, locks=locks, session_post=post,
+                                   clock=lambda: NOW)
 
         def build(conn: Any) -> dict[str, int]:
             card_id = cards.create_card(conn, slug="mc", title="Minecraft", author_id=ADMIN, now=1)
@@ -86,6 +102,8 @@ async def world(tmp_path: Path, aiohttp_server: Any) -> AsyncIterator[SimpleName
 
         ids = await database.run(build)
         yield SimpleNamespace(db=database, state=state, rest=rest, post=post, flow=flow, config=config,
+                              interactions=interactions, presses=presses, commands=commands, mirror=mirror,
+                              locks=locks,
                               **ids)
     database.close()
 
@@ -197,3 +215,200 @@ async def test_a_purge_scrub_patches_each_mirror_without_the_location(world: Sim
     assert LOCATION in str((await mirror_patches(world, world.sub_b, session_id))[-1].payload)
     await world.post.scrub(session)
     assert LOCATION not in str((await mirror_patches(world, world.sub_b, session_id))[-1].payload)
+
+
+# Task 4: RSVPs from mirrors count once in the home roster. A far user's DM links the mirror, never the home message.
+FAR_USER = "1201"
+OTHER_FAR_USER = "1202"
+QUIET_FAR_USER = "1203"
+
+
+def reaction(user_id: str, channel_id: str, message_id: str, *, added: bool = True) -> Any:
+    cls = events.ReactionAdd if added else events.ReactionRemove
+    return cls(user_id=user_id, channel_id=channel_id, message_id=message_id, guild_id=GAMES_GUILD,
+               emoji=events.Emoji(name=rsvp.GOING_EMOJI, id=None), member_role_ids=None)
+
+
+def set_going(world: SimpleNamespace, channel_id: str, message_id: str, users: list[str]) -> None:
+    """Puts the users' going reactions into the fake's state, as Fluxer would hold them after a real reaction."""
+    message = world.state.reactions.setdefault((channel_id, message_id), {})
+    if users:
+        message[rsvp.GOING_EMOJI] = list(users)
+    else:
+        message.pop(rsvp.GOING_EMOJI, None)
+        if not message:
+            world.state.reactions.pop((channel_id, message_id), None)
+
+
+async def mirror_message(world: SimpleNamespace, sub_id: int, session_id: int) -> str:
+    row = await mirror_row(world, sub_id, session_id)
+    assert row is not None
+    return row.message_id
+
+
+async def home_message(world: SimpleNamespace, session_id: int) -> str:
+    session = await world.db.run(lambda c: sessions.get(c, session_id))
+    assert session is not None and session.message_id is not None
+    return session.message_id
+
+
+async def going(world: SimpleNamespace, session_id: int) -> list[str]:
+    rows = await world.db.run(lambda c: sessions.rsvps_of(c, session_id))
+    return sorted(user for user, (state, _) in rows.items() if state == "going")
+
+
+async def origin(world: SimpleNamespace, session_id: int, user_id: str) -> int | None:
+    return await world.db.run(lambda c: sessions.presence_via(c, session_id, user_id))
+
+
+def dm_contents(world: SimpleNamespace, user_id: str) -> list[str]:
+    channel = world.state.dm_channels.get(user_id)
+    if channel is None:
+        return []
+    return [str(payload.get("content", "")) for (cid, _), payload in world.state.messages.items() if cid == channel]
+
+
+async def test_a_going_on_the_mirror_joins_the_home_roster_once(world: SimpleNamespace) -> None:
+    session_id = await publish(world)
+    mirror_id = await mirror_message(world, world.sub_b, session_id)
+    set_going(world, FAR_B, mirror_id, [FAR_USER])
+    await world.presses.on_reaction(reaction(FAR_USER, FAR_B, mirror_id))
+    assert await going(world, session_id) == sorted([PROPOSER, FAR_USER])
+    assert await origin(world, session_id, FAR_USER) == world.sub_b
+    assert len(requests(world, "PATCH", messages_path(FAR_B, mirror_id))) >= 1
+    counts = await world.db.run(lambda c: sessions.counts_of(c, session_id))
+    assert counts.going == 2
+
+
+async def test_a_user_on_the_home_and_the_mirror_is_counted_once_and_is_home(world: SimpleNamespace) -> None:
+    session_id = await publish(world)
+    home_id = await home_message(world, session_id)
+    mirror_id = await mirror_message(world, world.sub_b, session_id)
+    set_going(world, HOME, home_id, [FAR_USER])
+    set_going(world, FAR_B, mirror_id, [FAR_USER])
+    await world.presses.on_reaction(reaction(FAR_USER, HOME, home_id))
+    await world.presses.on_reaction(reaction(FAR_USER, FAR_B, mirror_id))
+    assert await going(world, session_id) == sorted([PROPOSER, FAR_USER])
+    assert await origin(world, session_id, FAR_USER) is None
+
+
+async def test_removing_the_mirror_reaction_keeps_a_home_reaction(world: SimpleNamespace) -> None:
+    session_id = await publish(world)
+    home_id = await home_message(world, session_id)
+    mirror_id = await mirror_message(world, world.sub_b, session_id)
+    set_going(world, HOME, home_id, [FAR_USER])
+    set_going(world, FAR_B, mirror_id, [FAR_USER])
+    await world.presses.on_reaction(reaction(FAR_USER, HOME, home_id))
+    await world.presses.on_reaction(reaction(FAR_USER, FAR_B, mirror_id))
+    set_going(world, FAR_B, mirror_id, [])
+    await world.presses.on_reaction(reaction(FAR_USER, FAR_B, mirror_id, added=False))
+    assert await going(world, session_id) == sorted([PROPOSER, FAR_USER])
+
+
+async def test_removing_from_both_messages_drops_the_rsvp(world: SimpleNamespace) -> None:
+    session_id = await publish(world)
+    mirror_id = await mirror_message(world, world.sub_b, session_id)
+    set_going(world, FAR_B, mirror_id, [FAR_USER])
+    await world.presses.on_reaction(reaction(FAR_USER, FAR_B, mirror_id))
+    set_going(world, FAR_B, mirror_id, [])
+    await world.presses.on_reaction(reaction(FAR_USER, FAR_B, mirror_id, added=False))
+    assert await going(world, session_id) == [PROPOSER]
+
+
+async def test_removing_the_home_reaction_of_a_mirror_user_keeps_them_and_moves_their_origin(
+        world: SimpleNamespace) -> None:
+    session_id = await publish(world)
+    home_id = await home_message(world, session_id)
+    mirror_id = await mirror_message(world, world.sub_b, session_id)
+    set_going(world, HOME, home_id, [FAR_USER])
+    set_going(world, FAR_B, mirror_id, [FAR_USER])
+    await world.presses.on_reaction(reaction(FAR_USER, HOME, home_id))
+    await world.presses.on_reaction(reaction(FAR_USER, FAR_B, mirror_id))
+    set_going(world, HOME, home_id, [])
+    await world.presses.on_reaction(reaction(FAR_USER, HOME, home_id, added=False))
+    assert FAR_USER in await going(world, session_id)
+    assert await origin(world, session_id, FAR_USER) == world.sub_b
+
+
+async def test_a_failed_recheck_keeps_the_rsvp(world: SimpleNamespace) -> None:
+    session_id = await publish(world)
+    home_id = await home_message(world, session_id)
+    mirror_id = await mirror_message(world, world.sub_b, session_id)
+    set_going(world, FAR_B, mirror_id, [FAR_USER])
+    await world.presses.on_reaction(reaction(FAR_USER, FAR_B, mirror_id))
+    world.state.overrides[f"GET {messages_path(HOME, home_id)}/reactions/{rsvp.GOING_EMOJI}/users"] = Override(
+        status=500, body=b"{}")
+    set_going(world, FAR_B, mirror_id, [])
+    await world.presses.on_reaction(reaction(FAR_USER, FAR_B, mirror_id, added=False))
+    assert FAR_USER in await going(world, session_id)
+
+
+async def test_a_waiting_mirror_user_is_promoted_with_a_mirror_link(world: SimpleNamespace) -> None:
+    session_id = await publish(world)
+    home_id = await home_message(world, session_id)
+    mirror_id = await mirror_message(world, world.sub_b, session_id)
+    await world.db.run(lambda c: sessions.set_seats_if(c, session_id, 2))
+    session = await world.db.run(lambda c: sessions.get(c, session_id))
+    assert session is not None
+    await world.db.run(lambda c: _add_going(c, session, FAR_USER))
+    set_going(world, HOME, home_id, [FAR_USER])
+    set_going(world, FAR_B, mirror_id, [OTHER_FAR_USER])
+    await world.presses.on_reaction(reaction(OTHER_FAR_USER, FAR_B, mirror_id))
+    assert await going(world, session_id) == sorted([PROPOSER, FAR_USER])
+    set_going(world, HOME, home_id, [])
+    await world.presses.on_reaction(reaction(FAR_USER, HOME, home_id, added=False))
+    assert OTHER_FAR_USER in await going(world, session_id)
+    [dm] = dm_contents(world, OTHER_FAR_USER)
+    assert mirror_id in dm and home_id not in dm and HOME not in dm
+
+
+async def test_a_startup_reconcile_keeps_a_mirror_only_user_with_their_origin(world: SimpleNamespace) -> None:
+    session_id = await publish(world)
+    mirror_id = await mirror_message(world, world.sub_b, session_id)
+    set_going(world, FAR_B, mirror_id, [QUIET_FAR_USER])
+    await world.interactions.reconcile_sessions()
+    assert QUIET_FAR_USER in await going(world, session_id)
+    assert await origin(world, session_id, QUIET_FAR_USER) == world.sub_b
+
+
+async def test_a_far_user_s_move_dm_links_the_mirror_and_a_home_user_s_links_home(world: SimpleNamespace) -> None:
+    session_id = await publish(world)
+    home_id = await home_message(world, session_id)
+    mirror_id = await mirror_message(world, world.sub_b, session_id)
+    set_going(world, FAR_B, mirror_id, [FAR_USER])
+    await world.presses.on_reaction(reaction(FAR_USER, FAR_B, mirror_id))
+    assert await origin(world, session_id, FAR_USER) == world.sub_b
+    await world.commands.handle(f"move {session_id} 1970-01-02 19:00",
+                                events.MessageCreate(message_id="7000", channel_id=HOME, guild_id=None,
+                                                     author_id=PROPOSER, author_is_bot=False,
+                                                     member_role_ids=None, content=""))
+    far_dm = " ".join(dm_contents(world, FAR_USER))
+    home_dm = " ".join(dm_contents(world, PROPOSER))
+    assert mirror_id in far_dm and home_id not in far_dm
+    assert home_id in home_dm and mirror_id not in home_dm
+
+
+async def test_a_far_user_has_no_link_once_their_mirror_is_gone(world: SimpleNamespace) -> None:
+    session_id = await publish(world)
+    mirror_id = await mirror_message(world, world.sub_b, session_id)
+    session = await world.db.run(lambda c: sessions.get(c, session_id))
+    assert session is not None
+    set_going(world, FAR_B, mirror_id, [FAR_USER])
+    await world.presses.on_reaction(reaction(FAR_USER, FAR_B, mirror_id))
+    assert await origin(world, session_id, FAR_USER) == world.sub_b
+    row = await mirror_row(world, world.sub_b, session_id)
+    assert row is not None
+    await world.mirror.delete(row)
+    assert await world.post.link_for(session, FAR_USER) is None
+
+
+async def test_a_card_wide_cancel_under_the_lock_posts_no_new_mirror(world: SimpleNamespace) -> None:
+    # The session predates the copy's both mode, so it has no mirror. A cancel runs under the card lock, where a new
+    # mirror would be posted and seeded: the cancel only edits the mirrors that already exist.
+    await world.db.run(lambda c: subscriptions.set_mode_if(c, world.sub_b, "both", "redirect"))
+    session_id = await publish(world)
+    await world.db.run(lambda c: subscriptions.set_mode_if(c, world.sub_b, "redirect", "both"))
+    async with world.locks.get(world.card):
+        assert await world.commands.cancel_card_sessions_locked(world.card, ADMIN) == 1
+    assert await mirror_row(world, world.sub_b, session_id) is None
+    assert requests(world, "POST", messages_path(FAR_B)) == []
