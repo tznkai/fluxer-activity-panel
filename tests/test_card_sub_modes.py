@@ -417,6 +417,23 @@ async def test_leaving_local_for_redirect_clears_the_copy_s_session_and_poll_rea
     assert reaction_deletes(modes_world, POLL_EMOJI)
 
 
+async def test_leaving_local_for_redirect_removes_the_calendar_and_ballot_the_copy_really_carries(
+        modes_world: World) -> None:
+    card = await make_card(modes_world)
+    await modes_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local")
+    sub = await sub_of(modes_world, card.id)
+    assert sub is not None
+    await seed_scope(modes_world, card.id, sub.id)
+    modes_world.state.reactions[(FAR_COPY, COPY_MSG)] = {SESSION_EMOJI: [BOT], POLL_EMOJI: [BOT]}
+    modes_world.clear_requests()
+
+    await modes_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=redirect")
+
+    assert copy_emoji(modes_world, "DELETE") == [SESSION_EMOJI, POLL_EMOJI]
+    left = modes_world.state.reactions.get((FAR_COPY, COPY_MSG), {})
+    assert SESSION_EMOJI not in left and POLL_EMOJI not in left
+
+
 async def test_unsubscribe_cleans_the_scope_deletes_its_history_and_keeps_the_role_out_of_fluxer(
         modes_world: World) -> None:
     card = await make_card(modes_world)
@@ -505,7 +522,8 @@ async def test_interactions_on_seeds_a_local_copy_with_its_mode_set(modes_world:
 
     await modes_world.run("!card interactions on")
 
-    assert copy_emoji(modes_world, "PUT") == [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI]
+    assert copy_emoji(modes_world, "PUT") == [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI,
+                                                POLL_EMOJI]
 
 
 async def test_a_redirect_copy_loses_its_bell_when_its_role_step_fails_on_switching_to_local(

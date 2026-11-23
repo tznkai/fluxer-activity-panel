@@ -56,11 +56,14 @@ def wanted_emoji(card: Card, *, play_now_target: bool, session_target: bool = Fa
 def has_session_channel(card: Card, config: Config, *, surface_kind: str, home: bool,
                         sub: Subscription | None = None) -> bool:
     """A card surface can plan sessions when the card has its own verified play-now channel, or PLAY_NOW_CHANNEL_ID is
-    set (the session channel is the card's, else the configured one, as for play-now). A home copy the same. A far copy
-    never gets the calendar: its press only points at the card. A play-now post never gets it either. `sub` is not
-    used yet: a local or both copy gets the calendar in a later phase."""
+    set (the session channel is the card's, else the configured one, as for play-now). A home copy the same. A local or
+    both copy always can: its scope has its own channel to plan in, wherever its community is. A redirect copy outside
+    the games community never gets the calendar: its press only points at the card. A play-now post never gets it
+    either."""
     if surface_kind == "play_now":
         return False
+    if sub is not None and sub.is_scope:
+        return True
     if surface_kind == "copy" and not home:
         return False
     own = card.play_now_channel is not None and card.play_now_channel.verified

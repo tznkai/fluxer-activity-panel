@@ -484,7 +484,8 @@ async def test_a_local_copy_with_a_stored_role_is_seeded_with_bell_and_hand(worl
 
     copy = await db.run(lambda c: subscriptions.list_for_card(c, card_id))
     assert copy[0].message_id is not None
-    assert puts(world.state, OTHER_COPY, copy[0].message_id) == [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI]
+    assert puts(world.state, OTHER_COPY, copy[0].message_id) == [
+        WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, POLL_EMOJI]
 
 
 async def test_a_local_copy_without_a_stored_role_is_seeded_without_bell(world: World, db: Database) -> None:
@@ -500,7 +501,7 @@ async def test_a_local_copy_without_a_stored_role_is_seeded_without_bell(world: 
 
     copy = await db.run(lambda c: subscriptions.list_for_card(c, card_id))
     assert copy[0].message_id is not None
-    assert puts(world.state, OTHER_COPY, copy[0].message_id) == [WAKE_EMOJI, PLAY_NOW_EMOJI]
+    assert puts(world.state, OTHER_COPY, copy[0].message_id) == [WAKE_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, POLL_EMOJI]
 
 
 async def test_after_the_role_row_is_removed_a_reconcile_adds_no_bell(world: World, db: Database) -> None:
@@ -515,4 +516,4 @@ async def test_after_the_role_row_is_removed_a_reconcile_adds_no_bell(world: Wor
 
     await make_poller(world, Clock()).reconcile()
 
-    assert puts(world.state, OTHER_COPY, message_id) == [PLAY_NOW_EMOJI]
+    assert puts(world.state, OTHER_COPY, message_id) == [PLAY_NOW_EMOJI, SESSION_EMOJI, POLL_EMOJI]

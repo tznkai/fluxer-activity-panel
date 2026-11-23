@@ -230,7 +230,7 @@ def make_sub(mode: str) -> Subscription:
                        paused=False, mode=mode, local_channel_id=None)
 
 
-def test_a_local_copy_with_a_stored_role_wants_wake_bell_and_hand_but_no_calendar_or_ballot() -> None:
+def test_a_local_copy_with_a_stored_role_wants_wake_bell_hand_calendar_and_ballot_box() -> None:
     sub = make_sub("local")
     card = make_card(follow_role=ROLE)
     play_now = has_play_now_target(card, make_config(), surface_kind="copy", home=False, sub=sub)
@@ -240,16 +240,33 @@ def test_a_local_copy_with_a_stored_role_wants_wake_bell_and_hand_but_no_calenda
     wanted = wanted_emoji(card, play_now_target=play_now, session_target=session, poll_target=session,
                           follow=follow_for(sub, has_role=True))
 
-    assert wanted == [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI]
+    assert wanted == [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, POLL_EMOJI]
 
 
 def test_a_both_copy_with_a_stored_role_wants_the_same_set() -> None:
     sub = make_sub("both")
     card = make_card()
+    session = has_session_channel(card, make_config(), surface_kind="copy", home=False, sub=sub)
 
-    wanted = wanted_emoji(card, play_now_target=True, follow=follow_for(sub, has_role=True))
+    wanted = wanted_emoji(card, play_now_target=True, session_target=session, poll_target=session,
+                          follow=follow_for(sub, has_role=True))
 
-    assert wanted == [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI]
+    assert wanted == [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, POLL_EMOJI]
+
+
+def test_a_local_or_both_copy_has_a_session_channel_in_any_community_with_no_configured_channel() -> None:
+    for mode in ("local", "both"):
+        assert has_session_channel(make_card(), make_config(), surface_kind="copy", home=False,
+                                   sub=make_sub(mode)) is True
+
+
+def test_a_redirect_copy_elsewhere_still_has_no_session_channel_even_with_one_configured() -> None:
+    configured = make_config(PLAY_NOW_CHANNEL_ID="2600")
+
+    assert has_session_channel(make_card(play_now_channel=LINK), configured, surface_kind="copy", home=False,
+                               sub=make_sub("redirect")) is False
+    assert has_session_channel(make_card(play_now_channel=LINK), configured, surface_kind="copy", home=False,
+                               sub=None) is False
 
 
 def test_a_local_copy_with_no_stored_role_wants_no_bell_even_when_the_card_has_one() -> None:
