@@ -18,7 +18,7 @@ from fluxer_panel.db import Database, DatabaseRefused
 SESSION_COLUMNS = {"id", "card_id", "guild_id", "channel_id", "message_id", "starts_at", "ends_at", "proposer_id",
                    "location_text", "seats", "recurrence", "series_id", "next_posted", "state", "closed_at",
                    "moved", "headsup_sent", "created_at", "scope_sub_id"}
-REACTION_COLUMNS = {"session_id", "user_id", "choice", "added_at", "seq", "implicit", "via_sub_id"}
+REACTION_COLUMNS = {"session_id", "user_id", "choice", "added_at", "seq", "implicit", "via_sub_id", "via_message_id"}
 RSVP_COLUMNS = {"session_id", "user_id", "choice", "responded_at", "waitlist_pos"}
 
 SESSION_DEFAULTS: dict[str, Any] = {"card_id": 1, "guild_id": "3001", "channel_id": "3002", "message_id": "3004",

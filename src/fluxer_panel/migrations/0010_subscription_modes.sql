@@ -50,6 +50,11 @@ CREATE UNIQUE INDEX polls_open_once ON polls (card_id, ifnull(scope_sub_id, 0)) 
 ALTER TABLE poll_ballots ADD COLUMN via_sub_id INTEGER CHECK (via_sub_id IS NULL OR via_sub_id > 0);
 -- The both-subscription mirror an RSVP reaction came through (NULL: the home message). Same rule as above.
 ALTER TABLE rsvp_reaction ADD COLUMN via_sub_id INTEGER CHECK (via_sub_id IS NULL OR via_sub_id > 0);
+-- The message id of the mirror the reaction was made on, or last seen on (NULL for home). A message id is never
+-- reused, so a row whose origin's current mirror has another id predates that mirror: the startup reconcile cannot
+-- read it there.
+ALTER TABLE rsvp_reaction ADD COLUMN via_message_id TEXT CHECK (via_message_id IS NULL OR (via_message_id <> ''
+    AND via_message_id NOT GLOB '*[^0-9]*' AND length(via_message_id) <= 25));
 
 -- A home session, poll or play-now post re-posted in a both subscription's channel.
 CREATE TABLE mirror_message (
@@ -63,7 +68,6 @@ CREATE TABLE mirror_message (
     session_id   INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
     poll_id      INTEGER REFERENCES polls(id) ON DELETE CASCADE,
     play_now_id  INTEGER REFERENCES play_now(id) ON DELETE CASCADE,
-    posted_seq   INTEGER CHECK (posted_seq IS NULL OR posted_seq >= 0),
     CHECK ((session_id IS NOT NULL) + (poll_id IS NOT NULL) + (play_now_id IS NOT NULL) = 1)
 ) STRICT;
 CREATE UNIQUE INDEX mirror_session  ON mirror_message (session_id, sub_id)  WHERE session_id IS NOT NULL;

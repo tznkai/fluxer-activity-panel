@@ -750,3 +750,27 @@ async def test_a_home_user_whose_home_reaction_is_removed_is_still_removed_after
     set_going(world, HOME, home_id, [])                       # the home reaction is removed while the bot is down
     await world.interactions.reconcile_sessions()
     assert HOME_ONLY_USER not in await going(world, session_id)
+
+
+async def test_a_re_reaction_on_a_new_mirror_leaves_the_effective_choice_alone(world: SimpleNamespace) -> None:
+    """A far going row made before a home maybe is the user's effective maybe. Re-reacting going on the copy's new
+    mirror records the new mirror as the message seen, but must not reorder the user's reactions: a later unrelated
+    home reaction must not flip the user to going."""
+    session_id = await publish(world)
+    home_id = await home_message(world, session_id)
+    mirror_id = await mirror_message(world, world.sub_b, session_id)
+    world.state.reactions.setdefault((FAR_B, mirror_id), {})[rsvp.GOING_EMOJI] = [FAR_USER]
+    await world.presses.on_reaction(emoji_reaction(FAR_USER, FAR_B, mirror_id, rsvp.GOING_EMOJI))
+    world.state.reactions.setdefault((HOME, home_id), {})[rsvp.MAYBE_EMOJI] = [FAR_USER]
+    await world.presses.on_reaction(emoji_reaction(FAR_USER, HOME, home_id, rsvp.MAYBE_EMOJI))
+    assert await state_of(world, session_id, FAR_USER) == "maybe"
+
+    await repost_mirror(world, session_id, FAR_L)
+    new_id = await mirror_message(world, world.sub_b, session_id)
+    world.state.reactions.setdefault((FAR_L, new_id), {})[rsvp.GOING_EMOJI] = [FAR_USER]
+    await world.presses.on_reaction(emoji_reaction(FAR_USER, FAR_L, new_id, rsvp.GOING_EMOJI))
+    assert await state_of(world, session_id, FAR_USER) == "maybe"
+
+    world.state.reactions.setdefault((HOME, home_id), {})[rsvp.GOING_EMOJI] = [QUIET_FAR_USER]
+    await world.presses.on_reaction(emoji_reaction(QUIET_FAR_USER, HOME, home_id, rsvp.GOING_EMOJI))
+    assert await state_of(world, session_id, FAR_USER) == "maybe"

@@ -247,9 +247,9 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   scope mode. The mode write is compare-and-set (`subscriptions.set_mode_if`). A change to `redirect` forgets the local
   channel; `both` to `local` deletes the mirrors only. A copy that enters `both` is back-filled under the lock. A
   `channel=` change on a copy that stays `both` moves its mirrors the same way: `delete_mirrors_locked`, the new local
-  channel stored, then `backfill_locked`, all under the lock, with the seeds after it. Its RSVP rows are kept, also across a
-  restart (the new mirror cannot show them, see the Sessions rules), and a mirror that cannot be deleted is named in the
-  reply.
+  channel stored, then `backfill_locked`, all under the lock, with the seeds after it. Its RSVP rows are kept, also
+  across a restart (the new mirror cannot show them, see the Sessions rules), and a mirror that cannot be deleted is
+  named in the reply.
 - Each local or both subscription has its own follow role in its own community (`subscription_follow_role`), set by
   `follow_roles.ensure_follow_role(..., sub_id=)` after the card lock. Its bell toggles that role only; with none
   stored the copy gets no bell. `cards.follow_role_ids` (the role-call allowlist) includes these roles.
@@ -266,8 +266,9 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
 - Leaving a scope (a mode change away from `local` or `both`, or unsubscribe) goes through `scope_cleanup`: it ends the
   scope's upcoming sessions and open poll, clears every weekly series in the scope (ended occurrences included,
   through `cancel_card_sessions_locked`), expires its play-now posts, and deletes its mirrors. A series whose scope
-  no longer resolves (`scope.scope_of` is None) is cleared by `session_jobs._plan_tx` and posts nothing. Unsubscribe then deletes
-  the scope's rows, so `scope_sub_id ... ON DELETE RESTRICT` never blocks it.
+  is cleared by `session_jobs._plan_tx` and posts nothing: its copy is gone, or no longer local or both. A paused copy's
+  series is kept and waits, posting again once `!card subscribe` resumes the copy. Unsubscribe then deletes the scope's
+  rows, so `scope_sub_id ... ON DELETE RESTRICT` never blocks it.
 
 ## Mirror rules
 
@@ -311,9 +312,10 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   reconcile also carries a real row whose origin mirror is unreadable (403, dropped on 404, or no longer stored because
   the copy left both or was unsubscribed): it stays with its origin, unless a readable message shows that user with the
   same choice (`interactions._carry_unreadable`). A row made before its origin's current mirror was posted is carried
-  the same way, since that mirror cannot show it (`mirror_message.posted_seq`, the session's highest RSVP seq at the
-  post). A re-reaction on the current mirror refreshes the row's seq (`sessions.add_presence`), so a removal the bot
-  can see is read at the next startup.
+  the same way, since that mirror cannot show it: the row's `via_message_id` is no longer the origin's current mirror
+  message (`sessions.predated_origin_rows`). A mirror reaction records the mirror message it was seen on, and a
+  re-reaction on a newer mirror updates only that id (`sessions.add_presence`), never the seq, so the effective choice
+  does not change. A removal the bot can see is read at the next startup.
 - The non-admin paths are `dm_router` with `help`/`!help` (the command heads; admin heads only when `admin.authorize`
   passes; answered before a draft or ballot takes the reply), `!session` (`session_commands.py`), `!poll`, and ballot replies. `NonAdminLimiter.admit`
   allows 5 DM commands, draft or ballot replies, or 📅 DM reactions per 60 seconds per non-admin user. Admins are exempt. A `!session`
@@ -422,10 +424,11 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   the other is kept; the presser is DMed only when no post succeeds.
 - Play-now posts are sent only by `interactions.send_play_now`, which refuses a games-channel target before any REST
   call (`GamesChannelRefused`). `PLAY_NOW_CHANNEL_ID` must differ from `GAMES_CHANNEL_ID`, or the bot refuses to start.
-- The one mention rule: only a play-now post, or a play-now mirror's first post, may mention anyone, and only the follow
-  role of its own scope (the card's for a home post). Session and poll mirrors mention nobody. `interactions.play_now_mentions`
-  allows that role only when it belongs to the target's community (`_scope_role_in`); otherwise `{"parse": []}`. An
-  edit never re-pings. Never users, `@everyone` or another role. `REVIEW.md` anchors these lines.
+- The one mention rule: only a play-now post, or a play-now mirror's first post, may mention anyone, and only the
+  follow role of its own scope (the card's for a home post). Session and poll mirrors mention nobody.
+  `interactions.play_now_mentions` allows that role only when it belongs to the target's community (`_scope_role_in`);
+  otherwise `{"parse": []}`. An edit never re-pings. Never users, `@everyone` or another role. `REVIEW.md` anchors these
+  lines.
 
 ## Database
 
@@ -488,10 +491,10 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   id above. `subscription_follow_role` (`sub_id` primary key, `role_id` unique) holds one follow role per subscription,
   cascading with it. `sessions`, `polls` and `play_now` gain `scope_sub_id` (NULL is the home scope) with
   `ON DELETE RESTRICT`, so a subscription that owns scoped rows cannot be deleted by SQL. `poll_ballots.via_sub_id` and
-  `rsvp_reaction.via_sub_id` are plain integers with no foreign key, because an id is never reused. `mirror_message`
-  holds one row per home session, poll or play-now post re-posted in a `both` subscription (`posted_seq` is set for a
-  session mirror only: the session's highest RSVP seq when it was posted; exactly one object id per
-  row, cascading with the subscription and the object).
+  `rsvp_reaction.via_sub_id` are plain integers with no foreign key, because an id is never reused.
+  `rsvp_reaction.via_message_id` (migration 0010) is the origin mirror's message id the reaction was seen on, or NULL for
+  home. `mirror_message` holds one row per home session, poll or play-now post re-posted in a `both` subscription
+  (exactly one object id per row, cascading with the subscription and the object).
 - Migrations: `src/fluxer_panel/migrations/NNNN_name.sql`, numbered and contiguous from `0001`. Never edit a migration
   after release; add a new file instead. Do not put `BEGIN`, `COMMIT` or `PRAGMA user_version` in a file: the runner adds them.
 - `secure_delete = ON` is set, so purged rows do not survive in free pages. `.pre-v<N>` backups are not covered by that

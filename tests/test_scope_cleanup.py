@@ -385,3 +385,18 @@ async def test_cancelling_every_scope_clears_the_series_of_an_ended_occurrence_t
         await world.ctx.session_commands.cancel_card_sessions_locked(world.card_id, ADMIN)
 
     assert await _recurrence(world, weekly) is None
+
+
+async def test_a_paused_copys_series_waits_and_posts_once_the_copy_is_resumed(world: World) -> None:
+    world.state.messages[(FAR_CH, WEEKLY_MSG)] = {"embeds": []}
+    weekly = await world.db.run(lambda c: _add_ended_weekly(c, world))
+    await world.db.run(lambda c: subscriptions.pause(c, world.card_id, FAR_CH))
+
+    tick = _Tick(float(STARTS + DAY))
+    await _session_jobs(world, tick).run()
+    assert _far_posts(world) == []
+    assert await _recurrence(world, weekly) == "weekly"
+
+    await world.db.run(lambda c: subscriptions.resume(c, world.card_id, FAR_CH))
+    await _session_jobs(world, tick).run()
+    assert len(_far_posts(world)) == 1

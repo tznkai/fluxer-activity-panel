@@ -353,10 +353,14 @@ class SessionCommands:
             # is still due, so every weekly series in the scope is cleared whatever each occurrence's state.
             if isinstance(scope, _AllScopes):
                 upcoming = sessions.upcoming_for_card(conn, card_id)
-                sessions.clear_card_series(conn, card_id)
+                cleared = sessions.clear_card_series(conn, card_id)
+                reason = "card_cancelled"
             else:
                 upcoming = sessions.upcoming_for_scope(conn, card_id, scope)
-                sessions.clear_scope_series(conn, card_id, scope)
+                cleared = sessions.clear_scope_series(conn, card_id, scope)
+                reason = "scope_cancelled"
+            if cleared:
+                log_event(log, "session_series_cleared", card_id=card_id, count=cleared, reason=reason)
             for session in upcoming:
                 if sessions.cancel_if(conn, session.id, now):
                     done.append((session, card))

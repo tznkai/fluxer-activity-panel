@@ -350,32 +350,36 @@ def rsvps_of(conn: sqlite3.Connection, session_id: int) -> rsvp.Rsvps:
     return {user_id: (state, pos) for user_id, state, pos in rows}
 
 
+# The message id of a session mirror of one subscription, or NULL when there is none (a None subscription).
+_MIRROR_MESSAGE = "(SELECT message_id FROM mirror_message WHERE session_id = ? AND sub_id = ?)"
+
+
 def add_presence(conn: sqlite3.Connection, session: Session, user_id: str, choice: str, now: int, *,
                  via_sub_id: int | None = None) -> bool:
     """Adds one RSVP reaction. A user's implicit row goes first (the proposer's going, or a voter's maybe), so their
     first real reaction replaces it and both rows never coexist. Returns False when the same reaction is already there.
-    `via_sub_id` is the mirror the reaction came through (None for the home message). When the same reaction is already
-    stored, a home reaction clears its origin and a mirror reaction leaves it alone, so home always wins."""
+    `via_sub_id` is the mirror the reaction came through (None for the home message). The row records that mirror's
+    current message id as `via_message_id`, the message the reaction was seen on. When the same reaction is already
+    stored, a home reaction clears its origin, and a mirror reaction of the same origin re-records the current message.
+    The seq is never changed here, so the row's place in the order of reactions (and its effective choice) stays put."""
     conn.execute("DELETE FROM rsvp_reaction WHERE session_id = ? AND user_id = ? AND implicit = 1",
                  (session.id, user_id))
     cur = conn.execute(
-        "INSERT INTO rsvp_reaction (session_id, user_id, choice, added_at, seq, implicit, via_sub_id) "
-        "SELECT ?, ?, ?, ?, COALESCE(MAX(seq), 0) + 1, 0, ? FROM rsvp_reaction WHERE session_id = ? "
+        "INSERT INTO rsvp_reaction (session_id, user_id, choice, added_at, seq, implicit, via_sub_id, via_message_id) "
+        "SELECT ?, ?, ?, ?, COALESCE(MAX(seq), 0) + 1, 0, ?, "
+        f"{_MIRROR_MESSAGE} FROM rsvp_reaction WHERE session_id = ? "
         "ON CONFLICT DO NOTHING",
-        (session.id, user_id, choice, now, via_sub_id, session.id))
+        (session.id, user_id, choice, now, via_sub_id, session.id, via_sub_id, session.id))
     if cur.rowcount == 1:
         return True
     if via_sub_id is None:
-        conn.execute("UPDATE rsvp_reaction SET via_sub_id = NULL WHERE session_id = ? AND user_id = ? AND choice = ? "
-                     "AND implicit = 0", (session.id, user_id, choice))
+        conn.execute("UPDATE rsvp_reaction SET via_sub_id = NULL, via_message_id = NULL WHERE session_id = ? "
+                     "AND user_id = ? AND choice = ? AND implicit = 0", (session.id, user_id, choice))
     else:
-        # A reaction on a mirror posted after this row was made: the row now counts as made on that mirror, so a later
-        # removal the bot cannot see is read at the next startup. Only the seq changes.
-        conn.execute(
-            "UPDATE rsvp_reaction SET seq = COALESCE((SELECT MAX(seq) FROM rsvp_reaction WHERE session_id = ?), 0) + 1 "
-            "WHERE session_id = ? AND user_id = ? AND choice = ? AND implicit = 0 AND via_sub_id = ? AND seq <= "
-            "(SELECT posted_seq FROM mirror_message WHERE session_id = ? AND sub_id = ?)",
-            (session.id, session.id, user_id, choice, via_sub_id, session.id, via_sub_id))
+        conn.execute(f"UPDATE rsvp_reaction SET via_message_id = {_MIRROR_MESSAGE} "
+                     "WHERE session_id = ? AND user_id = ? "
+                     "AND choice = ? AND implicit = 0 AND via_sub_id = ?",
+                     (session.id, via_sub_id, session.id, user_id, choice, via_sub_id))
     return False
 
 
@@ -408,13 +412,13 @@ def origin_subs(conn: sqlite3.Connection, session_id: int) -> frozenset[int]:
 
 
 def predated_origin_rows(conn: sqlite3.Connection, session_id: int) -> list[tuple[str, str, int]]:
-    """The real RSVP rows of a session that were made before their origin's current mirror of it was posted, as (user
-    id, choice, subscription id). Such a row cannot be on that mirror, so the startup reconcile must not read it as
-    removed."""
+    """The real RSVP rows of a session whose origin's current mirror is not the message the row was made on or last
+    seen on (`via_message_id`). The mirror was posted after that, so it cannot show the reaction, and the startup
+    reconcile must not read the row as removed."""
     rows = conn.execute(
         "SELECT r.user_id, r.choice, r.via_sub_id FROM rsvp_reaction r JOIN mirror_message m "
         "ON m.session_id = r.session_id AND m.sub_id = r.via_sub_id "
-        "WHERE r.session_id = ? AND r.implicit = 0 AND r.seq <= m.posted_seq", (session_id,)).fetchall()
+        "WHERE r.session_id = ? AND r.implicit = 0 AND r.via_message_id IS NOT m.message_id", (session_id,)).fetchall()
     return sorted(((user_id, choice, sub_id) for user_id, choice, sub_id in rows), key=lambda row: int(row[0]))
 
 
@@ -432,10 +436,12 @@ def presence_from_subs(conn: sqlite3.Connection, session_id: int, sub_ids: Itera
 
 
 def set_presence_via(conn: sqlite3.Connection, session_id: int, user_id: str, via_sub_id: int | None) -> None:
-    """Sets where a user's real RSVP rows came from: None for the home message, else the mirror's subscription. Only the
-    startup reconcile and an ignored remove call it, so home always wins when the reconcile computes it."""
-    conn.execute("UPDATE rsvp_reaction SET via_sub_id = ? WHERE session_id = ? AND user_id = ? AND implicit = 0",
-                 (via_sub_id, session_id, user_id))
+    """Sets where a user's real RSVP rows came from: None for the home message, else the mirror's subscription, and that
+    mirror's current message id. Only the startup reconcile and an ignored remove call it, so home always wins when the
+    reconcile computes it."""
+    conn.execute(f"UPDATE rsvp_reaction SET via_sub_id = ?, via_message_id = {_MIRROR_MESSAGE} "
+                 "WHERE session_id = ? AND user_id = ? AND implicit = 0",
+                 (via_sub_id, session_id, via_sub_id, session_id, user_id))
 
 
 def reconcile_presence(conn: sqlite3.Connection, session: Session, actual: dict[rsvp.Choice, set[str]], now: int,
@@ -473,8 +479,10 @@ def reconcile_presence(conn: sqlite3.Connection, session: Session, actual: dict[
                 "SELECT user_id, choice FROM rsvp_reaction WHERE session_id = ? AND implicit = 0",
                 (session.id,)).fetchall():
             if (user_id, choice) not in kept:
-                conn.execute("UPDATE rsvp_reaction SET via_sub_id = ? WHERE session_id = ? AND user_id = ? "
-                             "AND choice = ? AND implicit = 0", (via.get(user_id), session.id, user_id, choice))
+                origin = via.get(user_id)
+                conn.execute(f"UPDATE rsvp_reaction SET via_sub_id = ?, via_message_id = {_MIRROR_MESSAGE} "
+                             "WHERE session_id = ? AND user_id = ? AND choice = ? AND implicit = 0",
+                             (origin, session.id, origin, session.id, user_id, choice))
     return changed
 
 

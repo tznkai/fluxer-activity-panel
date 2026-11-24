@@ -40,24 +40,14 @@ def _load(row: tuple) -> Mirror:
     return Mirror(mirror_id, sub_id, channel_id, message_id, content_hash, kind, object_id)
 
 
-def _posted_seq(conn: sqlite3.Connection, kind: Kind, object_id: int) -> int | None:
-    """For a session mirror, the session's highest RSVP seq when the mirror is posted. An RSVP row at or below it was
-    made before this mirror existed, so it cannot be on the mirror (the startup reconcile reads that from here)."""
-    if kind != "session":
-        return None
-    row = conn.execute("SELECT COALESCE(MAX(seq), 0) FROM rsvp_reaction WHERE session_id = ?", (object_id,)).fetchone()
-    return int(row[0])
-
-
 def add(conn: sqlite3.Connection, *, sub_id: int, channel_id: str, message_id: str, kind: Kind, object_id: int,
         content_hash: str | None) -> int:
     """Stores a mirror of one home object in one both subscription and returns its id. A second mirror of the same
     object in the same subscription raises IntegrityError."""
     column = _OBJECT_COLUMN[kind]
-    posted = _posted_seq(conn, kind, object_id)
     cur = conn.execute(
-        f"INSERT INTO mirror_message (sub_id, channel_id, message_id, content_hash, {column}, posted_seq) "
-        "VALUES (?, ?, ?, ?, ?, ?)", (sub_id, channel_id, message_id, content_hash, object_id, posted))
+        f"INSERT INTO mirror_message (sub_id, channel_id, message_id, content_hash, {column}) VALUES (?, ?, ?, ?, ?)",
+        (sub_id, channel_id, message_id, content_hash, object_id))
     return int(cur.lastrowid)
 
 
@@ -68,12 +58,11 @@ def store_if_both(conn: sqlite3.Connection, *, sub_id: int, channel_id: str, mes
     the new row's id, or None when nothing was stored. A second mirror of the same object in the same subscription
     raises IntegrityError, as `add` does."""
     column = _OBJECT_COLUMN[kind]
-    posted = _posted_seq(conn, kind, object_id)
     cur = conn.execute(
-        f"INSERT INTO mirror_message (sub_id, channel_id, message_id, content_hash, {column}, posted_seq) "
-        "SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS "
+        f"INSERT INTO mirror_message (sub_id, channel_id, message_id, content_hash, {column}) "
+        "SELECT ?, ?, ?, ?, ? WHERE EXISTS "
         "(SELECT 1 FROM card_subscription WHERE id = ? AND mode = 'both' AND paused = 0)",
-        (sub_id, channel_id, message_id, content_hash, object_id, posted, sub_id))
+        (sub_id, channel_id, message_id, content_hash, object_id, sub_id))
     return int(cur.lastrowid) if cur.rowcount == 1 else None
 
 

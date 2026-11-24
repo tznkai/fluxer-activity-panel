@@ -807,8 +807,7 @@ class Interactions:
         """The RSVP reactors on each readable mirror of the session, as (subscription id, readings). A mirror that
         answers 404 is dropped, and one that answers 403 is left out, so neither skips the session. A mirror left out
         here is unreadable to the reconcile, and its origin's real rows are carried (`_carry_unreadable`). Any other
-        failure
-        raises _ReactorsUnreadable, and the whole session is skipped, as for the home message."""
+        failure raises _ReactorsUnreadable, and the whole session is skipped, as for the home message."""
         rows = await self._db.run(lambda c: mirrors.for_object(c, "session", listed.id))
         readings: list[tuple[int, dict[rsvp.Choice, set[str]]]] = []
         for row in sorted(rows, key=lambda r: r.sub_id):
@@ -873,8 +872,8 @@ def _carry_unreadable(conn: Any, session_id: int, readings: dict[rsvp.Choice, se
     """The readings, origins and kept rows for the startup reconcile, with the real RSVPs whose origin mirror cannot be
     read carried over. An origin is unreadable when its mirror answers 403, when its mirror answered 404 and was
     dropped, or when the session has no stored mirror of that subscription any more (the copy left both, or was
-    unsubscribed).
-    A row made before its origin's current mirror was posted is carried too: that mirror cannot show it.
+    unsubscribed). A row is carried too when its origin's current mirror is not the message the row was seen on
+    (`via_message_id`): that mirror was posted after the reaction, so it cannot show it.
     `readable` lists the origins whose mirror was read. A carried row stays as it is when no readable message shows that
     same choice for that user: the bot cannot tell that the user left it. A user a readable message shows keeps the
     origin that reading gives (home wins). Every other row is reconciled as read."""

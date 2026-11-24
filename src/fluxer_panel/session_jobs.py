@@ -28,7 +28,7 @@ from zoneinfo import ZoneInfo
 
 from fluxer_client.ids import is_snowflake
 from fluxer_client.rest import FluxerREST
-from fluxer_panel import cards, notify, render, rsvp, scope, session_time, sessions, text
+from fluxer_panel import cards, notify, render, rsvp, scope, session_time, sessions, subscriptions, text
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.cards import Card
 from fluxer_panel.config import Config
@@ -89,8 +89,9 @@ def _end_tx(conn: Any, session_id: int, now: int) -> bool:
 
 
 def _plan_tx(conn: Any, session_id: int, now: int, zone: ZoneInfo) -> _Plan | None:
-    """Reads the occurrence again and works out its successor. A series whose card is no longer live is cleared and
-    skipped. A full card clears the whole series and returns a stop plan, so the proposer gets one note."""
+    """Reads the occurrence again and works out its successor. A series whose card is no longer live, or whose copy is
+    gone or no longer local or both, is cleared and skipped. A paused copy's series is skipped and kept, so it waits for
+    a resume. A full card clears the whole series and returns a stop plan, so the proposer gets one note."""
     session = sessions.get(conn, session_id)
     if session is None or session.recurrence != "weekly" or session.next_posted:
         return None
@@ -100,10 +101,16 @@ def _plan_tx(conn: Any, session_id: int, now: int, zone: ZoneInfo) -> _Plan | No
     if card is None or card.state != "live":
         sessions.set_series_recurrence(conn, session.series_id, None)
         return None
-    if scope.scope_of(conn, card, session.scope_sub_id) is None:   # the scope is gone, paused or no longer a scope
-        sessions.set_series_recurrence(conn, session.series_id, None)
-        return None
-    start =session_time.next_weekly(datetime.fromtimestamp(session.starts_at, zone), tz=zone,
+    if session.scope_sub_id is not None:
+        sub = subscriptions.get_by_id(conn, session.scope_sub_id)
+        if sub is None or not sub.is_scope:   # the copy is gone, or is no longer local or both: the series ends
+            cleared = sessions.set_series_recurrence(conn, session.series_id, None)
+            log_event(log, "session_series_cleared", session_id=session.id, card_id=session.card_id,
+                      sub_id=session.scope_sub_id, count=cleared, reason="scope_gone")
+            return None
+    if scope.scope_of(conn, card, session.scope_sub_id) is None:
+        return None                           # a paused copy: its series waits here until it is resumed
+    start = session_time.next_weekly(datetime.fromtimestamp(session.starts_at, zone), tz=zone,
                                      now=datetime.fromtimestamp(now, zone))
     starts = int(start.timestamp())
     ends = starts + (session.ends_at - session.starts_at)
