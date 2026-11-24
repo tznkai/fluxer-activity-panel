@@ -99,7 +99,9 @@ def _plan_tx(conn: Any, session_id: int, now: int, zone: ZoneInfo) -> _Plan | No
         return None   # moved since it was listed, so no longer due
     card = cards.get_by_id(conn, session.card_id)
     if card is None or card.state != "live":
-        sessions.set_series_recurrence(conn, session.series_id, None)
+        cleared = sessions.set_series_recurrence(conn, session.series_id, None)
+        log_event(log, "session_series_cleared", session_id=session.id, card_id=session.card_id, count=cleared,
+                  reason="card_not_live")
         return None
     if session.scope_sub_id is not None:
         sub = subscriptions.get_by_id(conn, session.scope_sub_id)

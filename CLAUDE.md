@@ -263,12 +263,12 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   are capped per scope: 10 upcoming per card and 3 per proposer, counted with the scope's own rows only
   (`sessions.check_caps`), so a full home scope never blocks a subscription's scope. A scope has one open poll at a time
   (`polls_open_once`).
-- Leaving a scope (a mode change away from `local` or `both`, or unsubscribe) goes through `scope_cleanup`: it ends the
-  scope's upcoming sessions and open poll, clears every weekly series in the scope (ended occurrences included,
-  through `cancel_card_sessions_locked`), expires its play-now posts, and deletes its mirrors. A series whose scope
-  is cleared by `session_jobs._plan_tx` and posts nothing: its copy is gone, or no longer local or both. A paused copy's
-  series is kept and waits, posting again once `!card subscribe` resumes the copy. Unsubscribe then deletes the scope's
-  rows, so `scope_sub_id ... ON DELETE RESTRICT` never blocks it.
+- Leaving a scope (a mode change away from `local` or `both`, or unsubscribe) goes through `scope_cleanup`: it ends
+  the scope's upcoming sessions and open poll, clears every weekly series in the scope (ended occurrences included,
+  through `cancel_card_sessions_locked`), expires its play-now posts, and deletes its mirrors. A series whose copy is
+  gone, or no longer local or both, is cleared by `session_jobs._plan_tx` and posts nothing. A paused copy's series is
+  kept and waits, posting again once `!card subscribe` resumes the copy. Unsubscribe then deletes the scope's rows, so
+  `scope_sub_id ... ON DELETE RESTRICT` never blocks it.
 
 ## Mirror rules
 
@@ -492,8 +492,8 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   cascading with it. `sessions`, `polls` and `play_now` gain `scope_sub_id` (NULL is the home scope) with
   `ON DELETE RESTRICT`, so a subscription that owns scoped rows cannot be deleted by SQL. `poll_ballots.via_sub_id` and
   `rsvp_reaction.via_sub_id` are plain integers with no foreign key, because an id is never reused.
-  `rsvp_reaction.via_message_id` (migration 0010) is the origin mirror's message id the reaction was seen on, or NULL for
-  home. `mirror_message` holds one row per home session, poll or play-now post re-posted in a `both` subscription
+  `rsvp_reaction.via_message_id` (migration 0010) is the origin mirror's message id the reaction was seen on, or NULL
+  for home. `mirror_message` holds one row per home session, poll or play-now post re-posted in a `both` subscription
   (exactly one object id per row, cascading with the subscription and the object).
 - Migrations: `src/fluxer_panel/migrations/NNNN_name.sql`, numbered and contiguous from `0001`. Never edit a migration
   after release; add a new file instead. Do not put `BEGIN`, `COMMIT` or `PRAGMA user_version` in a file: the runner adds them.

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,7 @@ from fluxer_panel.dm_backoff import DmBackoff
 from fluxer_panel.dm_router import NonAdminLimiter
 from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.interactions import Interactions
+from fluxer_panel.logs import FIELDS_ATTR
 from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.poll_close import PollCloser
 from fluxer_panel.poll_post import PollPost
@@ -366,7 +368,9 @@ async def test_ending_a_scope_stops_its_weekly_series_so_a_later_run_posts_nothi
     assert await _recurrence(world, weekly) is None
 
 
-async def test_a_series_whose_scope_no_longer_resolves_is_cleared_and_posts_nothing(world: World) -> None:
+async def test_a_series_whose_scope_no_longer_resolves_is_cleared_and_posts_nothing(
+        world: World, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="fluxer_panel.session_jobs")
     world.state.messages[(FAR_CH, WEEKLY_MSG)] = {"embeds": []}
     weekly = await world.db.run(lambda c: _add_ended_weekly(c, world))
     await world.db.run(lambda c: subscriptions.set_mode_if(c, world.sub_id, "local", "redirect"))
@@ -376,6 +380,9 @@ async def test_a_series_whose_scope_no_longer_resolves_is_cleared_and_posts_noth
 
     assert _far_posts(world) == []
     assert await _recurrence(world, weekly) is None
+    cleared = [getattr(r, FIELDS_ATTR, {}) for r in caplog.records if r.getMessage() == "session_series_cleared"]
+    assert cleared == [{"session_id": weekly, "card_id": world.card_id, "sub_id": world.sub_id, "count": 1,
+                        "reason": "scope_gone"}]
 
 
 async def test_cancelling_every_scope_clears_the_series_of_an_ended_occurrence_too(world: World) -> None:

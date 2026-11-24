@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 import fluxer_panel.db as dbmod
+from fluxer_panel import cards, sessions
 from fluxer_panel.db import Database, DatabaseRefused
 
 NEW_TABLES = ("subscription_follow_role", "mirror_message")
@@ -120,6 +121,19 @@ async def test_v10_subscription_table_keeps_its_snowflake_checks(db: Database) -
     with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
         await db.run(lambda c: c.execute("INSERT INTO card_subscription (card_id, guild_id, channel_id, paused) "
                                          "VALUES (1, '12a', '2001', 0)"))
+
+
+async def test_v10_rsvp_via_message_id_keeps_its_snowflake_check(db: Database) -> None:
+    def seed(c: sqlite3.Connection) -> int:
+        card_id = cards.create_card(c, slug="mc", title="Lobby", author_id="1001", now=1)
+        return sessions.add(c, card_id=card_id, guild_id="3001", channel_id="3002", message_id="5010", starts_at=100,
+                            ends_at=200, proposer_id="1001", now=1)
+    session_id = await db.run(seed)
+    for bad in ("", "12a", "1" * 26):
+        def write(c: sqlite3.Connection, value: str = bad) -> None:
+            c.execute("UPDATE rsvp_reaction SET via_message_id = ? WHERE session_id = ?", (value, session_id))
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+            await db.run(write)
 
 
 # Scoped open polls -----------------------------------------------------------------------------------

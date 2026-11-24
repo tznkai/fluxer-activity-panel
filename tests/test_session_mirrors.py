@@ -774,3 +774,70 @@ async def test_a_re_reaction_on_a_new_mirror_leaves_the_effective_choice_alone(w
     world.state.reactions.setdefault((HOME, home_id), {})[rsvp.GOING_EMOJI] = [QUIET_FAR_USER]
     await world.presses.on_reaction(emoji_reaction(QUIET_FAR_USER, HOME, home_id, rsvp.GOING_EMOJI))
     assert await state_of(world, session_id, FAR_USER) == "maybe"
+
+
+# The stored mirror marker of a real RSVP row (migration 0010): the message it was seen on, and its origin (AC3.8) ----
+
+async def stored_row(world: SimpleNamespace, session_id: int,
+                     user_id: str) -> list[tuple[str, int, int | None, str | None]]:
+    """The stored real RSVP rows of one user as (choice, seq, via_sub_id, via_message_id)."""
+    def read(conn: Any) -> list[tuple[str, int, int | None, str | None]]:
+        return [(choice, seq, via, message) for choice, seq, via, message in conn.execute(
+            "SELECT choice, seq, via_sub_id, via_message_id FROM rsvp_reaction WHERE session_id = ? AND user_id = ? "
+            "AND implicit = 0", (session_id, user_id)).fetchall()]
+    return await world.db.run(read)
+
+
+async def test_a_mirror_reaction_records_the_current_mirror_message_id(world: SimpleNamespace) -> None:
+    session_id = await publish(world)
+    mirror_id = await mirror_message(world, world.sub_b, session_id)
+    set_going(world, FAR_B, mirror_id, [FAR_USER])
+    await world.presses.on_reaction(reaction(FAR_USER, FAR_B, mirror_id))
+    [(choice, _seq, via, message)] = await stored_row(world, session_id, FAR_USER)
+    assert (choice, via, message) == ("going", world.sub_b, mirror_id)
+
+
+async def test_a_home_re_reaction_clears_both_the_origin_and_the_message_id(world: SimpleNamespace) -> None:
+    session_id = await publish(world)
+    home_id = await home_message(world, session_id)
+    mirror_id = await mirror_message(world, world.sub_b, session_id)
+    set_going(world, FAR_B, mirror_id, [FAR_USER])
+    await world.presses.on_reaction(reaction(FAR_USER, FAR_B, mirror_id))
+    set_going(world, HOME, home_id, [FAR_USER])
+    await world.presses.on_reaction(reaction(FAR_USER, HOME, home_id))
+    [(choice, _seq, via, message)] = await stored_row(world, session_id, FAR_USER)
+    assert (choice, via, message) == ("going", None, None)
+
+
+async def test_a_re_reaction_on_a_re_posted_mirror_updates_the_message_id_and_keeps_the_seq(
+        world: SimpleNamespace) -> None:
+    session_id = await publish(world)
+    old_id = await mirror_message(world, world.sub_b, session_id)
+    set_going(world, FAR_B, old_id, [FAR_USER])
+    await world.presses.on_reaction(reaction(FAR_USER, FAR_B, old_id))
+    [(_choice, seq, _via, _message)] = await stored_row(world, session_id, FAR_USER)
+
+    await repost_mirror(world, session_id, FAR_L)
+    new_id = await mirror_message(world, world.sub_b, session_id)
+    assert new_id != old_id
+    set_going(world, FAR_L, new_id, [FAR_USER])
+    await world.presses.on_reaction(reaction(FAR_USER, FAR_L, new_id))
+    [(choice, after_seq, via, message)] = await stored_row(world, session_id, FAR_USER)
+    assert (choice, after_seq, via, message) == ("going", seq, world.sub_b, new_id)
+
+
+async def test_predated_origin_rows_lists_a_stale_row_and_leaves_out_a_current_one(world: SimpleNamespace) -> None:
+    session_id = await publish(world)
+    old_id = await mirror_message(world, world.sub_b, session_id)
+    set_going(world, FAR_B, old_id, [FAR_USER])
+    await world.presses.on_reaction(reaction(FAR_USER, FAR_B, old_id))
+    await repost_mirror(world, session_id, FAR_L)
+    new_id = await mirror_message(world, world.sub_b, session_id)
+
+    def predated(conn: Any) -> list[tuple[str, str, int]]:
+        return sessions.predated_origin_rows(conn, session_id)
+    assert await world.db.run(predated) == [(FAR_USER, "going", world.sub_b)]
+
+    set_going(world, FAR_L, new_id, [QUIET_FAR_USER])
+    await world.presses.on_reaction(reaction(QUIET_FAR_USER, FAR_L, new_id))
+    assert await world.db.run(predated) == [(FAR_USER, "going", world.sub_b)]

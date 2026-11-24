@@ -351,7 +351,7 @@ Residual risk: the Panel forces the `websocket.connect` permission onto the clie
 - `src/fluxer_panel/session_post.py:57` `raise GamesChannelRefused` — the refusal for a session post.
 - `src/fluxer_panel/session_post.py:90` `if session.channel_id == self._config.games_channel_id:` — `edit_session` makes the same check against the session's stored channel.
 - `src/fluxer_panel/session_post.py:91` `raise GamesChannelRefused` — the refusal for a session edit.
-- `src/fluxer_panel/session_jobs.py:264` `send_session(session.channel_id, payload)` — a recurrence posts the next occurrence to the session's own channel, which the guard above keeps out of the games channel.
+- `src/fluxer_panel/session_jobs.py:266` `send_session(session.channel_id, payload)` — a recurrence posts the next occurrence to the session's own channel, which the guard above keeps out of the games channel.
 - `src/fluxer_panel/mirror_post.py:163` `if channel_id == self._config.games_channel_id:` — `MirrorPost` checks the games channel before any post, edit or delete of a mirror, so a mirror never reaches the games community's channel.
 
 ## Mirror links and mentions

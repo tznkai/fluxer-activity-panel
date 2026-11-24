@@ -455,13 +455,17 @@ async def test_a_posted_occurrence_kicks_the_poller_once(world: World) -> None:
     assert world.kicks == [1]
 
 
-async def test_an_occurrence_of_an_archived_card_clears_the_series_and_posts_nothing(world: World) -> None:
+async def test_an_occurrence_of_an_archived_card_clears_the_series_and_posts_nothing(
+        world: World, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="fluxer_panel.session_jobs")
     sid = await add_session(world, recurrence="weekly")
     await world.db.run(lambda c: cards.set_state(c, world.card_id, "archived", 1))
     world.clock.now = S + DAY
     await world.jobs.run()
     assert posts(world) == []
     assert (await row(world, sid)).recurrence is None
+    cleared = [getattr(r, FIELDS_ATTR, {}) for r in caplog.records if r.getMessage() == "session_series_cleared"]
+    assert cleared == [{"session_id": sid, "card_id": world.card_id, "count": 1, "reason": "card_not_live"}]
 
 
 async def test_the_cap_stops_the_series_and_dms_the_proposer_once(world: World) -> None:
