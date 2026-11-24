@@ -8,26 +8,31 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import aiohttp
 import pytest
 
+from fluxer_client import events
 from fluxer_client.roles import RoleCache
 from fluxer_panel import card_commands, cards, mirrors, play_now, polls, rsvp, sessions, subscriptions, text
 from fluxer_panel.db import Database
 from fluxer_panel.dm_backoff import DmBackoff
+from fluxer_panel.dm_router import NonAdminLimiter
 from fluxer_panel.games import BotIdentity, GamesGuild
 from fluxer_panel.interactions import Interactions
 from fluxer_panel.mirror_backfill import MirrorBackfill
 from fluxer_panel.mirror_post import MirrorPost
 from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.poll_close import PollCloser
+from fluxer_panel.poll_flow import PollFlow
 from fluxer_panel.poll_post import PollPost
-from fluxer_panel.presses import FOLLOW_EMOJI, PLAY_NOW_EMOJI, POLL_EMOJI, SESSION_EMOJI, WAKE_EMOJI
+from fluxer_panel.presses import FOLLOW_EMOJI, PLAY_NOW_EMOJI, POLL_EMOJI, SESSION_EMOJI, WAKE_EMOJI, Presses
 from fluxer_panel.seeding import Seeder
 from fluxer_panel.session_commands import SessionCommands
+from fluxer_panel.session_flow import SessionFlow
 from fluxer_panel.session_post import SessionPost
 from tests.fakes import FakeFluxerState, Override, make_rest_app, wait_until
 from tests.test_card_commands import DM_MESSAGES, World, build
@@ -740,3 +745,153 @@ async def test_a_mirror_refused_on_the_move_is_named_in_the_reply(modes_world: W
     assert f"<#{FAR_COPY}>" in reply.payload["content"]
     new = await modes_world.db.run(lambda c: mirrors.get(c, "session", session_id, sub.id))
     assert new is not None and new.channel_id == FAR_LOCAL
+
+
+# A far vote and a far RSVP made through a both copy keep their home roster and tally when the copy goes local ---
+
+HOME_PLAY = "2101"          # the home play-now channel: the home poll and the home session are posted here
+FAR_VOTER = "1210"          # a holder of B's follow role: votes by DM reply and reacts on B's session mirror
+
+
+@dataclass
+class Flows:
+    world: World
+    poll_flow: PollFlow
+    poll_post: PollPost
+    session_flow: SessionFlow
+    interactions: Interactions
+    presses: Presses
+
+
+@pytest.fixture
+async def flows(db: Database, session: aiohttp.ClientSession, aiohttp_server: Any) -> AsyncIterator[Flows]:
+    """The modes world with a home play-now channel and the home poll, session, reaction and reconcile paths wired as
+    the poller has them. The far voter holds the role that subscription B creates."""
+    state = FakeFluxerState(bot_user_id=BOT)
+    state.guilds[GAMES] = {"id": GAMES}
+    state.channels[GAMES_CH] = {"id": GAMES_CH, "type": 0, "guild_id": GAMES, "name": "games"}
+    state.channels[HOME_PLAY] = {"id": HOME_PLAY, "type": 0, "guild_id": GAMES, "name": "play"}
+    state.guilds[FAR] = {"id": FAR}
+    for channel in (FAR_COPY, FAR_LOCAL):
+        state.channels[channel] = {"id": channel, "type": 0, "guild_id": FAR, "name": "lounge"}
+    state.roles = {FAR: far_roles()}
+    state.members = {(FAR, BOT): {"roles": [BOT_ROLE]},
+                     (FAR, FAR_VOTER): {"user": {"id": FAR_VOTER}, "roles": [NEW_ROLE]}}
+    state.next_role_id = int(NEW_ROLE)
+    server = await aiohttp_server(make_rest_app(state))
+    base = str(server.make_url("/")).rstrip("/")
+    world = await build(db, state, base, session, GAMES_CHANNEL_ID=GAMES_CH, PLAY_NOW_CHANNEL_ID=HOME_PLAY)
+    locks = world.ctx.locks
+    pacer = ChannelPacer(max_calls=1000)
+    backoff = DmBackoff(world.config.dm_backoff_seconds, clock=clock)
+    identity = BotIdentity(user_id=BOT)
+    games_guild = GamesGuild(world.rest, world.config)
+    mirror = MirrorPost(db=db, rest=world.rest, config=world.config)
+    session_post = SessionPost(db=db, rest=world.rest, config=world.config, pacer=pacer, backoff=backoff,
+                               mirrors=mirror)
+    session_flow = SessionFlow(db=db, rest=world.rest, config=world.config, locks=locks, session_post=session_post,
+                               games_guild=games_guild, pacer=pacer, identity=identity, backoff=backoff,
+                               limiter=NonAdminLimiter(world.config, clock=clock), clock=clock, kick=lambda: None)
+    poll_post = PollPost(db=db, rest=world.rest, config=world.config, pacer=ChannelPacer(max_calls=1000),
+                         identity=identity, backoff=backoff, edit_delay=0, sleep=never, mirror_post=mirror)
+    poll_flow = PollFlow(db=db, rest=world.rest, config=world.config, locks=locks, poll_post=poll_post,
+                         backoff=backoff, games_guild=games_guild, clock=clock, kick=lambda: None,
+                         session_flow=session_flow, mirror_post=mirror)
+    interactions = Interactions(db=db, rest=world.rest, config=world.config, locks=locks, games_guild=games_guild,
+                                seeder=Seeder(rest=world.rest, pacer=pacer, db=db), pacer=pacer, identity=identity,
+                                roles=RoleCache(world.rest), clock=clock, kick=lambda: None,
+                                session_post=session_post, backoff=backoff, session_flow=session_flow)
+    presses = Presses(db=db, rest=world.rest, config=world.config, handler=interactions, games_guild=games_guild,
+                      pacer=pacer, identity=identity, clock=clock, backoff=backoff)
+    # The card-command wiring the subscribe path reads, as the modes_world fixture sets it.
+    world.ctx.session_commands = SessionCommands(db=db, rest=world.rest, config=world.config, locks=locks,
+                                                 session_post=session_post, clock=clock, kick=lambda: None)
+    world.ctx.mirror_backfill = MirrorBackfill(db=db, config=world.config, session_post=session_post,
+                                               mirror_post=mirror)
+    world.ctx.poll_closer = PollCloser(db=db, locks=locks, poll_post=poll_post, clock=clock)
+    world.ctx.play_now_ender = Interactions(db=db, rest=world.rest, config=world.config, locks=locks,
+                                            games_guild=games_guild,
+                                            seeder=Seeder(rest=world.rest, pacer=pacer, db=db), pacer=pacer,
+                                            identity=identity, roles=RoleCache(world.rest), clock=clock)
+    world.ctx.roles = RoleCache(world.rest)
+    world.ctx.identity = identity
+    world.ctx.games_guild = games_guild
+    world.ctx.seeder = Seeder(rest=world.rest, pacer=pacer, db=db)
+    try:
+        yield Flows(world=world, poll_flow=poll_flow, poll_post=poll_post, session_flow=session_flow,
+                    interactions=interactions, presses=presses)
+    finally:
+        await poll_post.aclose(timeout=0.05)
+
+
+def embed_text(world: World, channel: str, message: str) -> str:
+    """The description of the first embed of a message the fake holds."""
+    return str(world.state.messages[(channel, message)]["embeds"][0].get("description", ""))
+
+
+async def test_a_far_vote_and_a_far_rsvp_through_a_both_copy_survive_its_move_to_local(flows: Flows) -> None:
+    world = flows.world
+    state = world.state
+    card = await make_card(world)
+    await world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=both")
+    sub = await sub_of(world, card.id)
+    assert sub is not None and sub.mode == "both"
+
+    poll_id = await flows.poll_flow._open_poll(card.id, starter_id=ADMIN, presser_id=ADMIN, kind="approval",
+                                               parent_poll_id=None,
+                                               options=[(STARTS, "offered"), (STARTS + 3600, "offered")])
+    assert poll_id is not None
+    published = await flows.session_flow.publish(card.id, ADMIN, STARTS)
+    assert published.session_id is not None, published.reply
+    session_id = published.session_id
+    poll = await world.db.run(lambda c: polls.get(c, poll_id))
+    session = await world.db.run(lambda c: sessions.get(c, session_id))
+    assert poll is not None and session is not None and session.message_id is not None
+    poll_mirror = await world.db.run(lambda c: mirrors.get(c, "poll", poll_id, sub.id))
+    session_mirror = await world.db.run(lambda c: mirrors.get(c, "session", session_id, sub.id))
+    assert poll_mirror is not None and session_mirror is not None
+    open_desc = embed_text(world, HOME_PLAY, poll.message_id)
+
+    # The far voter answers the ballot by DM, and reacts going on B's session mirror.
+    await flows.poll_flow.vote(FAR_VOTER, poll_id, "a", reply_channel_id=state.dm_channels[FAR_VOTER])
+    await flows.poll_post.flush(poll_id)
+    voted_desc = embed_text(world, HOME_PLAY, poll.message_id)
+    assert voted_desc != open_desc, "the far vote shows in the home poll"
+    state.reactions[(FAR_COPY, session_mirror.message_id)] = {rsvp.GOING_EMOJI: [FAR_VOTER]}
+    await flows.presses.on_reaction(events.ReactionAdd(
+        user_id=FAR_VOTER, channel_id=FAR_COPY, message_id=session_mirror.message_id, guild_id=FAR,
+        emoji=events.Emoji(name=rsvp.GOING_EMOJI, id=None), member_role_ids=None))
+    assert await world.db.run(lambda c: sessions.presence_via(c, session_id, FAR_VOTER)) == sub.id
+    home_before = embed_text(world, HOME_PLAY, session.message_id)
+
+    # The copy goes from both to local through the real command.
+    world.clear_requests()
+    await world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local")
+
+    after = await sub_of(world, card.id)
+    assert after is not None and after.mode == "local"
+    # (c) both mirrors are deleted, and no mirror row is left
+    assert (FAR_COPY, session_mirror.message_id) in state.deleted
+    assert (FAR_COPY, poll_mirror.message_id) in state.deleted
+    assert await world.db.run(lambda c: mirrors.for_sub(c, sub.id)) == []
+    # (a) the home poll is still open, and the far vote is still counted and shown on the next home poll edit
+    still = await world.db.run(lambda c: polls.get(c, poll_id))
+    assert still is not None and still.state == "open"
+    flows.poll_post.changed(poll_id)
+    await flows.poll_post.flush(poll_id)
+    view = await world.db.run(lambda c: polls.view(c, poll_id))
+    assert view is not None and view.answered == 1
+    assert await world.db.run(lambda c: polls.picks(c, poll_id, FAR_VOTER)) != []
+    assert embed_text(world, HOME_PLAY, poll.message_id) == voted_desc
+    # (b) the far voter is still going with origin B, and the home session message shows the same count
+    rows = await world.db.run(lambda c: sessions.rsvps_of(c, session_id))
+    assert rows.get(FAR_VOTER, (None, None))[0] == "going"
+    assert await world.db.run(lambda c: sessions.presence_via(c, session_id, FAR_VOTER)) == sub.id
+    counts = await world.db.run(lambda c: sessions.counts_of(c, session_id))
+    assert counts.going == 2
+    assert embed_text(world, HOME_PLAY, session.message_id) == home_before
+    # (d) a startup reconcile keeps the far RSVP, whose origin mirror is gone
+    await flows.interactions.reconcile_sessions()
+    rows = await world.db.run(lambda c: sessions.rsvps_of(c, session_id))
+    assert rows.get(FAR_VOTER, (None, None))[0] == "going"
+    assert await world.db.run(lambda c: sessions.presence_via(c, session_id, FAR_VOTER)) == sub.id
