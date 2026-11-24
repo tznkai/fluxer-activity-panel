@@ -368,6 +368,14 @@ def add_presence(conn: sqlite3.Connection, session: Session, user_id: str, choic
     if via_sub_id is None:
         conn.execute("UPDATE rsvp_reaction SET via_sub_id = NULL WHERE session_id = ? AND user_id = ? AND choice = ? "
                      "AND implicit = 0", (session.id, user_id, choice))
+    else:
+        # A reaction on a mirror posted after this row was made: the row now counts as made on that mirror, so a later
+        # removal the bot cannot see is read at the next startup. Only the seq changes.
+        conn.execute(
+            "UPDATE rsvp_reaction SET seq = COALESCE((SELECT MAX(seq) FROM rsvp_reaction WHERE session_id = ?), 0) + 1 "
+            "WHERE session_id = ? AND user_id = ? AND choice = ? AND implicit = 0 AND via_sub_id = ? AND seq <= "
+            "(SELECT posted_seq FROM mirror_message WHERE session_id = ? AND sub_id = ?)",
+            (session.id, session.id, user_id, choice, via_sub_id, session.id, via_sub_id))
     return False
 
 
@@ -397,6 +405,17 @@ def origin_subs(conn: sqlite3.Connection, session_id: int) -> frozenset[int]:
     rows = conn.execute("SELECT DISTINCT via_sub_id FROM rsvp_reaction WHERE session_id = ? AND implicit = 0 "
                         "AND via_sub_id IS NOT NULL", (session_id,)).fetchall()
     return frozenset(int(row[0]) for row in rows)
+
+
+def predated_origin_rows(conn: sqlite3.Connection, session_id: int) -> list[tuple[str, str, int]]:
+    """The real RSVP rows of a session that were made before their origin's current mirror of it was posted, as (user
+    id, choice, subscription id). Such a row cannot be on that mirror, so the startup reconcile must not read it as
+    removed."""
+    rows = conn.execute(
+        "SELECT r.user_id, r.choice, r.via_sub_id FROM rsvp_reaction r JOIN mirror_message m "
+        "ON m.session_id = r.session_id AND m.sub_id = r.via_sub_id "
+        "WHERE r.session_id = ? AND r.implicit = 0 AND r.seq <= m.posted_seq", (session_id,)).fetchall()
+    return sorted(((user_id, choice, sub_id) for user_id, choice, sub_id in rows), key=lambda row: int(row[0]))
 
 
 def presence_from_subs(conn: sqlite3.Connection, session_id: int, sub_ids: Iterable[int]) -> list[tuple[str, str, int]]:

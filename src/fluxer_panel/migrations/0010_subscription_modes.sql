@@ -63,6 +63,7 @@ CREATE TABLE mirror_message (
     session_id   INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
     poll_id      INTEGER REFERENCES polls(id) ON DELETE CASCADE,
     play_now_id  INTEGER REFERENCES play_now(id) ON DELETE CASCADE,
+    posted_seq   INTEGER CHECK (posted_seq IS NULL OR posted_seq >= 0),
     CHECK ((session_id IS NOT NULL) + (poll_id IS NOT NULL) + (play_now_id IS NOT NULL) = 1)
 ) STRICT;
 CREATE UNIQUE INDEX mirror_session  ON mirror_message (session_id, sub_id)  WHERE session_id IS NOT NULL;

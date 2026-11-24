@@ -30,7 +30,7 @@ ALLOWED_COLUMNS: dict[str, set[str]] = {
                           "local_channel_id"},
     "subscription_follow_role": {"sub_id", "role_id"},
     "mirror_message": {"id", "sub_id", "channel_id", "message_id", "content_hash", "session_id", "poll_id",
-                       "play_now_id"},
+                       "play_now_id", "posted_seq"},
     "families": {"id", "created_at"},
     "family_members": {"family_id", "user_id", "relation"},
     "sessions": {"id", "card_id", "guild_id", "channel_id", "message_id", "starts_at", "ends_at", "proposer_id",

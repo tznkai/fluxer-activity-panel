@@ -247,8 +247,9 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   scope mode. The mode write is compare-and-set (`subscriptions.set_mode_if`). A change to `redirect` forgets the local
   channel; `both` to `local` deletes the mirrors only. A copy that enters `both` is back-filled under the lock. A
   `channel=` change on a copy that stays `both` moves its mirrors the same way: `delete_mirrors_locked`, the new local
-  channel stored, then `backfill_locked`, all under the lock, with the seeds after it. Its RSVP rows are kept, and a
-  mirror that cannot be deleted is named in the reply.
+  channel stored, then `backfill_locked`, all under the lock, with the seeds after it. Its RSVP rows are kept, also across a
+  restart (the new mirror cannot show them, see the Sessions rules), and a mirror that cannot be deleted is named in the
+  reply.
 - Each local or both subscription has its own follow role in its own community (`subscription_follow_role`), set by
   `follow_roles.ensure_follow_role(..., sub_id=)` after the card lock. Its bell toggles that role only; with none
   stored the copy gets no bell. `cards.follow_role_ids` (the role-call allowlist) includes these roles.
@@ -309,7 +310,10 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   reconcile drops the implicit row of every user with a reaction before it adds that user's real row. The startup
   reconcile also carries a real row whose origin mirror is unreadable (403, dropped on 404, or no longer stored because
   the copy left both or was unsubscribed): it stays with its origin, unless a readable message shows that user with the
-  same choice (`interactions._carry_unreadable`).
+  same choice (`interactions._carry_unreadable`). A row made before its origin's current mirror was posted is carried
+  the same way, since that mirror cannot show it (`mirror_message.posted_seq`, the session's highest RSVP seq at the
+  post). A re-reaction on the current mirror refreshes the row's seq (`sessions.add_presence`), so a removal the bot
+  can see is read at the next startup.
 - The non-admin paths are `dm_router` with `help`/`!help` (the command heads; admin heads only when `admin.authorize`
   passes; answered before a draft or ballot takes the reply), `!session` (`session_commands.py`), `!poll`, and ballot replies. `NonAdminLimiter.admit`
   allows 5 DM commands, draft or ballot replies, or 📅 DM reactions per 60 seconds per non-admin user. Admins are exempt. A `!session`
@@ -485,7 +489,8 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   cascading with it. `sessions`, `polls` and `play_now` gain `scope_sub_id` (NULL is the home scope) with
   `ON DELETE RESTRICT`, so a subscription that owns scoped rows cannot be deleted by SQL. `poll_ballots.via_sub_id` and
   `rsvp_reaction.via_sub_id` are plain integers with no foreign key, because an id is never reused. `mirror_message`
-  holds one row per home session, poll or play-now post re-posted in a `both` subscription (exactly one object id per
+  holds one row per home session, poll or play-now post re-posted in a `both` subscription (`posted_seq` is set for a
+  session mirror only: the session's highest RSVP seq when it was posted; exactly one object id per
   row, cascading with the subscription and the object).
 - Migrations: `src/fluxer_panel/migrations/NNNN_name.sql`, numbered and contiguous from `0001`. Never edit a migration
   after release; add a new file instead. Do not put `BEGIN`, `COMMIT` or `PRAGMA user_version` in a file: the runner adds them.

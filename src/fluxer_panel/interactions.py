@@ -874,15 +874,17 @@ def _carry_unreadable(conn: Any, session_id: int, readings: dict[rsvp.Choice, se
     read carried over. An origin is unreadable when its mirror answers 403, when its mirror answered 404 and was
     dropped, or when the session has no stored mirror of that subscription any more (the copy left both, or was
     unsubscribed).
-    `readable` lists the origins whose mirror was read. A stored row whose origin is unreadable stays as it is when no
-    readable message shows that same choice for that user: the bot cannot tell that the user left it. A user a readable
-    message shows keeps the origin that reading gives (home wins). Every other row is reconciled as read."""
+    A row made before its origin's current mirror was posted is carried too: that mirror cannot show it.
+    `readable` lists the origins whose mirror was read. A carried row stays as it is when no readable message shows that
+    same choice for that user: the bot cannot tell that the user left it. A user a readable message shows keeps the
+    origin that reading gives (home wins). Every other row is reconciled as read."""
     unreadable = sessions.origin_subs(conn, session_id) - readable
-    if not unreadable:
+    held = sessions.presence_from_subs(conn, session_id, unreadable) + sessions.predated_origin_rows(conn, session_id)
+    if not held:
         return readings, via, frozenset()
     carried: dict[rsvp.Choice, set[str]] = {choice: set(users) for choice, users in readings.items()}
     kept: set[tuple[str, str]] = set()
-    for user_id, choice, _sub_id in sessions.presence_from_subs(conn, session_id, unreadable):
+    for user_id, choice, _sub_id in held:
         if user_id in readings.get(choice, set()):
             continue
         carried.setdefault(choice, set()).add(user_id)

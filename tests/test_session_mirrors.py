@@ -686,3 +686,67 @@ async def test_a_home_user_whose_home_reaction_is_gone_is_still_removed_while_a_
     await world.interactions.reconcile_sessions()
     assert HOME_ONLY_USER not in await going(world, session_id)
     assert FAR_USER in await going(world, session_id)
+
+
+# A far RSVP made before its copy's session mirror was posted again (a channel= move, or leaving both and re-entering)
+# survives the startup reconcile, since the new mirror cannot show the old reaction (AC3.8) -------------------------
+
+async def repost_mirror(world: SimpleNamespace, session_id: int, channel_id: str | None = None) -> None:
+    """What a channel= move or a re-entry does to a both copy: its mirrors are deleted, the local channel is set when
+    one is given, and the session mirror is posted again."""
+    def tx(conn: Any) -> None:
+        mirrors.delete_for_sub(conn, world.sub_b)
+        if channel_id is not None:
+            subscriptions.set_local_channel(conn, world.sub_b, channel_id)
+    await world.db.run(tx)
+    await world.post.sync_mirrors(session_id)
+
+
+async def test_a_far_rsvp_made_before_a_channel_move_survives_a_restart(world: SimpleNamespace) -> None:
+    session_id, _home_id, _mirror_id = await far_rsvp_via_b(world)
+    await repost_mirror(world, session_id, FAR_L)
+    await world.interactions.reconcile_sessions()
+    assert FAR_USER in await going(world, session_id)
+    assert await origin(world, session_id, FAR_USER) == world.sub_b
+
+
+async def test_a_far_rsvp_survives_leaving_both_and_re_entering_across_a_restart(world: SimpleNamespace) -> None:
+    session_id, _home_id, _mirror_id = await far_rsvp_via_b(world)
+    await leave_both(world)
+    await world.db.run(lambda c: subscriptions.set_mode_if(c, world.sub_b, "local", "both"))
+    await world.post.sync_mirrors(session_id)
+    await world.interactions.reconcile_sessions()
+    assert FAR_USER in await going(world, session_id)
+    assert await origin(world, session_id, FAR_USER) == world.sub_b
+
+
+async def test_a_user_who_reacts_on_the_new_mirror_and_then_removes_it_is_removed_at_a_restart(
+        world: SimpleNamespace) -> None:
+    session_id, _home_id, _mirror_id = await far_rsvp_via_b(world)
+    await repost_mirror(world, session_id, FAR_L)
+    new_id = await mirror_message(world, world.sub_b, session_id)
+    set_going(world, FAR_L, new_id, [FAR_USER])
+    await world.presses.on_reaction(reaction(FAR_USER, FAR_L, new_id))
+    set_going(world, FAR_L, new_id, [])                       # removed while the bot is down
+    await world.interactions.reconcile_sessions()
+    assert FAR_USER not in await going(world, session_id)
+
+
+async def test_a_far_rsvp_before_a_channel_move_is_kept_by_two_reconciles_in_a_row(world: SimpleNamespace) -> None:
+    session_id, _home_id, _mirror_id = await far_rsvp_via_b(world)
+    await repost_mirror(world, session_id, FAR_L)
+    for _ in range(2):
+        await world.interactions.reconcile_sessions()
+        assert FAR_USER in await going(world, session_id)
+        assert await origin(world, session_id, FAR_USER) == world.sub_b
+
+
+async def test_a_home_user_whose_home_reaction_is_removed_is_still_removed_after_a_channel_move(
+        world: SimpleNamespace) -> None:
+    session_id, home_id, _mirror_id = await far_rsvp_via_b(world)
+    await repost_mirror(world, session_id, FAR_L)
+    set_going(world, HOME, home_id, [HOME_ONLY_USER])
+    await world.presses.on_reaction(reaction(HOME_ONLY_USER, HOME, home_id))
+    set_going(world, HOME, home_id, [])                       # the home reaction is removed while the bot is down
+    await world.interactions.reconcile_sessions()
+    assert HOME_ONLY_USER not in await going(world, session_id)
