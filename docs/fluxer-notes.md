@@ -494,9 +494,10 @@ channel ID.
 
 ## Live sub-mode checks
 
-- Plan only, not yet run. The operator runs each check by hand, in the private test guild and a second test community
-  with a second test account, and records the result on the `Result` lines. Nothing from the real instance is recorded
-  in this file.
+- Run in part on 2026-11-25 (UTC), against a v9 test database that the build migrated to v10. The run stopped where it
+  needed more test accounts than were available; the checks not run are marked so. The operator runs each check by
+  hand, in the private test guild and a second test community with a second test account, and records the result on
+  the `Result` lines. Nothing from the real instance is recorded in this file.
 - Use placeholders only: `<guild>` is the test community's id, `<far guild>` is the second community's id, `<channel>`
   is a text channel's id, `<role>` is a role id and `<n>` is a poll number. Emoji are written as Unicode code points: the
   raised hand (U+1F64B), the calendar (U+1F4C5), the ballot box (U+1F5F3 U+FE0F) and the bell (U+1F514).
@@ -509,8 +510,12 @@ channel ID.
 - Expected: the role is created, or an unmanaged role with the same name is adopted, mentionable, with no permissions
   and below the bot's top role. The poll message and the play-now post ping only that role, in the far community, and
   nothing in the home community.
-- Result (web): not yet run.
-- Result (mobile): not yet run.
+- Result (web): pass, as far as run. The role was created in the far community: mentionable, with no
+  permissions and below the bot's top role. The bell gave and took it, and the home role was not touched. The poll and
+  the play-now post went to the far community only, and nothing was posted at home. A second ballot box press on
+  the copy was refused while its poll was open, and a home poll opened alongside it. Ping delivery to a second far
+  account was not run.
+- Result (mobile): not run.
 
 ### Far member list
 
@@ -518,8 +523,9 @@ channel ID.
   second account B does not. A starts a poll on the local copy with the ballot box (U+1F5F3 U+FE0F).
 - Expected: the ballot reaches A (a far-community holder of the role) and not B. The read of the far community's member
   list succeeds with the bot's usual permissions, so the start is not refused. Record the number of ballots sent.
-- Result (web): not yet run.
-- Result (mobile): not yet run.
+- Result (web): run with one holder only. The start was not refused, so the member-list read worked, and one
+  ballot was sent (the starter, who held the role). The second account (B) was not available.
+- Result (mobile): not run.
 
 ### Non-member jump link
 
@@ -527,8 +533,8 @@ channel ID.
   a member of that community. Record what the client shows: the message, a prompt to join, or an error.
 - Expected: none. The design never relies on a non-member opening a jump link. Record the observation only, with no
   judgment on whether it is acceptable.
-- Result (web): not yet run.
-- Result (mobile): not yet run.
+- Result (web): not run.
+- Result (mobile): not run.
 
 ### Mirror RSVP and Me Too
 
@@ -538,8 +544,10 @@ channel ID.
   Me Too on the home post.
 - Expected: the counts on the home message and on the mirror match, each time, after a short wait. The far account's
   RSVP shows on the session's count, once. Me Too on the mirror counts toward the same post as on the home message.
-- Result (web): not yet run.
-- Result (mobile): not yet run.
+- Result (web): in part. A home play-now post and a home poll were mirrored into the both copy's
+  channel, and after a `channel=` move the new mirrors went to the new channel. The RSVP and Me Too counts were not run:
+  they need a going account in each community.
+- Result (mobile): not run.
 
 ## First cards
 
