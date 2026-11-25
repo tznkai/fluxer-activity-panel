@@ -22,7 +22,10 @@ from typing import Literal, Protocol
 
 from fluxer_client import events
 from fluxer_client.rest import FluxerHTTPError, FluxerREST
-from fluxer_panel import board, cards, interaction_settings, notify, play_now, polls, rsvp, sessions, subscriptions, text
+from fluxer_panel import (
+    board, cards, interaction_settings, mirrors, notify, play_now, polls, rsvp, sessions, subscriptions, text,
+)
+from fluxer_panel.subscriptions import Subscription
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.dm_backoff import DmBackoff
@@ -72,6 +75,9 @@ class Surface:
     message_id: str
     guild_id: str | None
     home_community: bool   # the surface's community is the games channel's
+    sub_id: int | None = None   # the copy's subscription, for a copy; None for the card and play-now posts
+    mode: str | None = None     # that subscription's mode when the press was seen
+    mirror_of: str | None = None   # a play-now mirror: the home play-now message's id; None for every other surface
 
 
 @dataclass(frozen=True)
@@ -86,7 +92,8 @@ class Press:
 class PressHandler(Protocol):
     async def handle(self, press: Press) -> None: ...
     async def me_too_changed(self, card_id: int, surface: Surface, user_id: str) -> None: ...
-    async def rsvp_changed(self, session_id: int, user_id: str, choice: rsvp.Choice, added: bool) -> None: ...
+    async def rsvp_changed(self, session_id: int, user_id: str, choice: rsvp.Choice, added: bool, *,
+                           via_sub_id: int | None = None, message_id: str | None = None) -> None: ...
     async def poll_reaction(self, poll_id: int, user_id: str, emoji: str, channel_id: str,
                             message_id: str) -> None: ...
 
@@ -97,18 +104,22 @@ class _Lookup:
     kind: SurfaceKind
     switched_on: bool   # the global switch is on and the card is not switched off
     degraded: bool      # the channel refuses the bot's removals
+    sub: Subscription | None = None   # the copy's subscription, for a copy
+    mirror_of: str | None = None      # the home play-now message, for a play-now mirror
 
 
-def _find_surface(conn, channel_id: str, message_id: str) -> tuple[int, SurfaceKind] | None:
-    """The card and the kind of surface a message is, when it is a live card's, a live copy's or a live play-now post in
-    this channel. The board's message is never a surface."""
+def _find_surface(conn, channel_id: str, message_id: str
+                  ) -> tuple[int, SurfaceKind, Subscription | None, str | None] | None:
+    """The card, the kind of surface a message is, for a copy its subscription and for a play-now mirror the home
+    play-now message's id. A live card's, a live copy's, a live play-now post's or a live play-now mirror's, in this
+    channel. The board's message is never a surface."""
     if board.get(conn).message_id == message_id:
         return None
     card = cards.get_by_message_id(conn, message_id)
     if card is not None:
         if card.state != "live" or card.channel_id != channel_id:
             return None
-        return card.id, "card"
+        return card.id, "card", None, None
     sub = subscriptions.get_by_message_id(conn, message_id)
     if sub is not None:
         if sub.channel_id != channel_id or sub.paused:
@@ -116,12 +127,21 @@ def _find_surface(conn, channel_id: str, message_id: str) -> tuple[int, SurfaceK
         copied = cards.get_by_id(conn, sub.card_id)
         if copied is None or copied.state != "live":
             return None
-        return copied.id, "copy"
+        return copied.id, "copy", sub, None
     post = play_now.get_live_by_message(conn, message_id)
     if post is not None and post.channel_id == channel_id:
         owner = cards.get_by_id(conn, post.card_id)
         if owner is not None and owner.state == "live":
-            return owner.id, "play_now"
+            return owner.id, "play_now", None, None
+        return None
+    mirror = mirrors.get_by_message_id(conn, message_id)
+    if mirror is not None and mirror.kind == "play_now" and mirror.channel_id == channel_id:
+        home = play_now.get_by_id(conn, mirror.object_id)
+        if home is None or home.state != "live":
+            return None
+        owner = cards.get_by_id(conn, home.card_id)
+        if owner is not None and owner.state == "live":
+            return owner.id, "play_now", None, home.message_id
     return None
 
 
@@ -129,10 +149,10 @@ def _lookup(conn, channel_id: str, message_id: str) -> _Lookup | None:
     found = _find_surface(conn, channel_id, message_id)
     if found is None:
         return None
-    card_id, kind = found
+    card_id, kind, sub, mirror_of = found
     switched_on = interaction_settings.enabled(conn) and not interaction_settings.card_off(conn, card_id)
     return _Lookup(card_id=card_id, kind=kind, switched_on=switched_on,
-                   degraded=interaction_settings.is_degraded(conn, channel_id))
+                   degraded=interaction_settings.is_degraded(conn, channel_id), sub=sub, mirror_of=mirror_of)
 
 
 def _find_poll(conn, channel_id: str, message_id: str) -> int | None:
@@ -143,13 +163,17 @@ def _find_poll(conn, channel_id: str, message_id: str) -> int | None:
     return poll.id
 
 
-def _find_session(conn, channel_id: str, message_id: str) -> int | None:
-    """The id of the session whose message this is, when it is in this channel. The state is not checked here:
+def _find_session(conn, channel_id: str, message_id: str) -> tuple[int, int | None] | None:
+    """The session whose message this is, in this channel: its home message, or else one of its mirrors. Returns the
+    session id and the mirror's subscription (None for the home message). The state is not checked here:
     `Interactions.rsvp_changed` reads it under the card's lock."""
     session = sessions.get_by_message(conn, message_id)
-    if session is None or session.channel_id != channel_id:
-        return None
-    return session.id
+    if session is not None and session.channel_id == channel_id:
+        return session.id, None
+    mirror = mirrors.get_by_message_id(conn, message_id)
+    if mirror is not None and mirror.kind == "session" and mirror.channel_id == channel_id:
+        return mirror.object_id, mirror.sub_id
+    return None
 
 
 class Presses:
@@ -176,11 +200,13 @@ class Presses:
         # 1b. RSVP reactions on a session message are state, not presses: no kill switch, no rate limit, no removal.
         choice = rsvp.choice_for(event.emoji.name) if event.emoji.id is None else None
         if choice is not None:
-            session_id = await self._db.run(lambda c: _find_session(c, event.channel_id, event.message_id))
-            if session_id is not None:
+            found = await self._db.run(lambda c: _find_session(c, event.channel_id, event.message_id))
+            if found is not None:
+                session_id, via_sub_id = found
                 try:
                     await self._handler.rsvp_changed(session_id, event.user_id, choice,
-                                                     isinstance(event, events.ReactionAdd))
+                                                     isinstance(event, events.ReactionAdd),
+                                                     via_sub_id=via_sub_id, message_id=event.message_id)
                 except Exception as exc:  # noqa: BLE001 - a failed RSVP is logged, never raised into the gateway
                     log_event(log, "rsvp_failed", level=logging.WARNING, session_id=session_id,
                               reason=type(exc).__name__)
@@ -210,7 +236,7 @@ class Presses:
         me_too = found.kind == "play_now" and action is Action.PLAY_NOW
         if isinstance(event, events.ReactionRemove) and not me_too:
             return   # 6. Removals are never presses, in any channel
-        surface = await self._surface(event, found.kind)
+        surface = await self._surface(event, found.kind, found.sub, found.mirror_of)
         if me_too:
             try:
                 await self._handler.me_too_changed(found.card_id, surface, event.user_id)
@@ -239,11 +265,15 @@ class Presses:
         # 9. Removal, so the button resets for the next tap.
         await self._remove(event, degraded=found.degraded, now=now)
 
-    async def _surface(self, event: events.ReactionAdd | events.ReactionRemove, kind: SurfaceKind) -> Surface:
+    async def _surface(self, event: events.ReactionAdd | events.ReactionRemove, kind: SurfaceKind,
+                       sub: Subscription | None = None, mirror_of: str | None = None) -> Surface:
         games_guild_id = await self._games_guild.get()
-        home = games_guild_id is not None and event.guild_id == games_guild_id
+        # A play-now mirror is never home, even in the games community: it has no scope of its own.
+        home = games_guild_id is not None and event.guild_id == games_guild_id and mirror_of is None
         return Surface(kind=kind, channel_id=event.channel_id, message_id=event.message_id,
-                       guild_id=event.guild_id, home_community=home)
+                       guild_id=event.guild_id, home_community=home,
+                       sub_id=None if sub is None else sub.id, mode=None if sub is None else sub.mode,
+                       mirror_of=mirror_of)
 
     def _admit(self, card_id: int, action: Action, user_id: str, now: float) -> str | None:
         """None when the press is handled, else the reason it is absorbed. Only a handled press moves the windows."""

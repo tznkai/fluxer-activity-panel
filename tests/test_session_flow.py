@@ -88,6 +88,7 @@ class World:
     interactions: Interactions
     card_id: int
     kicks: list[int]
+    locks: CardLocks
 
 
 def config_for(*, play_now: bool) -> Config:
@@ -145,7 +146,7 @@ async def build(tmp_path: Path, aiohttp_server: Any) -> AsyncIterator[Callable[.
                                         session_flow=flow)
             card_id = await database.run(lambda c: seed_card(c, own_channel=own_channel))
             return World(db=database, state=state, rest=rest, clock=clock, config=config, backoff=backoff,
-                         post=post, flow=flow, interactions=interactions, card_id=card_id, kicks=kicks)
+                         post=post, flow=flow, interactions=interactions, card_id=card_id, kicks=kicks, locks=locks)
 
         yield make
     for database in opened:
@@ -948,3 +949,156 @@ async def test_the_calendar_prompt_offers_exactly_offered_slot_times(build: Any)
 
 def panel_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
     return [r for r in caplog.records if r.name.startswith("fluxer_panel.session_flow")]
+
+
+# AC2.4: a local or both copy runs sessions in its own scope ------------------------------------------------
+
+FAR_LOCAL = "3600"          # a local subscription's own channel, in OTHER_GUILD
+FAR_LOCAL_POSTS = f"/api/v1/channels/{FAR_LOCAL}/messages"
+FAR_POSTS = f"/api/v1/channels/{FAR}/messages"
+
+
+def far_press(card_id: int, sub_id: int | None, *, mode: str = "local", kind: str = "copy",
+              user: str = PROPOSER, home_community: bool = False) -> Press:
+    """A press on a far surface: a copy of subscription sub_id, or (sub_id None) a far card or play-now post."""
+    surface = Surface(kind=kind, channel_id=FAR, message_id=COPY_MSG, guild_id=OTHER_GUILD,
+                      home_community=home_community, sub_id=sub_id, mode=mode)
+    return Press(card_id=card_id, action=Action.SESSION, user_id=user, member_role_ids=None, surface=surface)
+
+
+async def add_scope(world: World, *, mode: str = "local", local_channel: str | None = FAR_LOCAL) -> int:
+    world.state.channels[FAR_LOCAL] = {"id": FAR_LOCAL, "guild_id": OTHER_GUILD, "type": 0}
+
+    def tx(c: Any) -> int:
+        sub_id = subscriptions.add(c, world.card_id, OTHER_GUILD, FAR)
+        assert subscriptions.set_mode_if(c, sub_id, "redirect", mode)
+        subscriptions.set_local_channel(c, sub_id, local_channel)
+        return sub_id
+
+    return await world.db.run(tx)
+
+
+async def far_confirm(world: World, sub_id: int) -> str:
+    """Presses the calendar on the far copy, picks the first slot, and returns the confirmation's message id."""
+    await world.flow.start(far_press(world.card_id, sub_id))
+    prompt = dm_ids(world, "Pick a time")[-1]
+    await world.flow.on_dm_reaction(dm_reaction(PROPOSER, dm_channel_of(world), prompt, keycap(1)))
+    return dm_ids(world, "to post it")[-1]
+
+
+async def test_a_local_copy_check_posts_the_session_in_its_own_channel_and_stores_its_scope(build: Any) -> None:
+    world = await build()
+    sub_id = await add_scope(world)
+    confirm = await far_confirm(world, sub_id)
+
+    await world.flow.on_dm_reaction(dm_reaction(PROPOSER, dm_channel_of(world), confirm, rsvp.GOING_EMOJI))
+
+    [posted] = [mid for (cid, mid) in world.state.messages if cid == FAR_LOCAL]
+    assert len(requests(world, "POST", FAR_LOCAL_POSTS)) == 1
+    assert posted_ids(world) == []
+    assert requests(world, "POST", PLAY_NOW_POSTS) == []
+    session = await world.db.run(lambda c: sessions.get_by_message(c, posted))
+    assert session is not None and session.scope_sub_id == sub_id
+
+
+async def test_a_local_copy_without_a_local_channel_posts_in_the_copy_itself(build: Any) -> None:
+    world = await build()
+    sub_id = await add_scope(world, local_channel=None)
+    confirm = await far_confirm(world, sub_id)
+
+    await world.flow.on_dm_reaction(dm_reaction(PROPOSER, dm_channel_of(world), confirm, rsvp.GOING_EMOJI))
+
+    assert len(requests(world, "POST", FAR_POSTS)) == 1
+    assert requests(world, "POST", FAR_LOCAL_POSTS) == []
+    assert posted_ids(world) == []
+
+
+async def test_a_local_press_with_a_full_home_scope_is_still_accepted(build: Any) -> None:
+    world = await build()
+    await add_sessions(world, sessions.MAX_PER_CARD, proposer=lambda n: f"70{n:02d}")
+    sub_id = await add_scope(world)
+
+    await world.flow.start(far_press(world.card_id, sub_id))
+
+    assert world.flow.has_draft(PROPOSER) is True
+    assert "Pick a time" in dm_texts(world)[-1]
+    assert not any(text.SESSION_CAP["card"].split(" already")[0] in content for content in dm_texts(world))
+
+
+async def test_a_local_scope_refuses_a_fourth_session_by_one_proposer_and_home_still_accepts_her(build: Any) -> None:
+    world = await build()
+    sub_id = await add_scope(world)
+    slot = [int(NOW) + (2 + n) * 86400 for n in range(4)]
+    for n in range(sessions.MAX_PER_PROPOSER):
+        published = await world.flow.publish(world.card_id, PROPOSER, slot[n], notify_proposer=False,
+                                             scope_sub_id=sub_id)
+        assert published.session_id is not None
+    refused = await world.flow.publish(world.card_id, PROPOSER, slot[3], notify_proposer=False, scope_sub_id=sub_id)
+    assert refused.cap == "proposer" and refused.session_id is None
+    home = await world.flow.publish(world.card_id, PROPOSER, slot[3], notify_proposer=False)
+    assert home.session_id is not None and home.cap is None
+
+
+async def test_a_local_copy_whose_scope_turns_redirect_before_the_check_posts_nothing(build: Any) -> None:
+    world = await build()
+    sub_id = await add_scope(world)
+    confirm = await far_confirm(world, sub_id)
+    await world.db.run(lambda c: c.execute("UPDATE card_subscription SET mode = 'redirect' WHERE id = ?", (sub_id,)))
+
+    await world.flow.on_dm_reaction(dm_reaction(PROPOSER, dm_channel_of(world), confirm, rsvp.GOING_EMOJI))
+
+    assert dm_texts(world)[-1] == text.SESSION_SCOPE_GONE
+    assert requests(world, "POST", FAR_LOCAL_POSTS) == []
+    assert requests(world, "POST", FAR_POSTS) == []
+    assert requests(world, "POST", PLAY_NOW_POSTS) == []
+
+
+@pytest.mark.parametrize("ending", [
+    "UPDATE card_subscription SET mode = 'redirect' WHERE id = ?",
+    "UPDATE card_subscription SET paused = 1 WHERE id = ?",
+])
+async def test_a_local_copy_whose_scope_ends_while_the_post_waits_for_the_lock_posts_nothing(build: Any,
+                                                                                            ending: str) -> None:
+    """The scope is read before the lock and again under it. A scope that ends while the post waits for the lock (its
+    copy turns redirect, or is paused) refuses under the lock: nothing is posted and nothing is stored."""
+    world = await build()
+    sub_id = await add_scope(world)
+    lock = world.locks.get(world.card_id)
+    await lock.acquire()
+    try:
+        task = asyncio.create_task(world.flow.publish(world.card_id, PROPOSER, in_two_days(), scope_sub_id=sub_id))
+        # Both reads before the lock are done once the post is queued on it, so the change lands after them.
+        await wait_until(lambda: bool(lock._waiters), waiting_for="the post to wait for the card lock")
+        await world.db.run(lambda c: c.execute(ending, (sub_id,)))
+    finally:
+        lock.release()
+    published = await asyncio.wait_for(task, timeout=5)
+
+    assert published.reply == text.SESSION_SCOPE_GONE
+    assert published.session_id is None
+    assert requests(world, "POST", FAR_LOCAL_POSTS) == []
+    assert await world.db.run(lambda c: c.execute("SELECT COUNT(*) FROM sessions WHERE card_id = ?",
+                                                  (world.card_id,)).fetchone()[0]) == 0
+
+
+async def test_a_redirect_far_copy_still_gets_the_pointer_and_no_draft(build: Any) -> None:
+    world = await build()
+    sub_id = await add_scope(world, mode="redirect")
+
+    await world.flow.start(far_press(world.card_id, sub_id, mode="redirect"))
+
+    assert world.flow.has_draft(PROPOSER) is False
+    [content] = dm_texts(world)
+    assert content.startswith(text.SESSION_ELSEWHERE.split("{link}")[0])
+
+
+async def test_a_calendar_press_on_a_far_play_now_post_or_far_card_gets_the_pointer_and_no_draft(build: Any) -> None:
+    world = await build()
+
+    await world.flow.start(far_press(world.card_id, None, kind="play_now"))
+    await world.flow.start(far_press(world.card_id, None, kind="card"))
+
+    assert world.flow.has_draft(PROPOSER) is False
+    assert len(dm_texts(world)) == 2
+    assert all(content.startswith(text.SESSION_ELSEWHERE.split("{link}")[0]) for content in dm_texts(world))
+    assert requests(world, "POST", FAR_POSTS) == []

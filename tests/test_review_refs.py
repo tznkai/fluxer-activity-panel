@@ -62,6 +62,8 @@ TOPICS = [
     "Session purge scrub",
     "Waitlist promotion",
     "Session channel guard",
+    "Mirror links and mentions",
+    "Subscription scopes and mirrors",
     "Poll channel guard",
     "Non-admin DM path",
     "DM backoff",

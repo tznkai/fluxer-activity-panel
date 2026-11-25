@@ -439,13 +439,81 @@ async def test_a_cancelled_publish_drops_its_seed_jobs_and_a_later_publish_seeds
     assert evaluated.far_embed is not None
     monkeypatch.setattr(Poller, "_publish_subscriptions", cancel)
     with pytest.raises(asyncio.CancelledError):
-        await poller._publish(card_id, evaluated.embed, evaluated.far_embed)
+        await poller._publish(card_id, evaluated.embed, evaluated.far_embed, {})
 
     # `_post` ran and queued the card's seed job before the cancel, so the cancel branch must drop it.
     assert card_id not in poller._to_seed
     assert puts(world.state, GAMES, await card_message(db, card_id)) == []
 
     monkeypatch.undo()
-    await poller._publish(card_id, evaluated.embed, evaluated.far_embed)
+    await poller._publish(card_id, evaluated.embed, evaluated.far_embed, {})
 
     assert puts(world.state, GAMES, await card_message(db, card_id)) == []
+
+
+# Subscription scopes: a local copy wants its own bell and hand ---------------------------------------------------
+
+SUB_ROLE = "7200"               # a subscription's follow role, in OTHER_GUILD
+
+
+async def scoped_copy(world: World, db: Database, message_id: str, reacted_with: list[str], *, role: bool) -> int:
+    """A local copy in OTHER_GUILD with a stored message, and optionally its own follow role."""
+    card_id = await stored_copy(world, db, OTHER_COPY, OTHER_GUILD, message_id, reacted_with)
+
+    def tx(conn: Any) -> None:
+        [sub] = subscriptions.list_for_card(conn, card_id)
+        subscriptions.set_mode_if(conn, sub.id, "redirect", "local")
+        if role:
+            cards.set_subscription_role(conn, sub.id, SUB_ROLE)
+
+    await db.run(tx)
+    return card_id
+
+
+async def test_a_local_copy_with_a_stored_role_is_seeded_with_bell_and_hand(world: World, db: Database) -> None:
+    card_id = await live_card(db, "mc")
+    await db.run(lambda c: subscriptions.add(c, card_id, OTHER_GUILD, OTHER_COPY))
+
+    def tx(conn: Any) -> None:
+        [sub] = subscriptions.list_for_card(conn, card_id)
+        subscriptions.set_mode_if(conn, sub.id, "redirect", "local")
+        cards.set_subscription_role(conn, sub.id, SUB_ROLE)
+
+    await db.run(tx)
+    await make_poller(world, Clock()).tick()
+
+    copy = await db.run(lambda c: subscriptions.list_for_card(c, card_id))
+    assert copy[0].message_id is not None
+    assert puts(world.state, OTHER_COPY, copy[0].message_id) == [
+        WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, POLL_EMOJI]
+
+
+async def test_a_local_copy_without_a_stored_role_is_seeded_without_bell(world: World, db: Database) -> None:
+    card_id = await live_card(db, "mc")
+    await db.run(lambda c: subscriptions.add(c, card_id, OTHER_GUILD, OTHER_COPY))
+
+    def tx(conn: Any) -> None:
+        [sub] = subscriptions.list_for_card(conn, card_id)
+        subscriptions.set_mode_if(conn, sub.id, "redirect", "local")
+
+    await db.run(tx)
+    await make_poller(world, Clock()).tick()
+
+    copy = await db.run(lambda c: subscriptions.list_for_card(c, card_id))
+    assert copy[0].message_id is not None
+    assert puts(world.state, OTHER_COPY, copy[0].message_id) == [WAKE_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, POLL_EMOJI]
+
+
+async def test_after_the_role_row_is_removed_a_reconcile_adds_no_bell(world: World, db: Database) -> None:
+    message_id = "5005"
+    card_id = await scoped_copy(world, db, message_id, [WAKE_EMOJI], role=True)
+
+    def clear(conn: Any) -> None:
+        [sub] = subscriptions.list_for_card(conn, card_id)
+        cards.clear_subscription_role(conn, sub.id)
+
+    await db.run(clear)
+
+    await make_poller(world, Clock()).reconcile()
+
+    assert puts(world.state, OTHER_COPY, message_id) == [PLAY_NOW_EMOJI, SESSION_EMOJI, POLL_EMOJI]

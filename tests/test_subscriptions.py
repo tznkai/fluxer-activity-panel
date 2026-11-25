@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 K. Chen
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""The subscription store against a real SQLite file: one row per card and channel, the cap of five per card, pause and
-resume, the conditional message writes, and the cascade when a card is deleted."""
+"""The subscription store against a real SQLite file: one row per card and channel, the cap of twenty per card, pause and
+resume, the conditional message writes, modes and local channels, and the cascade when a card is deleted."""
 
 from __future__ import annotations
 
@@ -15,7 +15,8 @@ from fluxer_panel import cards, subscriptions
 from fluxer_panel.db import Database
 
 GUILD = "1001"
-CHANNELS = tuple(str(2000 + n) for n in range(1, 7))   # 2001 to 2006: six channels, one more than the cap
+CHANNELS = tuple(str(2000 + n) for n in range(1, 7))   # 2001 to 2006: six channels
+CAP_CHANNELS = tuple(str(2100 + n) for n in range(1, 22))   # 2101 to 2121: one more than the cap of twenty
 MESSAGE = "5001"
 OTHER_MESSAGE = "5002"
 HASH = "a" * 64
@@ -41,31 +42,42 @@ async def fetch(db: Database, card_id: int, channel_id: str) -> subscriptions.Su
 
 
 async def test_add_stores_an_active_subscription_with_no_message(db: Database, card_id: int) -> None:
-    await db.run(lambda c: subscriptions.add(c, card_id, GUILD, CHANNELS[0]))
+    sub_id = await db.run(lambda c: subscriptions.add(c, card_id, GUILD, CHANNELS[0]))
     assert await fetch(db, card_id, CHANNELS[0]) == subscriptions.Subscription(
-        card_id=card_id, guild_id=GUILD, channel_id=CHANNELS[0], message_id=None, content_hash=None, paused=False)
+        id=sub_id, card_id=card_id, guild_id=GUILD, channel_id=CHANNELS[0], message_id=None, content_hash=None,
+        paused=False, mode="redirect", local_channel_id=None)
 
 
-async def test_a_card_takes_five_channels_and_refuses_a_sixth(db: Database, card_id: int) -> None:
-    for channel in CHANNELS[:5]:
+async def test_add_returns_an_increasing_id_for_each_channel(db: Database, card_id: int) -> None:
+    first = await db.run(lambda c: subscriptions.add(c, card_id, GUILD, CHANNELS[0]))
+    second = await db.run(lambda c: subscriptions.add(c, card_id, GUILD, CHANNELS[1]))
+    assert 0 < first < second
+
+
+async def test_a_card_takes_twenty_channels_and_refuses_a_twenty_first(db: Database, card_id: int) -> None:
+    for channel in CAP_CHANNELS[:20]:
         await db.run(lambda c, ch=channel: subscriptions.add(c, card_id, GUILD, ch))
     with pytest.raises(subscriptions.SubscriptionFull):
-        await db.run(lambda c: subscriptions.add(c, card_id, GUILD, CHANNELS[5]))
-    assert await db.run(lambda c: subscriptions.count(c, card_id)) == 5
-    assert await fetch(db, card_id, CHANNELS[5]) is None
+        await db.run(lambda c: subscriptions.add(c, card_id, GUILD, CAP_CHANNELS[20]))
+    assert await db.run(lambda c: subscriptions.count(c, card_id)) == 20
+    assert await fetch(db, card_id, CAP_CHANNELS[20]) is None
+
+
+def test_the_cap_is_twenty() -> None:
+    assert subscriptions.MAX_SUBSCRIPTIONS == 20
 
 
 async def test_the_cap_counts_paused_subscriptions_too(db: Database, card_id: int) -> None:
-    for channel in CHANNELS[:5]:
+    for channel in CAP_CHANNELS[:20]:
         await db.run(lambda c, ch=channel: subscriptions.add(c, card_id, GUILD, ch))
-    await db.run(lambda c: subscriptions.pause(c, card_id, CHANNELS[0]))
+    await db.run(lambda c: subscriptions.pause(c, card_id, CAP_CHANNELS[0]))
     with pytest.raises(subscriptions.SubscriptionFull):
-        await db.run(lambda c: subscriptions.add(c, card_id, GUILD, CHANNELS[5]))
+        await db.run(lambda c: subscriptions.add(c, card_id, GUILD, CAP_CHANNELS[20]))
 
 
 async def test_the_cap_is_per_card(db: Database, card_id: int) -> None:
     other = await db.run(lambda c: cards.create_card(c, slug="ark", title="Ark", author_id="1001", now=1))
-    for channel in CHANNELS[:5]:
+    for channel in CAP_CHANNELS[:20]:
         await db.run(lambda c, ch=channel: subscriptions.add(c, card_id, GUILD, ch))
     await db.run(lambda c: subscriptions.add(c, other, GUILD, CHANNELS[0]))
     assert await db.run(lambda c: subscriptions.count(c, other)) == 1
@@ -157,8 +169,10 @@ async def test_get_by_message_id_finds_the_copy_holding_that_message(db: Databas
 
     found = await db.run(lambda c: subscriptions.get_by_message_id(c, MESSAGE))
 
-    assert found == subscriptions.Subscription(card_id=card_id, guild_id=GUILD, channel_id=CHANNELS[0],
-                                               message_id=MESSAGE, content_hash=HASH, paused=False)
+    assert found is not None
+    assert found == subscriptions.Subscription(id=found.id, card_id=card_id, guild_id=GUILD, channel_id=CHANNELS[0],
+                                               message_id=MESSAGE, content_hash=HASH, paused=False,
+                                               mode="redirect", local_channel_id=None)
 
 
 async def test_get_by_message_id_returns_none_for_an_unknown_message(db: Database, card_id: int) -> None:
@@ -166,3 +180,88 @@ async def test_get_by_message_id_returns_none_for_an_unknown_message(db: Databas
     await db.run(lambda c: subscriptions.set_message(c, card_id, CHANNELS[0], MESSAGE, HASH))
 
     assert await db.run(lambda c: subscriptions.get_by_message_id(c, OTHER_MESSAGE)) is None
+
+
+# Modes and local channels ----------------------------------------------------------------------------
+
+LOCAL_CHANNEL = "2901"
+
+
+async def test_get_by_id_round_trips_the_mode_and_the_local_channel(db: Database, card_id: int) -> None:
+    sub_id = await db.run(lambda c: subscriptions.add(c, card_id, GUILD, CHANNELS[0]))
+    assert await db.run(lambda c: subscriptions.set_mode_if(c, sub_id, "redirect", "local")) is True
+    await db.run(lambda c: subscriptions.set_local_channel(c, sub_id, LOCAL_CHANNEL))
+
+    found = await db.run(lambda c: subscriptions.get_by_id(c, sub_id))
+
+    assert found is not None
+    assert (found.id, found.mode, found.local_channel_id) == (sub_id, "local", LOCAL_CHANNEL)
+    assert await db.run(lambda c: subscriptions.get_by_id(c, sub_id + 100)) is None
+
+
+async def test_set_mode_if_applies_only_when_the_expected_mode_matches(db: Database, card_id: int) -> None:
+    sub_id = await db.run(lambda c: subscriptions.add(c, card_id, GUILD, CHANNELS[0]))
+
+    assert await db.run(lambda c: subscriptions.set_mode_if(c, sub_id, "local", "both")) is False
+    sub = await db.run(lambda c: subscriptions.get_by_id(c, sub_id))
+    assert sub is not None and sub.mode == "redirect"
+
+    assert await db.run(lambda c: subscriptions.set_mode_if(c, sub_id, "redirect", "both")) is True
+    assert await db.run(lambda c: subscriptions.set_mode_if(c, sub_id, "redirect", "local")) is False
+    sub = await db.run(lambda c: subscriptions.get_by_id(c, sub_id))
+    assert sub is not None and sub.mode == "both"
+
+
+async def test_set_local_channel_sets_and_clears(db: Database, card_id: int) -> None:
+    sub_id = await db.run(lambda c: subscriptions.add(c, card_id, GUILD, CHANNELS[0]))
+
+    await db.run(lambda c: subscriptions.set_local_channel(c, sub_id, LOCAL_CHANNEL))
+    sub = await db.run(lambda c: subscriptions.get_by_id(c, sub_id))
+    assert sub is not None and sub.local_channel_id == LOCAL_CHANNEL
+
+    await db.run(lambda c: subscriptions.set_local_channel(c, sub_id, None))
+    sub = await db.run(lambda c: subscriptions.get_by_id(c, sub_id))
+    assert sub is not None and sub.local_channel_id is None
+
+
+async def test_is_scope_is_false_for_redirect_and_true_for_local_and_both(db: Database, card_id: int) -> None:
+    redirect_id = await db.run(lambda c: subscriptions.add(c, card_id, GUILD, CHANNELS[0]))
+    local_id = await db.run(lambda c: subscriptions.add(c, card_id, GUILD, CHANNELS[1]))
+    both_id = await db.run(lambda c: subscriptions.add(c, card_id, GUILD, CHANNELS[2]))
+    await db.run(lambda c: subscriptions.set_mode_if(c, local_id, "redirect", "local"))
+    await db.run(lambda c: subscriptions.set_mode_if(c, both_id, "redirect", "both"))
+
+    flags = {}
+    for sub_id in (redirect_id, local_id, both_id):
+        sub = await db.run(lambda c, sid=sub_id: subscriptions.get_by_id(c, sid))
+        assert sub is not None
+        flags[sub.mode] = sub.is_scope
+
+    assert flags == {"redirect": False, "local": True, "both": True}
+
+
+async def test_list_scopes_and_list_both_keep_only_active_local_and_both_rows(db: Database, card_id: int) -> None:
+    redirect_id = await db.run(lambda c: subscriptions.add(c, card_id, GUILD, CHANNELS[0]))
+    local_id = await db.run(lambda c: subscriptions.add(c, card_id, GUILD, CHANNELS[1]))
+    both_id = await db.run(lambda c: subscriptions.add(c, card_id, GUILD, CHANNELS[2]))
+    paused_both_id = await db.run(lambda c: subscriptions.add(c, card_id, GUILD, CHANNELS[3]))
+    await db.run(lambda c: subscriptions.set_mode_if(c, local_id, "redirect", "local"))
+    await db.run(lambda c: subscriptions.set_mode_if(c, both_id, "redirect", "both"))
+    await db.run(lambda c: subscriptions.set_mode_if(c, paused_both_id, "redirect", "both"))
+    await db.run(lambda c: subscriptions.pause(c, card_id, CHANNELS[3]))
+
+    scopes = await db.run(lambda c: subscriptions.list_scopes(c, card_id))
+    both = await db.run(lambda c: subscriptions.list_both(c, card_id))
+
+    assert [sub.id for sub in scopes] == [local_id, both_id]
+    assert [sub.id for sub in both] == [both_id]
+    assert redirect_id not in {sub.id for sub in scopes}
+
+
+async def test_remove_by_id_deletes_only_that_row(db: Database, card_id: int) -> None:
+    first = await db.run(lambda c: subscriptions.add(c, card_id, GUILD, CHANNELS[0]))
+    second = await db.run(lambda c: subscriptions.add(c, card_id, GUILD, CHANNELS[1]))
+
+    assert await db.run(lambda c: subscriptions.remove_by_id(c, first)) is True
+    assert await db.run(lambda c: subscriptions.remove_by_id(c, first)) is False
+    assert await db.run(lambda c: subscriptions.get_by_id(c, second)) is not None

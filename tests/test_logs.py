@@ -123,6 +123,14 @@ def test_press_log_action_with_emoji_is_dropped(captured):
     assert record["outcome"] == "added"
 
 
+def test_subscription_row_ids_and_mode_are_kept(captured):
+    log = logging.getLogger("fluxer_panel.test")
+    log_event(log, "s", sub_id=3, mode="both", scope_sub_id=4, via_sub_id=5, mirror_id=6)
+    (record,) = parsed(captured)
+    assert (record["sub_id"], record["mode"]) == (3, "both")
+    assert (record["scope_sub_id"], record["via_sub_id"], record["mirror_id"]) == (4, 5, 6)
+
+
 def test_session_id_is_kept_as_an_integer_row_id(captured):
     log = logging.getLogger("fluxer_panel.test")
     log_event(log, "rsvp", session_id=42)

@@ -21,18 +21,28 @@ from fluxer_panel.db import Database
 from fluxer_panel.logs import log_event
 from fluxer_panel.pacer import ChannelPacer
 from fluxer_panel.presses import FOLLOW_EMOJI, PLAY_NOW_EMOJI, POLL_EMOJI, SESSION_EMOJI, WAKE_EMOJI
+from fluxer_panel.subscriptions import Subscription
 
 log = logging.getLogger(__name__)
 
 
+def follow_for(sub: Subscription | None, *, has_role: bool) -> bool | None:
+    """Whether a surface wants FOLLOW_EMOJI, when its own rule decides. A local or both copy wants it only with a stored
+    subscription role. Every other surface returns None, so `wanted_emoji` keeps the card's own rule."""
+    if sub is not None and sub.is_scope:
+        return has_role
+    return None
+
+
 def wanted_emoji(card: Card, *, play_now_target: bool, session_target: bool = False,
-                 poll_target: bool = False) -> list[str]:
-    """WAKE_EMOJI always; FOLLOW_EMOJI only when the card has a follow role; PLAY_NOW_EMOJI only when there is a
-    play-now target; SESSION_EMOJI only when there is a session channel; POLL_EMOJI last, only when `poll_target`
-    (the same session-channel result). A copy outside the games community carries the same emoji, and a press there
-    gets a DM that points at the card."""
+                 poll_target: bool = False, follow: bool | None = None) -> list[str]:
+    """WAKE_EMOJI always; FOLLOW_EMOJI when `follow` is given, else only when the card has a follow role; PLAY_NOW_EMOJI
+    only when there is a play-now target; SESSION_EMOJI only when there is a session channel; POLL_EMOJI last, only when
+    `poll_target` (the same session-channel result). A copy outside the games community carries the same emoji, and a
+    press there gets a DM that points at the card."""
     wanted = [WAKE_EMOJI]
-    if card.follow_role is not None:
+    wants_follow = card.follow_role is not None if follow is None else follow
+    if wants_follow:
         wanted.append(FOLLOW_EMOJI)
     if play_now_target:
         wanted.append(PLAY_NOW_EMOJI)
@@ -43,25 +53,33 @@ def wanted_emoji(card: Card, *, play_now_target: bool, session_target: bool = Fa
     return wanted
 
 
-def has_session_channel(card: Card, config: Config, *, surface_kind: str, home: bool) -> bool:
+def has_session_channel(card: Card, config: Config, *, surface_kind: str, home: bool,
+                        sub: Subscription | None = None) -> bool:
     """A card surface can plan sessions when the card has its own verified play-now channel, or PLAY_NOW_CHANNEL_ID is
-    set (the session channel is the card's, else the configured one, as for play-now). A home copy the same. A far copy
-    never gets the calendar: its press only points at the card. A play-now post never gets it either."""
+    set (the session channel is the card's, else the configured one, as for play-now). A home copy the same. A local or
+    both copy always can: its scope has its own channel to plan in, wherever its community is. A redirect copy outside
+    the games community never gets the calendar: its press only points at the card. A play-now post never gets it
+    either."""
     if surface_kind == "play_now":
         return False
+    if sub is not None and sub.is_scope:
+        return True
     if surface_kind == "copy" and not home:
         return False
     own = card.play_now_channel is not None and card.play_now_channel.verified
     return own or config.play_now_channel_id is not None
 
 
-def has_play_now_target(card: Card, config: Config, *, surface_kind: str, home: bool) -> bool:
+def has_play_now_target(card: Card, config: Config, *, surface_kind: str, home: bool,
+                        sub: Subscription | None = None) -> bool:
     """A card surface has a target when the card has its own verified play-now channel or the configured one is set. A
     home copy always has one, since a press on it posts in the copy's own channel. A copy outside the games community
-    has one when the card does: a press there posts nothing and gets a DM pointing at the card's own button. A play-now
-    surface never has one: its emoji are seeded separately."""
+    has one when the card does: a press there posts nothing and gets a DM pointing at the card's own button. A local or
+    both copy always has one, its scope's channel. A play-now surface never has one: its emoji are seeded separately."""
     if surface_kind == "play_now":
         return False
+    if sub is not None and sub.is_scope:
+        return True
     if surface_kind == "copy" and home:
         return True
     own = card.play_now_channel is not None and card.play_now_channel.verified

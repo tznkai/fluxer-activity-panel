@@ -10,8 +10,11 @@ from __future__ import annotations
 import ipaddress
 import re
 import unicodedata
+from collections.abc import Sequence
+from dataclasses import dataclass
 
-from fluxer_panel import text
+from fluxer_client.ids import is_snowflake
+from fluxer_panel import subscriptions, text
 from fluxer_panel.cards import SHOW_ITEMS, CardFieldError
 from fluxer_panel.render import CHANNEL_LINK_RE
 from fluxer_panel.sources.registry import Sources, known_manager_kinds
@@ -174,6 +177,50 @@ def channel_target(field: str, value: str) -> tuple[str, str]:
             raise CardFieldError(field, "channel_target")
         guild_id, channel_id = parts
     return snowflake(field, guild_id), snowflake(field, channel_id)
+
+
+SUBSCRIPTION_OPTION_KEYS = frozenset({"mode", "channel", "role"})
+
+
+@dataclass(frozen=True)
+class SubOptions:
+    """The `key=value` options of `!card subscribe`. Each is None when it was not given."""
+    mode: str | None = None
+    channel: str | None = None   # a channel link or a bare channel id, checked by the command
+    role: str | None = None      # a role id
+
+
+def subscription_options(tokens: Sequence[str]) -> tuple[list[str], SubOptions] | None:
+    """Splits the `key=value` tokens off a subscribe command. Returns the other tokens (the target) and the options, or
+    None when a token is an unknown key, a repeated key, an empty value, a mode that is not a subscription mode, or a
+    role that is not a snowflake. The target tokens are returned unchanged."""
+    rest: list[str] = []
+    values: dict[str, str] = {}
+    for token in tokens:
+        key, sep, value = token.partition("=")
+        if not sep:
+            rest.append(token)
+            continue
+        key = key.lower()
+        if key not in SUBSCRIPTION_OPTION_KEYS or key in values or not value:
+            return None
+        values[key] = value.lower() if key == "mode" else value
+    mode = values.get("mode")
+    if mode is not None and mode not in subscriptions.MODES:
+        return None
+    role = values.get("role")
+    if role is not None and not is_snowflake(role):
+        return None
+    return rest, SubOptions(mode=mode, channel=values.get("channel"), role=role)
+
+
+def local_channel_value(value: str) -> tuple[str | None, str]:
+    """A `channel=` value: a channel link gives its community and channel, a bare id gives the channel only."""
+    stripped = value.strip()
+    link = CHANNEL_LINK_RE.fullmatch(stripped)
+    if link is not None:
+        return snowflake("channel", link.group(1)), snowflake("channel", link.group(2))
+    return None, snowflake("channel", stripped)
 
 
 def manager(value: str, sources: Sources) -> tuple[str, str]:

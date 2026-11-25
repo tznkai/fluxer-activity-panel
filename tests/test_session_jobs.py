@@ -21,7 +21,7 @@ import pytest
 
 from fluxer_client.roles import RoleCache
 from fluxer_client.rest import FluxerREST
-from fluxer_panel import cards, sessions, text
+from fluxer_panel import cards, sessions, subscriptions, text
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.cards import ManagerRef
 from fluxer_panel.config import Config
@@ -326,6 +326,33 @@ async def test_a_weekly_session_posts_its_next_occurrence_one_day_after_its_star
     assert await world.db.run(lambda c: sessions.rsvps_of(c, new.id)) == {PROPOSER: ("going", None)}
 
 
+LOCAL_CH = "3950"      # a local subscription's channel, in GUILD
+
+
+async def test_a_weekly_local_session_posts_its_next_occurrence_in_the_same_scope_and_channel(world: World) -> None:
+    def tx(conn: Any) -> tuple[int, int]:
+        sub_id = subscriptions.add(conn, world.card_id, GUILD, LOCAL_CH)
+        assert subscriptions.set_mode_if(conn, sub_id, "redirect", "local")
+        subscriptions.set_local_channel(conn, sub_id, LOCAL_CH)
+        session_id = sessions.add(conn, card_id=world.card_id, guild_id=GUILD, channel_id=LOCAL_CH, message_id="7900",
+                                  starts_at=S, ends_at=S + HOUR, proposer_id=PROPOSER, now=1, recurrence="weekly",
+                                  scope_sub_id=sub_id)
+        return sub_id, session_id
+
+    sub_id, sid = await world.db.run(tx)
+    world.clock.now = S + DAY
+    await world.jobs.run()
+
+    local_posts = f"/api/v1/channels/{LOCAL_CH}/messages"
+    [sent] = [r for r in world.state.requests if r.method == "POST" and r.path == local_posts]
+    assert sent.path == local_posts and posts(world) == []
+    [posted] = [mid for (cid, mid) in world.state.messages if cid == LOCAL_CH and mid != "7900"]
+    new = await row_by_message(world, posted)
+    assert new.id != sid
+    assert new.scope_sub_id == sub_id
+    assert new.channel_id == LOCAL_CH
+
+
 async def test_the_new_occurrence_gets_its_three_reactions_on_its_message(world: World) -> None:
     await add_session(world, recurrence="weekly")
     world.clock.now = S + DAY
@@ -428,13 +455,17 @@ async def test_a_posted_occurrence_kicks_the_poller_once(world: World) -> None:
     assert world.kicks == [1]
 
 
-async def test_an_occurrence_of_an_archived_card_clears_the_series_and_posts_nothing(world: World) -> None:
+async def test_an_occurrence_of_an_archived_card_clears_the_series_and_posts_nothing(
+        world: World, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="fluxer_panel.session_jobs")
     sid = await add_session(world, recurrence="weekly")
     await world.db.run(lambda c: cards.set_state(c, world.card_id, "archived", 1))
     world.clock.now = S + DAY
     await world.jobs.run()
     assert posts(world) == []
     assert (await row(world, sid)).recurrence is None
+    cleared = [getattr(r, FIELDS_ATTR, {}) for r in caplog.records if r.getMessage() == "session_series_cleared"]
+    assert cleared == [{"session_id": sid, "card_id": world.card_id, "count": 1, "reason": "card_not_live"}]
 
 
 async def test_the_cap_stops_the_series_and_dms_the_proposer_once(world: World) -> None:

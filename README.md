@@ -160,6 +160,11 @@ The purge also deletes:
 
 The cutoffs are strict: a row exactly at a cutoff is kept.
 
+Scope history is deleted sooner. Unsubscribing a `local` or `both` copy deletes that scope's sessions, polls and
+play-now posts at once, not at the cutoff (see Subscriptions). When the purge scrubs a session, it scrubs each of its
+mirrors too, then deletes the rows with the mirrors. An RSVP whose only reaction is on a mirror the bot can no longer
+read is kept as it stands, because the bot cannot tell that the reaction was removed.
+
 ### Status file
 
 The status file is `purge-status.json` in the data directory, or the path in
@@ -210,8 +215,8 @@ bot does not answer it, and it counts toward the non-admin limit of 5 commands p
   next tick, and edits the message when its content changes. Without `GAMES_CHANNEL_ID` the card is not
   posted, but its active copies are. Publishing a card that is already live does not repost it, but it does
   give the card a follow role if it has none (see Follow roles).
-- **Archived:** `!card archive` deletes the card's message and keeps the card. Publishing it again
-  makes it live.
+- **Archived:** `!card archive` ends every scope, deletes the mirrors, the copies and the card's message, and keeps
+  the card. Publishing it again makes it live.
 
 A card message that is deleted by hand is posted again. The delete kicks the poller, so the
 repost does not wait for the next poll interval.
@@ -228,7 +233,41 @@ games channel.
   channel field. The bot must be in that community, and the channel must be a text channel there. A
   channel the bot cannot check gets the retry reply, and `GAMES_CHANNEL_ID` is refused, since the card
   is already posted there.
-- **Limit:** a card has at most five subscribed channels. A paused channel counts toward the five.
+- **Limit:** a card has at most twenty subscribed channels. A paused channel counts toward the twenty.
+- **Modes:** `mode=` sets what the channel does, and takes `redirect`, `local` or `both`. The default is `redirect`.
+  - `redirect`: the copy of the card, and nothing else. Its sessions, polls and play-now posts stay in the games
+    channel's community.
+  - `local`: the copy also runs its own sessions, polls and play-now posts. They are kept apart from the card's
+    (the home sessions and polls are not shown there). A local copy gets a follow role in its own community, so
+    members of that community can follow it with the bell. The role is created, or an unmanaged role with the
+    same name is adopted, and it must be mentionable, below the bot's top role, and have no permissions. A
+    second subscription of the same card in the same community clashes on that name, so it is refused with a
+    reply that asks for `role=<role id>`.
+  - `both`: `local`, and the home objects are mirrored into the copy's channel as well (see Mirrors below).
+    Changing a copy to `both` posts its mirrors of the upcoming home sessions and the open home poll at once, under
+    the card's lock. Changing back from `both` to `local` deletes them.
+- **Mirrors (both):** a `both` copy shows some of the home objects in its own channel. What is pushed there: the home
+  play-now posts, the upcoming home sessions and the open home poll. What flows back: RSVPs, Me Too presses on a
+  play-now mirror and poll votes made from a far ballot, which count toward the home object they mirror. Nothing a
+  `both` copy starts goes home: its own sessions, polls and play-now posts stay in its scope. A far user's session
+  or poll link goes to their own copy's mirror, never to the home message. A mirror is stored only while its copy is
+  `both` and active. A mirror that Fluxer refuses to edit (403) is logged and kept. A mirror whose message is gone (404)
+  is dropped, and a dropped mirror is not re-posted until its copy enters `both` again. The poller never back-fills
+  a mirror, so the only ways a mirror is posted are its object's first publish and the copy's change to `both`.
+- **Next-session line:** a `local` copy shows its own next session. A `both` copy shows the sooner of its own next
+  session and the home one, and the home one links to its mirror in this copy when there is one. A `redirect` copy
+  shows the home session; outside the games community it carries no link.
+- **Channel and role options:** `channel=<channel>` sets the channel a local or both copy posts in, as a link or
+  a channel id. The channel must be a text channel of the copy's community, and not the games channel. Without
+  it, the copy's own channel is used. `role=<role id>` gives the copy a follow role that already exists in its
+  community, in place of the one the bot would create. Both need `mode=local` or `mode=both`, and a refused
+  option changes nothing. Changing `channel=` on a copy that stays `both` moves its mirrors: the bot deletes the
+  old ones and posts fresh ones in the new channel, as when a copy leaves both and enters it again. Anyone who
+  already RSVPed through a mirror stays counted, across restarts too: the new mirror cannot show that reaction, so the
+  startup check keeps it. Removing the reaction from the new mirror, while the bot can see it, removes the RSVP. A
+  mirror the bot cannot delete is named in the reply.
+- **Games community:** a copy in the games community always points at the card, so `local` and `both` are
+  refused there.
 - **Already subscribed:** subscribing an active channel again changes nothing and says so.
 - **Pause:** when Fluxer refuses a copy's post or edit with 403, or its post returns 404 (the channel is gone),
   that copy is paused and the bot stops posting and editing there. Each pause sends each admin one direct
@@ -243,14 +282,28 @@ games channel.
 - **Unsubscribe:** deletes the copy and removes the subscription. A copy that is already gone counts as
   removed. If the bot cannot delete it for another reason, the subscription is still removed, and the
   reply says the copy is still there, to delete by hand.
-- **Archive:** deletes every copy, then the card's message last. A 403 on a copy or on the card's own message is
-  handled the same way: that message stays where it is, the archive goes ahead, and the reply lists each
-  channel left, as a mention, to delete by hand. The reply says the message was removed only when nothing is
-  left; otherwise it says the card is archived and its settings are kept. Any other failure to delete (not
-  already gone) stops the archive while the card is still live: the copies deleted before the stop are posted
-  again by the next check, and the card's message stays in place, so running it again is safe. The
-  subscriptions are kept. Publishing again posts every subscription that is not paused.
-- **Show:** `!card show` lists the subscribed channels, with "(paused)" after each paused one.
+- **Archive:** ends every scope first: the card's own, and each local or both copy's, and also any session, poll or
+  play-now post a copy left behind when it became `redirect`. Upcoming sessions are cancelled (with DMs to their
+  attendees), every open poll closes with no winner, and live play-now posts expire, with their reactions cleared,
+  the mirrors' too. Then it deletes the mirrors, then every copy, and the card's message last.
+  The reply may span several messages when many channels are left. A mirror that cannot be deleted, for any reason,
+  is named in the reply as left, and the archive goes on. A 403 on a copy or on the card's own message is handled the
+  same way: that message stays where it is, the archive goes ahead, and the reply lists each channel left, as a
+  mention, to delete by hand. The reply says the message was removed only when nothing is left; otherwise it says the
+  card is archived and its settings are kept. Any other failure to delete a copy or the card's message (not already
+  gone) stops the archive while the card is still live: the copies deleted before the
+  stop are posted again by the next check, the mirrors deleted before the stop stay deleted, and the card's message
+  stays in place, so running it again is safe. The subscriptions are kept. Publishing again posts every subscription
+  that is not paused.
+- **Leaving a scope:** changing a copy from `local` or `both` back to `redirect` cancels its upcoming sessions (with
+  DMs to their attendees), closes its open poll with no winner, expires its play-now posts, and deletes its
+  mirrors. Its calendar and ballot-box reactions come off the copy. Its follow role is kept.
+- **Unsubscribe and scope history:** unsubscribing a copy that is `local` or `both` first ends its scope as above.
+  Then it deletes the scope's sessions, polls and play-now posts, scrubbing each session's location first, and
+  removes the subscription. A copy that was local and is now `redirect` is deleted the same way. Its follow role
+  is kept in Fluxer, since the bot never deletes a role.
+- **Show:** `!card show` lists each subscribed channel with its mode. A `local` or `both` copy also shows the
+  channel it posts in and its follow role (or "no follow role"). A paused channel is marked "(paused)".
 - **Rate:** each copy costs one send, or one edit, each time the card's content changes, and nothing
   when it does not. Each poll compares every copy's stored hash, but sends nothing for an unchanged copy.
   A card with five copies sends six messages in one burst. The poller does not throttle copies. Fluxer's
@@ -302,7 +355,9 @@ message. The board is laid out for the desktop and web clients. Phones show the 
                                            messages, each under 1900 UTF-16 code units
 !card publish <slug>                       draft or archived -> live
 !card archive <slug>                       deletes the message and every subscription copy, keeps the card
-!card subscribe <slug> <channel>           posts a copy of the card in another text channel
+!card subscribe <slug> <channel> [mode=redirect|local|both] [channel=<channel>] [role=<role id>]
+                                            posts a copy of the card in another text channel, and with
+                                            mode=local or both runs its own sessions and polls there
 !card unsubscribe <slug> <channel>         deletes that copy and stops posting there
 !card interactions on|off [slug]           turns the reaction taps off or on, for every card or for one
 !card help                                 the subcommands and the field names
@@ -334,8 +389,8 @@ A press on the raised hand on a copy of the card in the games community posts in
 channel, and the card's play-now channel when that is a different channel. Each post gets its own reactions and
 expires on its own. The cooldown (`PLAY_NOW_COOLDOWN_SECONDS`) counts the press once, so a press inside it posts
 nothing in either channel and the presser gets a link to the latest post. If one of the two posts fails and the
-other succeeds, the one that succeeded stays and the failure is logged. A copy outside the games community shows
-the raised hand when the card has a play-now target (its own verified play-now channel, or `PLAY_NOW_CHANNEL_ID`),
+other succeeds, the one that succeeded stays and the failure is logged. A redirect copy outside the games community
+shows the raised hand when the card has a play-now target (its own verified play-now channel, or `PLAY_NOW_CHANNEL_ID`),
 and the bell when the card has a follow role, but neither works there: a press posts nothing and changes no role,
 and the presser gets a direct message pointing at the card in the games channel.
 
@@ -345,9 +400,9 @@ A card can plan sessions, posted in the card's session channel: its own verified
 `PLAY_NOW_CHANNEL_ID` when the card has none. With neither set, a press on the calendar says the card has no channel
 for sessions yet, and the calendar is not added to the card.
 
-**Proposing.** A press on the calendar (📅) on the card, or on a home copy in the games community, opens a direct
-message with up to six offered times, one per keycap. React with a keycap to pick a time, or reply with a time
-instead:
+**Proposing.** A press on the calendar (📅) on the card, on a home copy in the games community, or on a local or both
+copy, opens a direct message with up to six offered times, one per keycap.
+React with a keycap to pick a time, or reply with a time instead:
 
 ```
 sat 14:00          tomorrow 19:30          today 9:05          2026-11-14 14:00
@@ -356,8 +411,8 @@ sat 14:00          tomorrow 19:30          today 9:05          2026-11-14 14:00
 Times are 24-hour, in `SESSION_TIME_ZONE`. A weekday name means the next such day, so a weekday name for today is
 refused (write `today HH:MM`). A typed time must be in the future and at most 60 days away. The offered times come
 from `SESSION_SLOTS_WEEKDAY` and `SESSION_SLOTS_WEEKEND`, start at least an hour from now and fall within the next
-14 days. The prompt expires after 15 minutes, and a new press on the calendar replaces an open prompt. A copy outside
-the games community only points back to the card.
+14 days. The prompt expires after 15 minutes, and a new press on the calendar replaces an open prompt. A redirect copy
+outside the games community only points back to the card. A local or both copy plans its sessions in its own channel.
 
 Picking a time sends a confirmation. React ✅ to post the session. The confirmation adds a line when the proposer is
 already going to an overlapping session. A proposer may have three upcoming sessions for one card, and a card may
@@ -393,14 +448,22 @@ told.
 
 A time poll asks a card's people which of several times they can make. It is posted in the card's session channel, so
 a card needs one, as for sessions. Polls never post to the games channel.
+A local or both subscription runs its own polls in its channel, with ballots to the holders of its own role. Someone
+who follows a card in two places may get two ballots, one for each open poll.
 
-**Starting.** A press on the ballot box (🗳️) on the card, or on a home copy in the games community, posts the poll and
-DMs a ballot to each recipient. The poll offers up to six times, soonest first, from the same slots as 📅. The
-recipients are the starter and the holders of the card's follow role, bots excluded. When `POLL_MAX_RECIPIENTS` cuts
-the list, the holders with the highest ids are left out, and the starter is told how many. A card with no follow role
-sends a ballot only to the starter, and the starter is told that too. If the member list cannot be read, the start is
-refused with a direct message, and nothing is posted. A card has one open poll at a time: a second press links the open
-one. A press on a copy outside the games community only points back to the card.
+**Starting.** A press on the ballot box (🗳️) on the card, on a home copy in the games community, or on a local or both
+copy, posts that scope's poll and DMs a ballot to each recipient. The poll offers up to six times, soonest first, from
+the same slots as 📅. The recipients are the starter and the holders of that scope's follow role (the card's, or a local
+or both copy's own), bots excluded. A home poll also sends ballots to the holders of each both copy's follow role, in
+the order the copies were added. A user who holds more than one of these roles gets one ballot, by the first route. The
+list is capped at `POLL_MAX_RECIPIENTS`, the starter included, and the cut comes from the end of that order: the home
+holders are kept first, so the holders of a both copy's role are cut first, and within a group the highest ids are cut
+first. The starter is told how many were left out. A scope with no follow role sends a ballot only to the starter, and
+the starter is told that too; a home poll counts as having no follow role only when neither the card nor any both copy
+has one. If the member list cannot be read, the start is
+refused with a direct message, and nothing is posted. A scope has one open poll at a time (the home scope, or each local
+or both copy): a second press in the same scope links the open one. A redirect copy outside the games community only
+points back to the card.
 
 **Voting.** A ballot is a direct message to the bot. Its first line names the poll, as `Time poll 7 for <card>.` or
 `Runoff 8 for <card>.`, so a voter with several ballots can tell them apart. Reply with letters, like `a, c`, to pick times. Or type a time in
@@ -470,10 +533,10 @@ upper or lower case, like `90m`, `12h` or `2d`. Without one, it adds `POLL_LENGT
 longer than `POLL_MAX_LENGTH_SECONDS` from when it started. `!poll shown` does not
 change the ballots until the next `!poll sort`, which also re-letters the times.
 
-**Archive and the kill switch.** `!card archive` closes the card's open poll with no winner, before it deletes the
-card's messages. A poll whose message the bot finds deleted when it next edits it closes as removed. `!card interactions
-off` removes the ballot box (🗳️) from the card's messages and copies. It does not close open polls and does not touch
-poll messages, so 📅 and 🔁 stay on closed polls.
+**Archive and the kill switch.** `!card archive` closes the card's open polls, in every scope, with no winner,
+before it deletes the card's messages. A poll whose message the bot finds deleted when it next edits it closes as
+removed. `!card interactions off` removes the ballot box (🗳️) from the card's messages and copies. It does not close
+open polls and does not touch poll messages, so 📅 and 🔁 stay on closed polls.
 
 ### Fields
 
@@ -595,6 +658,24 @@ such as the data directory could not be created (for example, its parent is a re
 That is not a refusal and does not quarantine anything.
 
 ## Release notes
+
+### v0.5.0
+
+- Subscription modes. `!card subscribe` takes `mode=redirect|local|both`, `channel=` and `role=` (see Subscriptions).
+  A `local` copy runs its own sessions, polls and play-now posts in its own community, with its own follow role. A
+  `both` copy does that too, and also mirrors the home sessions, polls and play-now posts. RSVPs, Me Too presses and
+  votes made from a far ballot count toward the home object they mirror.
+- No new variable is required.
+- Back up the database before upgrading. The bot also writes a `.pre-v10` copy beside the database before it applies
+  the migration.
+- The schema moves to 10. Every existing subscription becomes `redirect` and behaves as before, and `!card show <slug>`
+  now marks each copy with its mode. v0.4.0 refuses a v10 database (exit 3, reason `schema_newer`) and leaves the file
+  unchanged, so a downgrade means restoring the `.pre-v10` backup.
+- A card may now have twenty subscribed channels, up from five.
+- A copy set to `local` or `both` creates (or adopts) a follow role in its own community, so the bot needs Manage
+  Roles there. Without it the mode is kept with no role, and the reply says why.
+- `!card archive` now ends every scope of the card before it deletes its messages: the card's own, and each copy's.
+- The live checks for this release are in `docs/fluxer-notes.md`, under "Live sub-mode checks".
 
 ### v0.4.0
 

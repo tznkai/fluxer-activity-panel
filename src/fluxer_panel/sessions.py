@@ -10,14 +10,15 @@ expects, so a second command or a late event cannot undo a change that already h
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
-from fluxer_panel import render, rsvp
+from fluxer_panel import mirrors, render, rsvp
 
 if TYPE_CHECKING:
     from fluxer_panel.cards import Card
+    from fluxer_panel.subscriptions import Subscription
 
 MAX_PER_PROPOSER = 3   # upcoming sessions per proposer per card
 MAX_PER_CARD = 10      # upcoming sessions per card
@@ -51,56 +52,61 @@ class Session:
     moved: bool
     headsup_sent: bool
     created_at: int
+    scope_sub_id: int | None = None   # None is the home card; otherwise the subscription the session belongs to
 
 
 _COLUMNS = ("id, card_id, guild_id, channel_id, message_id, starts_at, ends_at, proposer_id, location_text, seats, "
-            "recurrence, series_id, next_posted, state, closed_at, moved, headsup_sent, created_at")
+            "recurrence, series_id, next_posted, state, closed_at, moved, headsup_sent, created_at, scope_sub_id")
 
 
 def _load(row: tuple) -> Session:
     (session_id, card_id, guild_id, channel_id, message_id, starts_at, ends_at, proposer_id, location_text, seats,
-     recurrence, series_id, next_posted, state, closed_at, moved, headsup_sent, created_at) = row
+     recurrence, series_id, next_posted, state, closed_at, moved, headsup_sent, created_at, scope_sub_id) = row
     return Session(session_id, card_id, guild_id, channel_id, message_id, starts_at, ends_at, proposer_id,
                    location_text, seats, recurrence, series_id, bool(next_posted), state, closed_at, bool(moved),
-                   bool(headsup_sent), created_at)
+                   bool(headsup_sent), created_at, scope_sub_id)
 
 
 def _rows(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> list[Session]:
     return [_load(row) for row in conn.execute(f"SELECT {_COLUMNS} FROM sessions {sql}", params).fetchall()]
 
 
-def count_upcoming(conn: sqlite3.Connection, card_id: int, proposer_id: str | None = None) -> int:
-    if proposer_id is None:
-        row = conn.execute("SELECT COUNT(*) FROM sessions WHERE card_id = ? AND state = 'upcoming'",
-                           (card_id,)).fetchone()
-    else:
-        row = conn.execute("SELECT COUNT(*) FROM sessions WHERE card_id = ? AND state = 'upcoming' AND proposer_id = ?",
-                           (card_id, proposer_id)).fetchone()
-    return int(row[0])
+def count_upcoming(conn: sqlite3.Connection, card_id: int, proposer_id: str | None = None, *,
+                   scope_sub_id: int | None = None) -> int:
+    """Upcoming sessions of one scope (NULL is the home card), optionally of one proposer."""
+    sql = "SELECT COUNT(*) FROM sessions WHERE card_id = ? AND state = 'upcoming' AND scope_sub_id IS ?"
+    params: tuple = (card_id, scope_sub_id)
+    if proposer_id is not None:
+        sql += " AND proposer_id = ?"
+        params += (proposer_id,)
+    return int(conn.execute(sql, params).fetchone()[0])
 
 
-def check_caps(conn: sqlite3.Connection, card_id: int, proposer_id: str | None) -> None:
-    """The card cap is checked first. The proposer cap applies only when a proposer is given."""
-    if count_upcoming(conn, card_id) >= MAX_PER_CARD:
+def check_caps(conn: sqlite3.Connection, card_id: int, proposer_id: str | None, *,
+               scope_sub_id: int | None = None) -> None:
+    """The card cap is checked first. The proposer cap applies only when a proposer is given. Both count one scope."""
+    if count_upcoming(conn, card_id, scope_sub_id=scope_sub_id) >= MAX_PER_CARD:
         raise SessionCapReached("card")
-    if proposer_id is not None and count_upcoming(conn, card_id, proposer_id) >= MAX_PER_PROPOSER:
+    if proposer_id is not None and count_upcoming(conn, card_id, proposer_id,
+                                                  scope_sub_id=scope_sub_id) >= MAX_PER_PROPOSER:
         raise SessionCapReached("proposer")
 
 
 def add(conn: sqlite3.Connection, *, card_id: int, guild_id: str, channel_id: str, message_id: str,
         starts_at: int, ends_at: int, proposer_id: str, now: int, location_text: str | None = None,
         seats: int | None = None, recurrence: str | None = None, series_id: int | None = None,
-        proposer_cap: bool = True, maybe: Sequence[str] = ()) -> int:
+        proposer_cap: bool = True, maybe: Sequence[str] = (), scope_sub_id: int | None = None) -> int:
     """Inserts an upcoming session with the proposer going. Runs in the caller's transaction, so the caps and the
     insert are one step. A series' first occurrence takes its own id as its series id. Each user in `maybe` gets an
     implicit maybe row after the proposer's, in ascending id order (the proposer and repeats are ignored), and the
     states are recomputed in the same transaction. With `maybe` empty, no statement beyond the insert runs."""
-    check_caps(conn, card_id, proposer_id if proposer_cap else None)
+    check_caps(conn, card_id, proposer_id if proposer_cap else None, scope_sub_id=scope_sub_id)
     cur = conn.execute(
         "INSERT INTO sessions (card_id, guild_id, channel_id, message_id, starts_at, ends_at, proposer_id, "
-        "location_text, seats, recurrence, series_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "location_text, seats, recurrence, series_id, created_at, scope_sub_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (card_id, guild_id, channel_id, message_id, starts_at, ends_at, proposer_id, location_text, seats,
-         recurrence, series_id, now))
+         recurrence, series_id, now, scope_sub_id))
     session_id = cur.lastrowid
     conn.execute("UPDATE sessions SET series_id = ? WHERE id = ?",
                  (series_id if series_id is not None else session_id, session_id))
@@ -145,11 +151,26 @@ def upcoming_for_card(conn: sqlite3.Connection, card_id: int) -> list[Session]:
     return _rows(conn, "WHERE card_id = ? AND state = 'upcoming' ORDER BY starts_at, id", (card_id,))
 
 
-def next_for_card(conn: sqlite3.Connection, card_id: int, now: int) -> Session | None:
-    """The soonest upcoming session of the card that has not yet ended."""
-    rows = _rows(conn, "WHERE card_id = ? AND state = 'upcoming' AND ends_at > ? ORDER BY starts_at, id LIMIT 1",
-                 (card_id, now))
+def upcoming_for_scope(conn: sqlite3.Connection, card_id: int, scope_sub_id: int | None) -> list[Session]:
+    return _rows(conn, "WHERE card_id = ? AND state = 'upcoming' AND scope_sub_id IS ? ORDER BY starts_at, id",
+                 (card_id, scope_sub_id))
+
+
+def next_for_scope(conn: sqlite3.Connection, card_id: int, scope_sub_id: int | None, now: int) -> Session | None:
+    """The soonest upcoming session of one scope of the card that has not yet ended."""
+    rows = _rows(conn, "WHERE card_id = ? AND state = 'upcoming' AND ends_at > ? AND scope_sub_id IS ? "
+                       "ORDER BY starts_at, id LIMIT 1", (card_id, now, scope_sub_id))
     return rows[0] if rows else None
+
+
+def next_for_card(conn: sqlite3.Connection, card_id: int, now: int) -> Session | None:
+    """The soonest upcoming home session of the card that has not yet ended. A subscription's session never shows here."""
+    return next_for_scope(conn, card_id, None, now)
+
+
+def list_for_scope(conn: sqlite3.Connection, scope_sub_id: int) -> list[Session]:
+    """Every session of one subscription scope, in any state. The unsubscribe delete reads them."""
+    return _rows(conn, "WHERE scope_sub_id = ? ORDER BY id", (scope_sub_id,))
 
 
 def all_upcoming(conn: sqlite3.Connection) -> list[Session]:
@@ -288,6 +309,20 @@ def set_series_recurrence(conn: sqlite3.Connection, series_id: int, recurrence: 
     return cur.rowcount
 
 
+def clear_card_series(conn: sqlite3.Connection, card_id: int) -> int:
+    """Stops every weekly series of the card, whatever each occurrence's state: an ended occurrence still posts its
+    successor, so an upcoming-only cancel is not enough. Returns how many rows changed."""
+    cur = conn.execute("UPDATE sessions SET recurrence = NULL WHERE card_id = ? AND recurrence = 'weekly'", (card_id,))
+    return cur.rowcount
+
+
+def clear_scope_series(conn: sqlite3.Connection, card_id: int, scope_sub_id: int | None) -> int:
+    """Stops every weekly series of one scope of the card (None is the home scope), whatever each occurrence's state."""
+    cur = conn.execute("UPDATE sessions SET recurrence = NULL WHERE card_id = ? AND scope_sub_id IS ? "
+                       "AND recurrence = 'weekly'", (card_id, scope_sub_id))
+    return cur.rowcount
+
+
 def set_location_if(conn: sqlite3.Connection, session_id: int, text: str | None) -> bool:
     cur = conn.execute("UPDATE sessions SET location_text = ? WHERE id = ? AND state = 'upcoming'",
                        (text, session_id))
@@ -315,17 +350,47 @@ def rsvps_of(conn: sqlite3.Connection, session_id: int) -> rsvp.Rsvps:
     return {user_id: (state, pos) for user_id, state, pos in rows}
 
 
-def add_presence(conn: sqlite3.Connection, session: Session, user_id: str, choice: str, now: int) -> bool:
+# The message id of a session mirror of one subscription, or NULL when there is none (a None subscription).
+_MIRROR_MESSAGE = "(SELECT message_id FROM mirror_message WHERE session_id = ? AND sub_id = ?)"
+
+
+def add_presence(conn: sqlite3.Connection, session: Session, user_id: str, choice: str, now: int, *,
+                 via_sub_id: int | None = None) -> bool:
     """Adds one RSVP reaction. A user's implicit row goes first (the proposer's going, or a voter's maybe), so their
-    first real reaction replaces it and both rows never coexist. Returns False when the same reaction is already there."""
+    first real reaction replaces it and both rows never coexist. Returns False when the same reaction is already there.
+    `via_sub_id` is the mirror the reaction came through (None for the home message). The row records that mirror's
+    current message id as `via_message_id`, the message the reaction was seen on. When the same reaction is already
+    stored, a home reaction clears its origin, and a mirror reaction of the same origin re-records the current message.
+    The seq is never changed here, so the row's place in the order of reactions (and its effective choice) stays put."""
     conn.execute("DELETE FROM rsvp_reaction WHERE session_id = ? AND user_id = ? AND implicit = 1",
                  (session.id, user_id))
     cur = conn.execute(
-        "INSERT INTO rsvp_reaction (session_id, user_id, choice, added_at, seq, implicit) "
-        "SELECT ?, ?, ?, ?, COALESCE(MAX(seq), 0) + 1, 0 FROM rsvp_reaction WHERE session_id = ? "
+        "INSERT INTO rsvp_reaction (session_id, user_id, choice, added_at, seq, implicit, via_sub_id, via_message_id) "
+        "SELECT ?, ?, ?, ?, COALESCE(MAX(seq), 0) + 1, 0, ?, "
+        f"{_MIRROR_MESSAGE} FROM rsvp_reaction WHERE session_id = ? "
         "ON CONFLICT DO NOTHING",
-        (session.id, user_id, choice, now, session.id))
-    return cur.rowcount == 1
+        (session.id, user_id, choice, now, via_sub_id, session.id, via_sub_id, session.id))
+    if cur.rowcount == 1:
+        return True
+    if via_sub_id is None:
+        conn.execute("UPDATE rsvp_reaction SET via_sub_id = NULL, via_message_id = NULL WHERE session_id = ? "
+                     "AND user_id = ? AND choice = ? AND implicit = 0", (session.id, user_id, choice))
+    else:
+        conn.execute(f"UPDATE rsvp_reaction SET via_message_id = {_MIRROR_MESSAGE} "
+                     "WHERE session_id = ? AND user_id = ? "
+                     "AND choice = ? AND implicit = 0 AND via_sub_id = ?",
+                     (session.id, via_sub_id, session.id, user_id, choice, via_sub_id))
+    return False
+
+
+def presence_via(conn: sqlite3.Connection, session_id: int, user_id: str) -> int | None:
+    """Where the user's RSVP came from: None when any of their rows came from the home message (home wins), else the
+    smallest mirror subscription id. None too when the user has no rows."""
+    origins = [row[0] for row in conn.execute(
+        "SELECT via_sub_id FROM rsvp_reaction WHERE session_id = ? AND user_id = ?", (session_id, user_id)).fetchall()]
+    if not origins or any(origin is None for origin in origins):
+        return None
+    return min(origins)
 
 
 def remove_presence(conn: sqlite3.Connection, session_id: int, user_id: str, choice: str) -> bool:
@@ -338,13 +403,59 @@ def remove_presence(conn: sqlite3.Connection, session_id: int, user_id: str, cho
 RECONCILE_ORDER: tuple[rsvp.Choice, ...] = ("going", "maybe", "no")
 
 
-def reconcile_presence(conn: sqlite3.Connection, session: Session, actual: dict[rsvp.Choice, set[str]], now: int) -> bool:
-    """Makes the real (implicit = 0) presence rows match the reactions read from the message. A row whose reaction is
-    gone is deleted, and a reaction with no row is added. Each user who has any reaction on the message loses their
-    implicit row first (the proposer's going, or a voter's maybe), since it can share a key with a real row. Missing
+def origin_subs(conn: sqlite3.Connection, session_id: int) -> frozenset[int]:
+    """The mirror subscriptions the session's real RSVP rows came through. A row keeps its origin after the mirror is
+    gone, so this can name a subscription that no longer has a mirror of the session."""
+    rows = conn.execute("SELECT DISTINCT via_sub_id FROM rsvp_reaction WHERE session_id = ? AND implicit = 0 "
+                        "AND via_sub_id IS NOT NULL", (session_id,)).fetchall()
+    return frozenset(int(row[0]) for row in rows)
+
+
+def predated_origin_rows(conn: sqlite3.Connection, session_id: int) -> list[tuple[str, str, int]]:
+    """The real RSVP rows of a session whose origin's current mirror is not the message the row was made on or last
+    seen on (`via_message_id`). The mirror was posted after that, so it cannot show the reaction, and the startup
+    reconcile must not read the row as removed."""
+    rows = conn.execute(
+        "SELECT r.user_id, r.choice, r.via_sub_id FROM rsvp_reaction r JOIN mirror_message m "
+        "ON m.session_id = r.session_id AND m.sub_id = r.via_sub_id "
+        "WHERE r.session_id = ? AND r.implicit = 0 AND r.via_message_id IS NOT m.message_id", (session_id,)).fetchall()
+    return sorted(((user_id, choice, sub_id) for user_id, choice, sub_id in rows), key=lambda row: int(row[0]))
+
+
+def presence_from_subs(conn: sqlite3.Connection, session_id: int, sub_ids: Iterable[int]) -> list[tuple[str, str, int]]:
+    """The real RSVP rows of a session whose origin is one of the given mirror subscriptions, as (user id, choice,
+    subscription id), in user id order."""
+    ids = sorted(sub_ids)
+    if not ids:
+        return []
+    marks = ",".join("?" * len(ids))
+    rows = conn.execute(
+        f"SELECT user_id, choice, via_sub_id FROM rsvp_reaction WHERE session_id = ? AND implicit = 0 "
+        f"AND via_sub_id IN ({marks})", (session_id, *ids)).fetchall()
+    return sorted(((user_id, choice, sub_id) for user_id, choice, sub_id in rows), key=lambda row: int(row[0]))
+
+
+def set_presence_via(conn: sqlite3.Connection, session_id: int, user_id: str, via_sub_id: int | None) -> None:
+    """Sets where a user's real RSVP rows came from: None for the home message, else the mirror's subscription, and that
+    mirror's current message id. Only the startup reconcile and an ignored remove call it, so home always wins when the
+    reconcile computes it."""
+    conn.execute(f"UPDATE rsvp_reaction SET via_sub_id = ?, via_message_id = {_MIRROR_MESSAGE} "
+                 "WHERE session_id = ? AND user_id = ? AND implicit = 0",
+                 (via_sub_id, session_id, via_sub_id, session_id, user_id))
+
+
+def reconcile_presence(conn: sqlite3.Connection, session: Session, actual: dict[rsvp.Choice, set[str]], now: int,
+                       via: Mapping[str, int | None] | None = None,
+                       kept: frozenset[tuple[str, str]] = frozenset()) -> bool:
+    """Makes the real (implicit = 0) presence rows match the reactions read from the message and its mirrors. A row whose
+    reaction is gone is deleted, and a reaction with no row is added. Each user who has any reaction on the message loses
+    their implicit row first (the proposer's going, or a voter's maybe), since it can share a key with a real row. Missing
     rows go in the fixed order going, maybe, no, and ascending user id within a choice, so the seqs are deterministic.
-    The order in which reactions were made while the bot was down is unknown, so this order is accepted. Returns
-    whether anything changed."""
+    `via` gives each user's origin (None for home): new rows take it, and the rows of users still reacting are set to it.
+    `kept` lists the (user, choice) rows that are already stored and must stay as they are, with their origin: the
+    reactions of a 403 mirror the bot cannot read. Neither their add nor their origin is changed. The order in which
+    reactions were made while the bot was down is unknown, so this order is accepted. Returns whether a row changed (an
+    origin change alone is not a change to the roster)."""
     changed = False
     for user_id in sorted({user for users in actual.values() for user in users}, key=int):
         cur = conn.execute("DELETE FROM rsvp_reaction WHERE session_id = ? AND user_id = ? AND implicit = 1",
@@ -358,8 +469,20 @@ def reconcile_presence(conn: sqlite3.Connection, session: Session, actual: dict[
             changed = True
     for choice in RECONCILE_ORDER:
         for user_id in sorted(actual.get(choice, set()), key=int):
-            if add_presence(conn, session, user_id, choice, now):
+            if (user_id, choice) in kept:
+                continue
+            origin = None if via is None else via.get(user_id)
+            if add_presence(conn, session, user_id, choice, now, via_sub_id=origin):
                 changed = True
+    if via is not None:
+        for user_id, choice in conn.execute(
+                "SELECT user_id, choice FROM rsvp_reaction WHERE session_id = ? AND implicit = 0",
+                (session.id,)).fetchall():
+            if (user_id, choice) not in kept:
+                origin = via.get(user_id)
+                conn.execute(f"UPDATE rsvp_reaction SET via_sub_id = ?, via_message_id = {_MIRROR_MESSAGE} "
+                             "WHERE session_id = ? AND user_id = ? AND choice = ? AND implicit = 0",
+                             (origin, session.id, origin, session.id, user_id, choice))
     return changed
 
 
@@ -410,7 +533,39 @@ def next_session_views(conn: sqlite3.Connection, card: Card, now: int
     session = next_for_card(conn, card.id, now)
     if session is None:
         return None, None
-    near = render.NextSession(starts_at=session.starts_at, going=counts_of(conn, session.id).going,
-                              jump=(session.guild_id, session.channel_id, session.message_id),
-                              has_location=effective_location(session, card) is not None)
+    near = _next_view(conn, card, session)
     return near, replace(near, jump=None)
+
+
+def scope_session_view(conn: sqlite3.Connection, card: Card, sub_id: int, now: int) -> render.NextSession | None:
+    """The next session of one subscription scope, as that scope's copy shows it, with the jump link to the session's
+    message. The session lives in the subscription's own community, so the link stays inside it. None when the scope has
+    no upcoming session that has not ended."""
+    session = next_for_scope(conn, card.id, sub_id, now)
+    return None if session is None else _next_view(conn, card, session)
+
+
+def both_session_view(conn: sqlite3.Connection, card: Card, sub: Subscription, now: int
+                      ) -> render.NextSession | None:
+    """The next session of a both copy: the sooner (by start, then id) of the copy's own next session, with its own
+    jump, and the card's next home session. The home session is shown with the link to its mirror in this copy, or with
+    no link when the copy has no mirror of it. It never carries the home message's link. None when neither exists."""
+    own = next_for_scope(conn, card.id, sub.id, now)
+    home = next_for_scope(conn, card.id, None, now)
+    if home is None:
+        return None if own is None else _next_view(conn, card, own)
+    if own is not None and (own.starts_at, own.id) < (home.starts_at, home.id):
+        return _next_view(conn, card, own)
+    mirror = mirrors.get(conn, "session", home.id, sub.id)
+    jump = None if mirror is None else (sub.guild_id, mirror.channel_id, mirror.message_id)
+    return _view(conn, card, home, jump)
+
+
+def _next_view(conn: sqlite3.Connection, card: Card, session: Session) -> render.NextSession:
+    return _view(conn, card, session, (session.guild_id, session.channel_id, session.message_id))
+
+
+def _view(conn: sqlite3.Connection, card: Card, session: Session, jump: tuple[str, str, str] | None
+          ) -> render.NextSession:
+    return render.NextSession(starts_at=session.starts_at, going=counts_of(conn, session.id).going, jump=jump,
+                              has_location=effective_location(session, card) is not None)

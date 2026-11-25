@@ -63,7 +63,11 @@ class FollowRole:
 
 
 class FollowRoleTaken(Exception):
-    """Another card already has this role as its follow role."""
+    """Another card or subscription already has this role as its follow role."""
+
+
+class SubscriptionMissing(Exception):
+    """The subscription was removed, so it has no row to store a follow role on."""
 
 
 @dataclass(frozen=True)
@@ -447,11 +451,47 @@ def get_follow_role(conn: sqlite3.Connection, card_id: int) -> FollowRole | None
     return None if row is None else FollowRole(row[0], row[1])
 
 
+def get_subscription_role(conn: sqlite3.Connection, sub_id: int) -> FollowRole | None:
+    row = conn.execute(
+        "SELECT s.guild_id, r.role_id FROM subscription_follow_role r "
+        "JOIN card_subscription s ON s.id = r.sub_id WHERE r.sub_id = ?", (sub_id,)).fetchone()
+    return None if row is None else FollowRole(row[0], row[1])
+
+
+def set_subscription_role(conn: sqlite3.Connection, sub_id: int, role_id: str) -> None:
+    """Stores a subscription's follow role. Raises SubscriptionMissing when the subscription row is gone, and
+    FollowRoleTaken, storing nothing in either case, when any card or another subscription has this role. UNIQUE only
+    holds within one table, so the cross-table check is here. The checks and the write run in the caller's
+    transaction."""
+    if conn.execute("SELECT 1 FROM card_subscription WHERE id = ?", (sub_id,)).fetchone() is None:
+        raise SubscriptionMissing()
+    taken = conn.execute(
+        "SELECT 1 FROM card_follow_role WHERE role_id = ? "
+        "UNION ALL SELECT 1 FROM subscription_follow_role WHERE role_id = ? AND sub_id <> ?",
+        (role_id, role_id, sub_id)).fetchone()
+    if taken is not None:
+        raise FollowRoleTaken()
+    conn.execute(
+        "INSERT INTO subscription_follow_role (sub_id, role_id) VALUES (?, ?) "
+        "ON CONFLICT(sub_id) DO UPDATE SET role_id = excluded.role_id", (sub_id, role_id))
+
+
+def clear_subscription_role(conn: sqlite3.Connection, sub_id: int) -> FollowRole | None:
+    """Removes the subscription's follow role and returns it, or None when it had none."""
+    current = get_subscription_role(conn, sub_id)
+    if current is None:
+        return None
+    conn.execute("DELETE FROM subscription_follow_role WHERE sub_id = ?", (sub_id,))
+    return current
+
+
 def set_follow_role(conn: sqlite3.Connection, card_id: int, guild_id: str, role_id: str) -> None:
-    """Stores the card's follow role. Raises FollowRoleTaken, and stores nothing, when another card has this role.
-    The check and the write run in the caller's transaction."""
-    taken = conn.execute("SELECT card_id FROM card_follow_role WHERE role_id = ? AND card_id <> ?",
-                         (role_id, card_id)).fetchone()
+    """Stores the card's follow role. Raises FollowRoleTaken, and stores nothing, when another card or a subscription
+    has this role. The check and the write run in the caller's transaction."""
+    taken = conn.execute(
+        "SELECT 1 FROM card_follow_role WHERE role_id = ? AND card_id <> ? "
+        "UNION ALL SELECT 1 FROM subscription_follow_role WHERE role_id = ?",
+        (role_id, card_id, role_id)).fetchone()
     if taken is not None:
         raise FollowRoleTaken()
     conn.execute(
@@ -468,8 +508,9 @@ def clear_follow_role(conn: sqlite3.Connection, card_id: int) -> FollowRole | No
 
 
 def follow_role_ids(conn: sqlite3.Connection) -> frozenset[str]:
-    """Every stored follow role id, across all cards: the allowlist for role changes."""
-    return frozenset(row[0] for row in conn.execute("SELECT role_id FROM card_follow_role").fetchall())
+    """Every stored follow role id, across all cards and subscriptions: the allowlist for role changes."""
+    return frozenset(row[0] for row in conn.execute(
+        "SELECT role_id FROM card_follow_role UNION SELECT role_id FROM subscription_follow_role").fetchall())
 
 
 def set_play_now_channel(conn: sqlite3.Connection, card_id: int, link: ChannelLink) -> None:

@@ -492,6 +492,63 @@ channel ID.
 - Result (web): not yet run.
 - Result (mobile): not yet run.
 
+## Live sub-mode checks
+
+- Run in part on 2026-11-25 (UTC), against a v9 test database that the build migrated to v10. The run stopped where it
+  needed more test accounts than were available; the checks not run are marked so. The operator runs each check by
+  hand, in the private test guild and a second test community with a second test account, and records the result on
+  the `Result` lines. Nothing from the real instance is recorded in this file.
+- Use placeholders only: `<guild>` is the test community's id, `<far guild>` is the second community's id, `<channel>`
+  is a text channel's id, `<role>` is a role id and `<n>` is a poll number. Emoji are written as Unicode code points: the
+  raised hand (U+1F64B), the calendar (U+1F4C5), the ballot box (U+1F5F3 U+FE0F) and the bell (U+1F514).
+
+### Far role create and ping
+
+- Steps: with a card live in the test guild, `!card subscribe <slug> <far guild> <channel> mode=local` in a direct
+  message. Read the reply, then check the role in the far community. Start a poll with the ballot box (U+1F5F3 U+FE0F)
+  on the local copy, then press the raised hand (U+1F64B) on it as a member of the far community.
+- Expected: the role is created, or an unmanaged role with the same name is adopted, mentionable, with no permissions
+  and below the bot's top role. The poll message and the play-now post ping only that role, in the far community, and
+  nothing in the home community.
+- Result (web): pass, as far as run. The role was created in the far community: mentionable, with no
+  permissions and below the bot's top role. The bell gave and took it, and the home role was not touched. The poll and
+  the play-now post went to the far community only, and nothing was posted at home. A second ballot box press on
+  the copy was refused while its poll was open, and a home poll opened alongside it. Ping delivery to a second far
+  account was not run.
+- Result (mobile): not run.
+
+### Far member list
+
+- Steps: with the local copy from the check above, a far-community test account A holds the copy's follow role and a
+  second account B does not. A starts a poll on the local copy with the ballot box (U+1F5F3 U+FE0F).
+- Expected: the ballot reaches A (a far-community holder of the role) and not B. The read of the far community's member
+  list succeeds with the bot's usual permissions, so the start is not refused. Record the number of ballots sent.
+- Result (web): run with one holder only. The start was not refused, so the member-list read worked, and one
+  ballot was sent (the starter, who held the role). The second account (B) was not available.
+- Result (mobile): not run.
+
+### Non-member jump link
+
+- Steps: with a ballot or a session DM that links into the far community, open the jump link as an account that is not
+  a member of that community. Record what the client shows: the message, a prompt to join, or an error.
+- Expected: none. The design never relies on a non-member opening a jump link. Record the observation only, with no
+  judgment on whether it is acceptable.
+- Result (web): not run.
+- Result (mobile): not run.
+
+### Mirror RSVP and Me Too
+
+- Steps: with a `both` copy of a live card, the home community and the far community each have one account that is
+  going. Upcoming home session: the far account reacts ✅ on the mirror in the far community, and the home account
+  reacts ✅ on the home message. Play-now post: the far account presses Me Too on the mirror, and the home account presses
+  Me Too on the home post.
+- Expected: the counts on the home message and on the mirror match, each time, after a short wait. The far account's
+  RSVP shows on the session's count, once. Me Too on the mirror counts toward the same post as on the home message.
+- Result (web): in part. A home play-now post and a home poll were mirrored into the both copy's
+  channel, and after a `channel=` move the new mirrors went to the new channel. The RSVP and Me Too counts were not run:
+  they need a going account in each community.
+- Result (mobile): not run.
+
 ## First cards
 
 Three cards were run against the test community, all three checked on web and mobile:

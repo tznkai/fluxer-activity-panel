@@ -264,10 +264,15 @@ def _fit_budget(embed: dict[str, Any], fields: list[dict[str, Any]]) -> None:
         over -= units(current) - units(shortened)
 
 
+def _channel_label(channel: ChannelLink, unnamed: str) -> str:
+    """A channel's escaped name when verified, else `unnamed`. Never a link."""
+    named = channel.verified and channel.channel_name is not None
+    return "#" + fit(escape(channel.channel_name), LIMITS["channel_name"]) if named else unnamed
+
+
 def _channel_value(channel: ChannelLink, unnamed: str, instance_url: str | None) -> str:
     """A channel's field entry: its escaped name when verified, else `unnamed`, as a link when the instance URL is known."""
-    named = channel.verified and channel.channel_name is not None
-    label = "#" + fit(escape(channel.channel_name), LIMITS["channel_name"]) if named else unnamed
+    label = _channel_label(channel, unnamed)
     if instance_url is None:
         return label
     # The link is built here, and the label is escaped above, so no card text forms a link.
@@ -414,9 +419,10 @@ def outside_text(card: Card, status: CardStatus | None, next_text: str | None,
 # The play-now message. The content is our own wording with the card title escaped, and its one mention is the card's
 # follow role. The sender adds allowed_mentions, so nothing here can ping a user.
 
-def _join_fields(card: Card, instance_url: str | None) -> list[dict[str, Any]]:
+def _join_fields(card: Card, instance_url: str | None, *, far: bool = False) -> list[dict[str, Any]]:
     """The join part shared by the play-now and session messages: each public address slot, then each voice slot,
-    labelled as on the card, then the join text. A private address is never shown."""
+    labelled as on the card, then the join text. A private address is never shown. `far` is a mirror: its voice slots
+    are plain channel names, with no link into the games community."""
     fields: list[dict[str, Any]] = []
     for address in card.addresses:
         if address is not None and address.public:
@@ -424,8 +430,9 @@ def _join_fields(card: Card, instance_url: str | None) -> list[dict[str, Any]]:
                            "value": code(host_port(address.host, address.port)), "inline": False})
     for link in card.voices:
         if link is not None:
-            fields.append({"name": slot_label(text.FIELD_VOICE, link.suffix),
-                           "value": _channel_value(link, text.VOICE_UNNAMED, instance_url), "inline": False})
+            value = (_channel_label(link, text.VOICE_UNNAMED) if far
+                     else _channel_value(link, text.VOICE_UNNAMED, instance_url))
+            fields.append({"name": slot_label(text.FIELD_VOICE, link.suffix), "value": value, "inline": False})
     if card.how_to_join is not None:
         fields.append({"name": text.FIELD_JOIN, "value": fit(escape(card.how_to_join), LIMITS["join"]),
                        "inline": False})
@@ -433,9 +440,10 @@ def _join_fields(card: Card, instance_url: str | None) -> list[dict[str, Any]]:
 
 
 def play_now_message(card: Card, *, role_id: str | None, playing: int | None, ended: bool,
-                     instance_url: str | None) -> dict[str, Any]:
+                     instance_url: str | None, far: bool = False) -> dict[str, Any]:
     """{"content": ..., "embeds": [embed]}; no allowed_mentions here (the sender adds it). `playing` None leaves the
-    count line out: it is used when the count could not be read, so the message never shows a guess."""
+    count line out: it is used when the count could not be read, so the message never shows a guess. `far` renders a
+    mirror: the caller passes the subscription's role, and the channel slots carry no link."""
     title = escape(card.title)
     if ended:
         content = text.PLAY_NOW_ENDED_CONTENT.format(card=title)
@@ -446,7 +454,7 @@ def play_now_message(card: Card, *, role_id: str | None, playing: int | None, en
     fields: list[dict[str, Any]] = []
     if playing is not None:
         fields.append({"name": text.FIELD_STATUS, "value": text.PLAY_NOW_PLAYING.format(n=playing), "inline": False})
-    fields.extend(_join_fields(card, instance_url))
+    fields.extend(_join_fields(card, instance_url, far=far))
     embed: dict[str, Any] = {"title": fit(title, LIMITS["title"]), "color": NEUTRAL, "fields": fields}
     return {"content": content, "embeds": [embed]}
 
@@ -455,16 +463,17 @@ def play_now_message(card: Card, *, role_id: str | None, playing: int | None, en
 
 def session_message(card: Card, session: Session, counts: Counts, *, effective_location: str | None,
                     effective_seats: int | None, instance_url: str | None, scrubbed: bool = False,
-                    provisional: bool = False) -> dict[str, Any]:
+                    provisional: bool = False, far: bool = False) -> dict[str, Any]:
     """The session message. `effective_location` and `effective_seats` are the values the session resolves to; the
     caller passes them, so this renderer reads nothing else. A cancelled or scrubbed session shows no location. A
-    provisional session has no stored id yet, so its message has no footer; the real footer comes with the first edit."""
+    provisional session has no stored id yet, so its message has no footer; the real footer comes with the first edit.
+    `far` renders a mirror in a both subscription: its channel slots carry no link."""
     fields: list[dict[str, Any]] = []
     if session.state != "upcoming" or session.moved:
         fields.append({"name": text.SESSION_FIELD_STATUS, "value": _session_status(session), "inline": False})
     fields.append({"name": text.SESSION_FIELD_WHEN, "value": text.SESSION_WHEN.format(ts=session.starts_at),
                    "inline": False})
-    fields.extend(_join_fields(card, instance_url))
+    fields.extend(_join_fields(card, instance_url, far=far))
     location: dict[str, Any] | None = None
     if effective_location is not None and session.state != "cancelled" and not scrubbed:
         location = {"name": text.SESSION_FIELD_LOCATION, "value": fit(escape(effective_location), LIMITS["location"]),
@@ -567,9 +576,12 @@ def _closed_description(view: PollView, letters: dict[int, str], rounds: poll_co
 
 
 def render_poll_message(view: PollView, *, instance_url: str | None,
-                        rounds: poll_count.Rounds | None = None, provisional: bool = False) -> dict[str, Any]:
+                        rounds: poll_count.Rounds | None = None, provisional: bool = False,
+                        session_jump: tuple[str, str, str] | None = None) -> dict[str, Any]:
     """The public poll message: one embed, counts only. `rounds` is given for a closed runoff. A provisional message is
-    the first post, before its row is stored: it has no footer and no answered field."""
+    the first post, before its row is stored: it has no footer and no answered field. `session_jump` is the (guild,
+    channel, message) the session field links to: the home session for a home poll, the session's mirror for a mirror,
+    or None, which shows the field as plain text. A mirror never gets a home jump (the caller's rule)."""
     poll = view.poll
     letters = _letters(view.options)
     by_id = {option.id: option for option in view.options}
@@ -615,7 +627,10 @@ def render_poll_message(view: PollView, *, instance_url: str | None,
             answered += text.POLL_REACHED.format(r=view.reached, m=view.recipients)
         add(text.POLL_FIELD_ANSWERED, answered)
     if view.session_link is not None and instance_url is not None:
-        add(text.POLL_FIELD_SESSION, jump_link(text.POLL_SESSION_LINK, instance_url, *view.session_link))
+        if session_jump is not None:
+            add(text.POLL_FIELD_SESSION, jump_link(text.POLL_SESSION_LINK, instance_url, *session_jump))
+        else:
+            add(text.POLL_FIELD_SESSION, text.POLL_SESSION_PLAIN)
     if poll.sorted_at is not None:
         add(text.POLL_FIELD_NOTE, text.POLL_RELETTERED.format(ts=poll.sorted_at))
     embed["fields"] = fields
@@ -624,10 +639,12 @@ def render_poll_message(view: PollView, *, instance_url: str | None,
     return {"embeds": [embed], "allowed_mentions": {"parse": []}}
 
 
-def render_poll_ballot(view: PollView, *, user_id: str, zone_name: str,
-                       instance_url: str | None) -> dict[str, Any]:
+def render_poll_ballot(view: PollView, *, user_id: str, zone_name: str, instance_url: str | None,
+                       poll_jump: tuple[str, str, str] | None) -> dict[str, Any]:
     """One recipient's ballot DM: {"content": ..., "allowed_mentions": {"parse": []}}. The option list gives way first
-    when the ballot is too long, and the instructions, the picks and the close time are always kept whole."""
+    when the ballot is too long, and the instructions, the picks and the close time are always kept whole.
+    `poll_jump` is the (guild, channel, message) the ballot links to: the poll for a home ballot, the recipient's
+    mirror for a far one, or None, which leaves the link out in both the open and the closed form."""
     poll = view.poll
     if poll.outcome == "removed":
         return {"content": text.POLL_BALLOT_REMOVED, "allowed_mentions": {"parse": []}}
@@ -639,8 +656,8 @@ def render_poll_ballot(view: PollView, *, user_id: str, zone_name: str,
                   key=lambda vote: (vote.rank is None, vote.rank or 0, position[vote.option_id]))
     picks = ", ".join(letters[vote.option_id] for vote in mine)
     picks_line = text.POLL_YOUR_PICKS.format(letters=fit(picks, 400)) if mine else text.POLL_NOT_ANSWERED
-    link = (jump_link(text.POLL_LINK_LABEL, instance_url, poll.guild_id, poll.channel_id, poll.message_id)
-            if instance_url is not None else text.POLL_LINK_LABEL)
+    link = (jump_link(text.POLL_LINK_LABEL, instance_url, *poll_jump)
+            if instance_url is not None and poll_jump is not None else text.POLL_LINK_LABEL)
     if poll.state == "closed":
         return {"content": "\n".join([head, text.POLL_BALLOT_CLOSED.format(link=link), picks_line]),
                 "allowed_mentions": {"parse": []}}

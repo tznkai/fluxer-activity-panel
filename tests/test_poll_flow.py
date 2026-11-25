@@ -23,7 +23,7 @@ import pytest
 from fluxer_client import events
 from fluxer_client.roles import RoleCache
 from fluxer_client.rest import FluxerREST
-from fluxer_panel import cards, poll_letters, polls, render, text
+from fluxer_panel import cards, poll_letters, polls, render, subscriptions, text
 from fluxer_panel.card_commands import CardLocks
 from fluxer_panel.config import Config
 from fluxer_panel.db import Database
@@ -295,6 +295,21 @@ async def test_a_card_with_no_follow_role_polls_only_the_starter_and_says_so(bui
     assert text.POLL_NO_ROLE in dm_contents(world.state, STARTER)
 
 
+async def test_a_home_poll_with_no_home_role_but_a_both_copy_role_does_not_say_only_you_were_sent_a_ballot(
+        build) -> None:
+    world = await build(follow=False)
+    far_members(world.state, HOLDER_B)
+    await add_scope(world, mode="both")
+
+    await world.flow.start(press(world.card_id))
+    await world.post.drain()
+
+    poll = await open_poll(world)
+    assert poll is not None
+    assert await ballot_users(world, poll.id) == {STARTER, HOLDER_B}
+    assert text.POLL_NO_ROLE not in dm_contents(world.state, STARTER)
+
+
 # AC2.7: a second press while a poll is open ----------------------------------------------------------------
 
 async def test_a_second_press_while_a_poll_is_open_posts_nothing_and_links_the_open_poll(build) -> None:
@@ -480,6 +495,36 @@ async def test_a_card_whose_channel_changes_while_the_post_waits_for_the_lock_ge
     assert posts_to(world.state, POLL_POSTS) == []
     assert await open_poll(world) is None
     assert dm_contents(world.state, STARTER) == [text.POLL_POST_FAILED]
+
+
+@pytest.mark.parametrize("ending", [
+    "UPDATE card_subscription SET mode = 'redirect' WHERE id = ?",
+    "UPDATE card_subscription SET paused = 1 WHERE id = ?",
+])
+async def test_a_scope_that_ends_while_a_poll_waits_for_the_lock_posts_nothing(build, ending: str) -> None:
+    """The scope is read before the lock and again under it. A scope that ends while the start waits for the lock (its
+    copy turns redirect, or is paused) refuses under the lock: nothing is posted and nothing is stored."""
+    world = await build()
+    far_members(world.state, STARTER)
+    sub_id = await add_scope(world)
+    lock = world.locks.get(world.card_id)
+    await lock.acquire()
+    try:
+        task = asyncio.create_task(world.flow.start(far_press(world.card_id, sub_id)))
+        # The scope, the target and the member list are read before the lock. Once the far member list is requested,
+        # the flow is only left to wait on the lock, so the change below lands after the pre-lock scope read.
+        far_members_path = f"/api/v1/guilds/{OTHER_GUILD}/members"
+        await wait_until(lambda: any(r.method == "GET" and r.path == far_members_path for r in world.state.requests),
+                         waiting_for="the far member list request")
+        await world.db.run(lambda c: c.execute(ending, (sub_id,)))
+    finally:
+        lock.release()
+    await asyncio.wait_for(task, timeout=5)
+    await world.post.drain()
+
+    assert dm_contents(world.state, STARTER) == [text.POLL_SCOPE_GONE]
+    assert posts_to(world.state, FAR_LOCAL_POSTS) == []
+    assert await world.db.run(lambda c: polls.open_for_scope(c, world.card_id, sub_id)) is None
 
 
 async def test_a_card_whose_own_channel_is_the_games_channel_gets_no_poll(build) -> None:
@@ -950,3 +995,130 @@ async def test_with_the_kill_switch_off_a_poll_press_does_nothing(build) -> None
 
     assert world.state.requests == []
     assert await open_poll(world) is None
+
+
+# AC2.5: a local or both copy runs polls in its own scope -----------------------------------------------------
+
+FAR_LOCAL = "3600"          # a local subscription's own channel, in OTHER_GUILD
+FAR_LOCAL_POSTS = f"/api/v1/channels/{FAR_LOCAL}/messages"
+FAR_POSTS = f"/api/v1/channels/{FAR}/messages"
+SUB_ROLE = "7101"           # a subscription's follow role, in OTHER_GUILD
+
+
+def far_press(card_id: int, sub_id: int | None, *, kind: str = "copy", mode: str = "local",
+              user: str = STARTER) -> Press:
+    """A press on a far surface: a copy of subscription sub_id, or (sub_id None) a far card or play-now post."""
+    surface = Surface(kind=kind, channel_id=FAR, message_id="5202", guild_id=OTHER_GUILD, home_community=False,
+                      sub_id=sub_id, mode=mode)
+    return Press(card_id=card_id, action=Action.POLL, user_id=user, member_role_ids=None, surface=surface)
+
+
+def far_members(state: FakeFluxerState, *user_ids: str) -> None:
+    """Members of the far community who hold the subscription's follow role."""
+    for uid in user_ids:
+        state.members[(OTHER_GUILD, uid)] = {"user": {"id": uid}, "roles": [SUB_ROLE]}
+
+
+async def add_scope(world: World, *, mode: str = "local", role: str | None = SUB_ROLE) -> int:
+    world.state.channels[FAR_LOCAL] = {"id": FAR_LOCAL, "guild_id": OTHER_GUILD, "type": 0}
+
+    def tx(c: Any) -> int:
+        sub_id = subscriptions.add(c, world.card_id, OTHER_GUILD, FAR)
+        assert subscriptions.set_mode_if(c, sub_id, "redirect", mode)
+        subscriptions.set_local_channel(c, sub_id, FAR_LOCAL)
+        if role is not None:
+            cards.set_subscription_role(c, sub_id, role)
+        return sub_id
+
+    return await world.db.run(tx)
+
+
+async def test_a_local_poll_posts_in_its_own_channel_and_ballots_only_its_scope_holders(build) -> None:
+    world = await build()
+    members(world.state, HOLDER_A)
+    far_members(world.state, HOLDER_B)
+    sub_id = await add_scope(world)
+
+    await world.flow.start(far_press(world.card_id, sub_id))
+
+    assert len(posts_to(world.state, FAR_LOCAL_POSTS)) == 1
+    assert posts_to(world.state, POLL_POSTS) == []
+    assert dm_contents(world.state, HOLDER_B) != []
+    assert dm_contents(world.state, HOLDER_A) == []
+    assert dm_contents(world.state, STARTER) != []
+    poll = await world.db.run(lambda c: polls.open_for_scope(c, world.card_id, sub_id))
+    assert poll is not None and poll.scope_sub_id == sub_id
+
+
+async def test_a_home_poll_and_a_local_poll_can_be_open_together_and_a_second_local_one_is_refused(build) -> None:
+    world = await build()
+    members(world.state, HOLDER_A)
+    sub_id = await add_scope(world)
+    await world.flow.start(far_press(world.card_id, sub_id))
+
+    await world.flow.start(press(world.card_id))
+    await world.flow.start(far_press(world.card_id, sub_id, user=HOLDER_B))
+
+    assert len(posts_to(world.state, POLL_POSTS)) == 1
+    assert len(posts_to(world.state, FAR_LOCAL_POSTS)) == 1
+    [refusal] = dm_contents(world.state, HOLDER_B)
+    assert refusal.startswith(text.POLL_ALREADY_OPEN.split("{link}")[0])
+
+
+async def test_a_home_poll_opened_first_leaves_a_local_poll_open_and_a_second_local_one_is_refused(build) -> None:
+    world = await build()
+    members(world.state, HOLDER_A)
+    sub_id = await add_scope(world)
+    await world.flow.start(press(world.card_id))
+
+    await world.flow.start(far_press(world.card_id, sub_id))
+    await world.flow.start(far_press(world.card_id, sub_id, user=HOLDER_B))
+
+    assert len(posts_to(world.state, POLL_POSTS)) == 1
+    assert len(posts_to(world.state, FAR_LOCAL_POSTS)) == 1
+    [refusal] = dm_contents(world.state, HOLDER_B)
+    assert refusal.startswith(text.POLL_ALREADY_OPEN.split("{link}")[0])
+
+
+async def test_a_far_copy_on_a_redirect_gets_the_elsewhere_reply_and_starts_no_poll(build) -> None:
+    world = await build()
+    sub_id = await add_scope(world, mode="redirect")
+
+    await world.flow.start(far_press(world.card_id, sub_id, mode="redirect"))
+
+    [content] = dm_contents(world.state, STARTER)
+    assert content.startswith(text.POLL_ELSEWHERE.split("{link}")[0])
+    assert posts_to(world.state, FAR_LOCAL_POSTS) == []
+    assert posts_to(world.state, POLL_POSTS) == []
+
+
+async def test_a_far_play_now_post_or_far_card_gets_the_elsewhere_reply_and_no_poll(build) -> None:
+    world = await build()
+
+    await world.flow.start(far_press(world.card_id, None, kind="play_now"))
+    await world.flow.start(far_press(world.card_id, None, kind="card"))
+
+    contents = dm_contents(world.state, STARTER)
+    assert len(contents) == 2
+    assert all(content.startswith(text.POLL_ELSEWHERE.split("{link}")[0]) for content in contents)
+    assert posts_to(world.state, FAR_POSTS) == []
+    assert posts_to(world.state, POLL_POSTS) == []
+
+
+async def test_someone_in_both_roles_gets_a_ballot_for_each_open_poll_and_a_plain_reply_names_both(build) -> None:
+    world = await build()
+    members(world.state, HOLDER_A)
+    far_members(world.state, HOLDER_A)
+    sub_id = await add_scope(world)
+    await world.flow.start(far_press(world.card_id, sub_id))
+    await world.flow.start(press(world.card_id))
+    await world.post.drain()
+    local = await world.db.run(lambda c: polls.open_for_scope(c, world.card_id, sub_id))
+    home = await world.db.run(lambda c: polls.open_for_scope(c, world.card_id, None))
+    assert local is not None and home is not None
+    assert len(dm_contents(world.state, HOLDER_A)) == 2
+
+    await reply(world, HOLDER_A, "a")
+
+    ids = sorted([local.id, home.id])
+    assert last_reply(world.state, HOLDER_A) == text.POLL_WHICH.format(polls=f"{ids[0]}, {ids[1]}")

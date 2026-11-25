@@ -373,10 +373,10 @@ async def test_a_reminder_whose_text_cannot_be_built_is_not_marked_and_other_pol
     await send_ballots(world, second)
     real_content = world.jobs._reminder_content
 
-    def content_for(view: polls.PollView) -> str:
+    def content_for(view: polls.PollView, jump: tuple[str, str, str] | None) -> str:
         if view.poll.id == first:
             raise RuntimeError("text failed")
-        return real_content(view)
+        return real_content(view, jump)
 
     monkeypatch.setattr(world.jobs, "_reminder_content", content_for)
     world.clock.now = HALFWAY

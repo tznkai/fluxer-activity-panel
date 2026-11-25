@@ -86,7 +86,8 @@ HELP_COMMANDS = (
     "!card list: every card, by sort order\n"
     "!card publish <slug>: make the card live\n"
     "!card archive <slug>: remove the posted message and keep the card\n"
-    "!card subscribe <slug> <channel>: post a copy of the card in another text channel\n"
+    "!card subscribe <slug> <channel> [mode=redirect|local|both] [channel=<channel>] [role=<role id>]: post a copy "
+    "of the card in another text channel, or run its sessions and polls there\n"
     "!card unsubscribe <slug> <channel>: remove that copy and stop posting there\n"
     "!card interactions on|off [slug]: turn the reaction taps on or off, for every card or for one\n"
     "!card help fields: each field, its format and its limits\n"
@@ -138,8 +139,8 @@ CARD_UPDATED = "Card updated."
 CARD_CLEARED = "Cleared."
 CARD_PUBLISHED = "Published. The card will post on the next check."
 CARD_ARCHIVED = "Archived. The posted message is removed and the card's settings are kept."
-# Used only when a posted message was refused (403) and is still in Fluxer. The header never says the message was removed;
-# each channel left then gets one ARCHIVE_LEFT_LINE, which names it by mention.
+# Used only when a posted message is still in Fluxer: a copy or the card's message refused (403), or a mirror whose
+# delete failed (not a 404). The header never says it was removed; each channel left gets one ARCHIVE_LEFT_LINE.
 CARD_ARCHIVED_SOME_LEFT = "Archived. The card's settings are kept, but these posted messages are still in Fluxer:"
 ARCHIVE_LEFT_LINE = "I couldn't remove the message in <#{channel_id}>, so it is still there. Delete it by hand."
 ALREADY_LIVE = "That card is already live."
@@ -175,7 +176,8 @@ PLAY_NOW_COOLDOWN = "Someone already called for {card}: {link}"
 PLAY_NOW_COOLDOWN_NO_LINK = "Someone already called for {card} a moment ago."
 PROBE_ALERT = "Heads up: card {slug} reports its server running, but the game isn't answering queries."
 # Card subscriptions: a copy of a card in another text channel. The channel is shown as a mention, the only input here.
-SUBSCRIPTION_USAGE = ("Usage: !card subscribe <slug> <channel>, where <channel> is a channel link or "
+SUBSCRIPTION_USAGE = ("Usage: !card subscribe <slug> <channel> [mode=redirect|local|both] "
+                      "[channel=<channel or link>] [role=<role id>], where <channel> is a channel link or "
                       "<community id> <channel id>.")
 UNSUBSCRIBE_USAGE = "Usage: !card unsubscribe <slug> <channel>, with the channel given as for subscribe."
 SUBSCRIBED = "Subscribed. The card will post in that channel on the next check."
@@ -188,7 +190,39 @@ SUBSCRIPTION_NOT_FOUND = "That channel isn't subscribed to this card."
 UNSUBSCRIBED = "Unsubscribed. The copy in that channel is removed."
 UNSUBSCRIBED_COPY_LEFT = ("Unsubscribed, but I couldn't remove the copy in <#{channel_id}>, so it is still there. "
                           "Delete it by hand.")
+SUBSCRIPTION_MODE_IN_GAMES = ("Copies in the games community always point at the card, so they can't be local or "
+                              "both.")
+SUBSCRIPTION_GAMES_LOOKUP_FAILED = "I couldn't check the games community. Try again in a minute."
+SUBSCRIPTION_NEEDS_SCOPE = "channel= and role= only work with mode=local or mode=both."
+SUBSCRIPTION_CHANNEL_IS_GAMES = "That's the games channel. Sessions, polls and play-now posts never go there."
+SUBSCRIPTION_MODE_SET = "Copy in <#{channel_id}> is now {mode}."
+SUBSCRIPTION_LOCAL_CHANNEL_SET = "It posts in <#{channel_id}>."
+SUBSCRIPTION_RETRY = "Something changed at the same time. Run the command again."
+SUBSCRIPTION_ROLE_OK = "Follow role here: <@&{role_id}>."
+SUBSCRIPTION_ROLE_ASK = ("A role with the card's follow name is already in use in that community. Give one with "
+                         "role=<role id>.")
+SUBSCRIPTION_ROLE_FAILED = "The mode is set, but the follow role isn't: {reason}"
+SUBSCRIPTION_ROLE_UNAVAILABLE = "The mode is set, but following isn't available right now, so there's no follow role."
+SUBSCRIPTION_ROLE_GONE = "That channel was unsubscribed, so it has no follow role."
+SUBSCRIPTION_MIRRORS_LEFT = "I couldn't delete my posts in {channels}."
+# The role step's refusal reasons, as one sentence each. Nothing here names the role.
+SUBSCRIPTION_ROLE_REASON = {
+    "hierarchy": "That role is at or above the bot's top role.",
+    "role_permissions": "That role grants permissions. A follow role must have none.",
+    "missing": "That role isn't in this community.",
+    "everyone": "That's the @everyone role.",
+    "not_mentionable": "That role isn't mentionable.",
+    "create_failed": "I couldn't create or change the role there (I need Manage Roles, ranked above it).",
+    "mentionable_failed": "I couldn't create or change the role there (I need Manage Roles, ranked above it).",
+    "lookup_failed": "I couldn't reach Fluxer to check that role. Try again in a minute.",
+    "no_bot_id": "Try again in a moment.",
+}
 SUBSCRIPTIONS_HEADING = "Subscribed channels:"
+# `!card show` lines: the mode after each channel, and for a local or both copy the channel it posts in and its role.
+SUBSCRIPTION_LINE_MODE = " · {mode}"
+SUBSCRIPTION_LINE_SCOPE = " · posts in <#{channel_id}> · {role}"
+SUBSCRIPTION_LINE_ROLE = "role <@&{role_id}>"
+SUBSCRIPTION_LINE_NO_ROLE = "no follow role"
 SUBSCRIPTION_PAUSED_SUFFIX = " (paused)"
 # The two pause alerts take the card's slug (a-z, 0-9 and -) and the channel, shown as a mention. No other card text.
 SUBSCRIPTION_PAUSED_ALERT = ("Heads up: Fluxer refused the bot's post of card {slug} in <#{channel_id}>, so that copy is "
@@ -319,6 +353,7 @@ SESSION_POST_FAILED = "I couldn't post that session. Try again later."
 SESSION_DRAFT_EXPIRED = "This session draft expired. Press \U0001F4C5 on the card to start again."
 SESSION_ELSEWHERE = "Sessions are planned on the card itself: {link}"
 SESSION_ELSEWHERE_NO_LINK = "Sessions are planned on the card itself, in the games channel."
+SESSION_SCOPE_GONE = "That copy no longer runs its own sessions, so nothing was posted."
 SESSION_NO_CHANNEL = "This card has no channel for sessions yet."
 SESSION_CAP = {
     "proposer": "You already have 3 upcoming sessions for {card}.",
@@ -383,6 +418,7 @@ POLL_ROUND_SEP = ", "
 POLL_DROPPED = " {letter} was dropped."
 POLL_FIELD_SESSION = "Session"
 POLL_SESSION_LINK = "Open the session"
+POLL_SESSION_PLAIN = "A session is scheduled."     # the session field when there is no link to show
 # The ballot.
 POLL_BALLOT_HEAD = "Time poll {n} for {card}."       # {n} is the poll id: a voter with several ballots names it
 POLL_BALLOT_HEAD_RUNOFF = "Runoff {n} for {card}."
@@ -411,6 +447,7 @@ POLL_REMINDER_DM = ("There's still time to answer the time poll for {card}: {lin
 POLL_ELSEWHERE = "Polls are started on the card itself: {link}"
 POLL_ELSEWHERE_NO_LINK = "Polls are started on the card itself, in the games channel."
 POLL_NO_CHANNEL = "This card has no channel for polls yet."
+POLL_SCOPE_GONE = "That copy no longer runs its own polls, so nothing was opened."
 POLL_ALREADY_OPEN = "This card already has an open poll: {link}"
 POLL_ALREADY_OPEN_NO_LINK = "This card already has an open poll."
 POLL_TRY_LATER = "I couldn't read the member list. Please try again later."

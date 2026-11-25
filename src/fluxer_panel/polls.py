@@ -11,7 +11,7 @@ already happened.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 MAX_OPTIONS = 702   # letters a..z, then aa..zz
@@ -41,6 +41,7 @@ class Poll:
     outcome: str | None           # None while open; "winner" | "none" | "removed"
     winner_option_id: int | None
     session_id: int | None
+    scope_sub_id: int | None = None   # None is the home card; otherwise the subscription the poll belongs to
 
     @property
     def is_runoff(self) -> bool:
@@ -65,6 +66,7 @@ class Ballot:
     dm_failed: bool
     answered: bool
     reminded: bool
+    via_sub_id: int | None = None     # the both-subscription the recipient was reached through, if any
 
 
 @dataclass(frozen=True)
@@ -76,9 +78,9 @@ class Vote:
 
 _POLL_COLUMNS = ("id, card_id, guild_id, channel_id, message_id, starter_id, kind, parent_poll_id, state, created_at, "
                  "closes_at, closed_at, ballot_size, pending_ballot_size, sorted_at, outcome, winner_option_id, "
-                 "session_id")
+                 "session_id, scope_sub_id")
 _OPTION_COLUMNS = "id, poll_id, position, starts_at, origin"
-_BALLOT_COLUMNS = "poll_id, user_id, dm_channel_id, dm_message_id, dm_failed, answered, reminded"
+_BALLOT_COLUMNS = ("poll_id, user_id, dm_channel_id, dm_message_id, dm_failed, answered, reminded, via_sub_id")
 
 
 def _load_poll(row: tuple) -> Poll:
@@ -86,8 +88,9 @@ def _load_poll(row: tuple) -> Poll:
 
 
 def _load_ballot(row: tuple) -> Ballot:
-    (poll_id, user_id, dm_channel_id, dm_message_id, dm_failed, answered, reminded) = row
-    return Ballot(poll_id, user_id, dm_channel_id, dm_message_id, bool(dm_failed), bool(answered), bool(reminded))
+    (poll_id, user_id, dm_channel_id, dm_message_id, dm_failed, answered, reminded, via_sub_id) = row
+    return Ballot(poll_id, user_id, dm_channel_id, dm_message_id, bool(dm_failed), bool(answered), bool(reminded),
+                  via_sub_id)
 
 
 def _polls(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> list[Poll]:
@@ -106,22 +109,27 @@ def _options(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> list[Pol
 
 def create(conn: sqlite3.Connection, *, card_id: int, guild_id: str, channel_id: str, message_id: str,
            starter_id: str, kind: str, parent_poll_id: int | None, now: int, closes_at: int, ballot_size: int,
-           options: Sequence[tuple[int, str]], recipients: Sequence[str]) -> int | None:
-    """Open a poll with its options and one ballot per recipient. None when the card already has an open poll."""
+           options: Sequence[tuple[int, str]], recipients: Sequence[str], scope_sub_id: int | None = None,
+           via: Mapping[str, int] | None = None) -> int | None:
+    """Open a poll with its options and one ballot per recipient. None when its scope already has an open poll. `via`
+    maps a recipient to the both-subscription they were reached through; a recipient not in it gets no link."""
     if (kind == "runoff") != (parent_poll_id is not None):
         raise ValueError("a runoff needs a parent poll, and only a runoff has one")
-    if open_for_card(conn, card_id) is not None:
+    if open_for_scope(conn, card_id, scope_sub_id) is not None:
         return None
     cur = conn.execute(
         "INSERT INTO polls (card_id, guild_id, channel_id, message_id, starter_id, kind, parent_poll_id, state, "
-        "created_at, closes_at, ballot_size) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)",
-        (card_id, guild_id, channel_id, message_id, starter_id, kind, parent_poll_id, now, closes_at, ballot_size))
+        "created_at, closes_at, ballot_size, scope_sub_id) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)",
+        (card_id, guild_id, channel_id, message_id, starter_id, kind, parent_poll_id, now, closes_at, ballot_size,
+         scope_sub_id))
     poll_id = cur.lastrowid
     for position, (starts_at, origin) in enumerate(options):
         conn.execute("INSERT INTO poll_options (poll_id, position, starts_at, origin) VALUES (?, ?, ?, ?)",
                      (poll_id, position, starts_at, origin))
+    links = via or {}
     for user_id in dict.fromkeys(recipients):
-        conn.execute("INSERT INTO poll_ballots (poll_id, user_id) VALUES (?, ?)", (poll_id, user_id))
+        conn.execute("INSERT INTO poll_ballots (poll_id, user_id, via_sub_id) VALUES (?, ?, ?)",
+                     (poll_id, user_id, links.get(user_id)))
     return poll_id
 
 
@@ -135,9 +143,25 @@ def get_by_message(conn: sqlite3.Connection, message_id: str) -> Poll | None:
     return rows[0] if rows else None
 
 
-def open_for_card(conn: sqlite3.Connection, card_id: int) -> Poll | None:
-    rows = _polls(conn, "WHERE card_id = ? AND state = 'open'", (card_id,))
+def open_for_scope(conn: sqlite3.Connection, card_id: int, scope_sub_id: int | None) -> Poll | None:
+    """The open poll of one scope of the card (NULL is the home card)."""
+    rows = _polls(conn, "WHERE card_id = ? AND state = 'open' AND scope_sub_id IS ?", (card_id, scope_sub_id))
     return rows[0] if rows else None
+
+
+def open_for_card(conn: sqlite3.Connection, card_id: int) -> Poll | None:
+    """The open home poll of the card. A subscription's poll never shows here."""
+    return open_for_scope(conn, card_id, None)
+
+
+def open_for_card_any(conn: sqlite3.Connection, card_id: int) -> list[Poll]:
+    """Every open poll of the card, in every scope (archive)."""
+    return _polls(conn, "WHERE card_id = ? AND state = 'open' ORDER BY id", (card_id,))
+
+
+def list_for_scope(conn: sqlite3.Connection, scope_sub_id: int) -> list[Poll]:
+    """Every poll of one subscription scope, in any state, in id order."""
+    return _polls(conn, "WHERE scope_sub_id = ? ORDER BY id", (scope_sub_id,))
 
 
 def open_polls(conn: sqlite3.Connection) -> list[Poll]:

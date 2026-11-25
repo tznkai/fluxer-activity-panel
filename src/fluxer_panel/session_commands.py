@@ -68,6 +68,16 @@ def _cancelled_text(session: Session, card: Card) -> str:
     return text.SESSION_CANCELLED_DM.format(card=render.escape(card.title), ts=session.starts_at)
 
 
+class _AllScopes:
+    """The type of ALL_SCOPES: every scope of a card, the archive's cancel."""
+
+    def __repr__(self) -> str:
+        return "ALL_SCOPES"
+
+
+ALL_SCOPES = _AllScopes()
+
+
 class SessionCommands:
     def __init__(self, *, db: Database, rest: FluxerREST, config: Config, locks: CardLocks,
                  session_post: SessionPost, clock: Callable[[], float] = time.time,
@@ -148,16 +158,11 @@ class SessionCommands:
             return await self._db.run(lambda conn: sessions.get_by_message(conn, message_id))
         return None
 
-    def _link(self, session: Session) -> str | None:
-        if not self._config.instance_url:
-            return None
-        return render.jump_link(text.SESSION_LINK_LABEL, self._config.instance_url, session.guild_id,
-                                session.channel_id, session.message_id)
-
-    async def _edit(self, session_id: int) -> None:
-        """The message edit after a change. The change is already stored, so a failed edit is logged by type only."""
+    async def _edit(self, session_id: int, *, mirror_new: bool = False) -> None:
+        """The message edit after a change. The change is already stored, so a failed edit is logged by type only. A
+        change edits the stored mirrors and posts none (see `SessionPost.edit_session`)."""
         try:
-            await self._session_post.edit_session(session_id)
+            await self._session_post.edit_session(session_id, mirror_new=mirror_new)
         except Exception as exc:  # noqa: BLE001 - the stored change stands; the message keeps its last good form
             log_event(log, "session_edit_failed", level=logging.WARNING, session_id=session_id,
                       reason=type(exc).__name__)
@@ -222,13 +227,14 @@ class SessionCommands:
         fresh, card = moved
         if not await self._edit_while_upcoming(session.id):
             return text.SESSION_NOT_UPCOMING, "not_upcoming"
-        link = self._link(fresh)
         title = render.escape(card.title)
-        if link is not None:
-            content = text.SESSION_MOVED_DM.format(card=title, ts=fresh.starts_at, link=link)
-        else:
-            content = text.SESSION_MOVED_DM_NO_LINK.format(card=title, ts=fresh.starts_at)
-        await self._session_post.dm_attendees(fresh, content, exclude=event.author_id)
+
+        def content_for(link: str | None) -> str:
+            if link is None:
+                return text.SESSION_MOVED_DM_NO_LINK.format(card=title, ts=fresh.starts_at)
+            return text.SESSION_MOVED_DM.format(card=title, ts=fresh.starts_at, link=link)
+
+        await self._session_post.dm_attendees_linked(fresh, exclude=event.author_id, content_for=content_for)
         self._kick()
         return text.SESSION_MOVE_DONE.format(n=session.id, ts=starts), "done"
 
@@ -315,6 +321,10 @@ class SessionCommands:
 
     # The hooks ---------------------------------------------------------------------------------------------
 
+    async def scrub(self, session: Session) -> None:
+        """The purge's scrub of one session message: the closed form with no location. Raises on failure."""
+        await self._session_post.scrub(session)
+
     async def on_message_gone(self, session_id: int) -> None:
         """The SessionPost hook for a 404 on a session's message. Takes no card lock: the cancel is one compare-and-set
         transaction, and the DMs and the poller kick come after it. The message is gone, so it is never edited."""
@@ -327,9 +337,11 @@ class SessionCommands:
         self._kick()
         log_event(log, "session_message_gone", session_id=session_id)
 
-    async def cancel_card_sessions_locked(self, card_id: int, actor: str) -> int:
+    async def cancel_card_sessions_locked(self, card_id: int, actor: str, *,
+                                          scope: int | None | _AllScopes = ALL_SCOPES) -> int:
         """Cancels the card's upcoming sessions and stops their series, then edits each message and DMs its attendees
-        except `actor`. The caller holds the card's lock. This method takes none, and nothing it calls may take one."""
+        except `actor`. `scope` limits the cancel to one scope (None is the home card, an id a subscription). The caller
+        holds the card's lock. This method takes none, and nothing it calls may take one."""
         now = self._now()
 
         def cancel_all(conn) -> list[tuple[Session, Card]]:
@@ -337,15 +349,26 @@ class SessionCommands:
             if card is None:
                 return []
             done: list[tuple[Session, Card]] = []
-            for session in sessions.upcoming_for_card(conn, card_id):
+            # The series stop with the cancel: an occurrence that has already ended is not upcoming, but its successor
+            # is still due, so every weekly series in the scope is cleared whatever each occurrence's state.
+            if isinstance(scope, _AllScopes):
+                upcoming = sessions.upcoming_for_card(conn, card_id)
+                cleared = sessions.clear_card_series(conn, card_id)
+                reason = "card_cancelled"
+            else:
+                upcoming = sessions.upcoming_for_scope(conn, card_id, scope)
+                cleared = sessions.clear_scope_series(conn, card_id, scope)
+                reason = "scope_cancelled"
+            if cleared:
+                log_event(log, "session_series_cleared", card_id=card_id, count=cleared, reason=reason)
+            for session in upcoming:
                 if sessions.cancel_if(conn, session.id, now):
-                    sessions.set_series_recurrence(conn, session.series_id, None)
                     done.append((session, card))
             return done
 
         cancelled = await self._db.run(cancel_all)
         for session, card in cancelled:
-            await self._edit(session.id)
+            await self._edit(session.id, mirror_new=False)   # the card's lock is held: no new mirror, no seed
             await self._session_post.dm_attendees(session, _cancelled_text(session, card), exclude=actor)
         log_event(log, "session_card_cancelled", card_id=card_id, count=len(cancelled))
         return len(cancelled)

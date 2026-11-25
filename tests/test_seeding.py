@@ -20,7 +20,8 @@ from fluxer_panel.config import Config
 from fluxer_panel.db import Database
 from fluxer_panel.logs import FIELDS_ATTR
 from fluxer_panel.presses import FOLLOW_EMOJI, PLAY_NOW_EMOJI, POLL_EMOJI, SESSION_EMOJI, WAKE_EMOJI
-from fluxer_panel.seeding import Seeder, has_play_now_target, has_session_channel, wanted_emoji
+from fluxer_panel.seeding import Seeder, follow_for, has_play_now_target, has_session_channel, wanted_emoji
+from fluxer_panel.subscriptions import Subscription
 from tests.fakes import FakeFluxerState, Override, make_rest_app
 
 TOKEN = "SENTINEL-TOKEN-seeding"
@@ -220,6 +221,78 @@ def test_a_far_copy_and_a_play_now_post_never_have_a_session_channel() -> None:
     assert has_session_channel(make_card(play_now_channel=LINK), configured, surface_kind="copy", home=False) is False
     assert has_session_channel(make_card(play_now_channel=LINK), configured, surface_kind="play_now",
                                home=True) is False
+
+
+# Subscription scopes: a local or both copy wants its own bell and hand, and a redirect copy keeps today's rules
+
+def make_sub(mode: str) -> Subscription:
+    return Subscription(id=7, card_id=1, guild_id="1001", channel_id="2500", message_id=None, content_hash=None,
+                       paused=False, mode=mode, local_channel_id=None)
+
+
+def test_a_local_copy_with_a_stored_role_wants_wake_bell_hand_calendar_and_ballot_box() -> None:
+    sub = make_sub("local")
+    card = make_card(follow_role=ROLE)
+    play_now = has_play_now_target(card, make_config(), surface_kind="copy", home=False, sub=sub)
+    session = has_session_channel(card, make_config(PLAY_NOW_CHANNEL_ID="2600"), surface_kind="copy", home=False,
+                                  sub=sub)
+
+    wanted = wanted_emoji(card, play_now_target=play_now, session_target=session, poll_target=session,
+                          follow=follow_for(sub, has_role=True))
+
+    assert wanted == [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, POLL_EMOJI]
+
+
+def test_a_both_copy_with_a_stored_role_wants_the_same_set() -> None:
+    sub = make_sub("both")
+    card = make_card()
+    session = has_session_channel(card, make_config(), surface_kind="copy", home=False, sub=sub)
+
+    wanted = wanted_emoji(card, play_now_target=True, session_target=session, poll_target=session,
+                          follow=follow_for(sub, has_role=True))
+
+    assert wanted == [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI, SESSION_EMOJI, POLL_EMOJI]
+
+
+def test_a_local_or_both_copy_has_a_session_channel_in_any_community_with_no_configured_channel() -> None:
+    for mode in ("local", "both"):
+        assert has_session_channel(make_card(), make_config(), surface_kind="copy", home=False,
+                                   sub=make_sub(mode)) is True
+
+
+def test_a_redirect_copy_elsewhere_still_has_no_session_channel_even_with_one_configured() -> None:
+    configured = make_config(PLAY_NOW_CHANNEL_ID="2600")
+
+    assert has_session_channel(make_card(play_now_channel=LINK), configured, surface_kind="copy", home=False,
+                               sub=make_sub("redirect")) is False
+    assert has_session_channel(make_card(play_now_channel=LINK), configured, surface_kind="copy", home=False,
+                               sub=None) is False
+
+
+def test_a_local_copy_with_no_stored_role_wants_no_bell_even_when_the_card_has_one() -> None:
+    sub = make_sub("local")
+    card = make_card(follow_role=ROLE)
+
+    wanted = wanted_emoji(card, play_now_target=True, follow=follow_for(sub, has_role=False))
+
+    assert wanted == [WAKE_EMOJI, PLAY_NOW_EMOJI]
+
+
+def test_a_redirect_copy_keeps_the_card_rule_for_its_bell() -> None:
+    redirect = make_sub("redirect")
+
+    assert follow_for(redirect, has_role=False) is None
+    assert follow_for(None, has_role=False) is None
+    assert wanted_emoji(make_card(follow_role=ROLE), play_now_target=True,
+                        follow=follow_for(redirect, has_role=False)) == [WAKE_EMOJI, FOLLOW_EMOJI, PLAY_NOW_EMOJI]
+    assert wanted_emoji(make_card(), play_now_target=False, follow=follow_for(redirect, has_role=False)) == [WAKE_EMOJI]
+
+
+def test_a_scope_copy_always_has_a_play_now_target_and_a_far_redirect_copy_does_not_without_the_card() -> None:
+    assert has_play_now_target(make_card(), make_config(), surface_kind="copy", home=False,
+                               sub=make_sub("local")) is True
+    assert has_play_now_target(make_card(), make_config(), surface_kind="copy", home=False,
+                               sub=make_sub("redirect")) is False
 
 
 # seed: adds, skips and failures

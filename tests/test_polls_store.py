@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from fluxer_panel import polls
+from fluxer_panel import polls, subscriptions
 from fluxer_panel.db import Database
 from fluxer_panel.polls import MAX_OPTIONS, TooManyOptions
 
@@ -34,10 +34,12 @@ async def _card(db: Database) -> int:
 
 def _create(c: sqlite3.Connection, card_id: int, *, message_id: str = "5001", recipients: tuple[str, ...] = ("1002", "1003"),
             options: tuple[tuple[int, str], ...] = ((10, "offered"), (20, "offered")), kind: str = "approval",
-            parent: int | None = None, closes_at: int = 100, ballot_size: int = 6) -> int | None:
+            parent: int | None = None, closes_at: int = 100, ballot_size: int = 6,
+            scope: int | None = None) -> int | None:
     return polls.create(c, card_id=card_id, guild_id="3001", channel_id="3002", message_id=message_id,
                         starter_id="1001", kind=kind, parent_poll_id=parent, now=1, closes_at=closes_at,
-                        ballot_size=ballot_size, options=list(options), recipients=list(recipients))
+                        ballot_size=ballot_size, options=list(options), recipients=list(recipients),
+                        scope_sub_id=scope)
 
 
 async def _poll(db: Database, card_id: int, **kwargs: object) -> int:
@@ -529,3 +531,51 @@ def test_a_provisional_view_is_unstored_and_lettered_from_its_positions() -> Non
     assert len({o.id for o in view.options}) == 2
     assert [o.starts_at for o in view.options] == [1_800_003_600, 1_800_007_200]
     assert (view.recipients, view.answered, view.reached, view.votes) == (3, 0, 0, ())
+
+
+# Scopes: one open poll per scope, and the origin of each ballot ---------------------------------------
+
+async def _sub(db: Database, card_id: int, channel_id: str = "3060") -> int:
+    return await db.run(lambda c: subscriptions.add(c, card_id, "3001", channel_id))
+
+
+async def test_open_for_scope_sees_only_its_own_scope(db: Database) -> None:
+    card = await _card(db)
+    sub = await _sub(db, card)
+    home = await _poll(db, card)
+    scoped = await db.run(lambda c: _create(c, card, message_id="5002", scope=sub))
+    assert scoped is not None
+    assert (await db.run(lambda c: polls.open_for_scope(c, card, None))).id == home  # type: ignore[union-attr]
+    assert (await db.run(lambda c: polls.open_for_scope(c, card, sub))).id == scoped  # type: ignore[union-attr]
+    assert {poll.id for poll in await db.run(lambda c: polls.open_for_card_any(c, card))} == {home, scoped}
+
+
+async def test_create_refuses_a_second_open_poll_in_a_scope_and_accepts_another_scope(db: Database) -> None:
+    card = await _card(db)
+    sub = await _sub(db, card)
+    assert await db.run(lambda c: _create(c, card)) is not None
+    assert await db.run(lambda c: _create(c, card, message_id="5002")) is None
+    assert await db.run(lambda c: _create(c, card, message_id="5003", scope=sub)) is not None
+    assert await db.run(lambda c: _create(c, card, message_id="5004", scope=sub)) is None
+
+
+async def test_create_stores_the_via_subscription_per_ballot(db: Database) -> None:
+    card = await _card(db)
+    sub = await _sub(db, card)
+    poll_id = await db.run(lambda c: polls.create(
+        c, card_id=card, guild_id="3001", channel_id="3002", message_id="5002", starter_id="1001", kind="approval",
+        parent_poll_id=None, now=1, closes_at=100, ballot_size=6, options=[(10, "offered")],
+        recipients=["1002", "1003"], scope_sub_id=sub, via={"1002": sub}))
+    assert poll_id is not None
+    reached = await db.run(lambda c: polls.ballot(c, poll_id, "1002"))
+    home_only = await db.run(lambda c: polls.ballot(c, poll_id, "1003"))
+    assert reached is not None and reached.via_sub_id == sub
+    assert home_only is not None and home_only.via_sub_id is None
+
+
+async def test_list_for_scope_returns_only_that_scope(db: Database) -> None:
+    card = await _card(db)
+    sub = await _sub(db, card)
+    await _poll(db, card)
+    scoped = await db.run(lambda c: _create(c, card, message_id="5002", scope=sub))
+    assert [poll.id for poll in await db.run(lambda c: polls.list_for_scope(c, sub))] == [scoped]

@@ -10,7 +10,7 @@ import aiohttp
 import pytest
 
 from fluxer_client.rest import FluxerREST
-from fluxer_panel.poll_members import MembersUnavailable, Recipients, recipients, role_holders
+from fluxer_panel.poll_members import MembersUnavailable, Recipients, combined, recipients, role_holders
 from tests.fakes import FakeFluxerState, Override, make_rest_app
 
 TOKEN = "test.token"
@@ -120,3 +120,29 @@ def test_duplicate_holders_are_counted_once():
     result = recipients(["2003", "2003", "2002"], starter_id="2001", cap=10)
     assert result.user_ids == ("2001", "2002", "2003")
     assert result.left_out == 0
+
+
+def test_combined_keeps_the_home_holders_first_under_the_cap() -> None:
+    found = combined([(None, ["2002", "2003"]), (5, ["2004", "2005"])], starter_id="2001", cap=3)
+    assert found.user_ids == ("2001", "2002", "2003")
+    assert found.left_out == 2
+    assert dict(found.via) == {}
+
+
+def test_combined_gives_a_user_in_both_home_and_a_far_group_the_home_route() -> None:
+    found = combined([(None, ["2002"]), (5, ["2002", "2003"])], starter_id="2001", cap=10)
+    assert found.user_ids == ("2001", "2002", "2003")
+    assert dict(found.via) == {"2003": 5}
+
+
+def test_combined_routes_each_far_user_through_the_first_subscription_that_holds_them() -> None:
+    found = combined([(None, []), (5, ["2003", "2004"]), (7, ["2004", "2005"])], starter_id="2001", cap=10)
+    assert found.user_ids == ("2001", "2003", "2004", "2005")
+    assert dict(found.via) == {"2003": 5, "2004": 5, "2005": 7}
+
+
+def test_combined_never_lists_the_starter_again_and_drops_the_routes_of_users_cut_by_the_cap() -> None:
+    found = combined([(None, ["2001"]), (5, ["2003", "2004"])], starter_id="2001", cap=2)
+    assert found.user_ids == ("2001", "2003")
+    assert found.left_out == 1
+    assert dict(found.via) == {"2003": 5}

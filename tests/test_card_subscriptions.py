@@ -7,13 +7,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+import re
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
+from typing import Any
 
 import aiohttp
 import pytest
 
 from fluxer_panel import board, cards, render, subscriptions, text
+from fluxer_panel.games import GamesGuild
 from fluxer_panel.card_commands import SUBCOMMANDS
 from fluxer_panel.db import Database
 from fluxer_panel.poller import Poller
@@ -24,6 +27,7 @@ GUILD = "1001"
 OTHER_GUILD = "1009"
 GAMES_CHANNEL = "2100"
 CHANNELS = tuple(str(2000 + n) for n in range(1, 7))   # 2001 to 2006: text channels in GUILD
+CAP_CHANNELS = tuple(str(2300 + n) for n in range(1, 22))   # 2301 to 2321: enough to fill the cap and go one over
 HASH = "c" * 64
 COPY = "5101"
 
@@ -77,6 +81,12 @@ async def games_world(db, fake, session) -> World:
     return await build(db, state, base, session, GAMES_CHANNEL_ID=GAMES_CHANNEL)
 
 
+def register_channels(world: World, channels: tuple[str, ...]) -> None:
+    """Adds text channels to the fake community, so a subscribe to each one passes its Fluxer check."""
+    for channel in channels:
+        world.state.channels[channel] = {"id": channel, "type": 0, "guild_id": GUILD, "name": "lounge"}
+
+
 async def make_card(world: World, slug: str = "mc") -> cards.Card:
     await world.run(f"!card new {slug} Minecraft Survival")
     card = await world.card(slug)
@@ -107,8 +117,11 @@ def deletes(world: World) -> list[str]:
 async def test_subscribe_by_two_ids_stores_an_active_subscription_and_kicks_the_poller(world: World) -> None:
     card = await make_card(world)
     await subscribe_by_ids(world, "mc", CHANNELS[0])
-    assert await stored(world, card.id, CHANNELS[0]) == subscriptions.Subscription(
-        card_id=card.id, guild_id=GUILD, channel_id=CHANNELS[0], message_id=None, content_hash=None, paused=False)
+    sub = await stored(world, card.id, CHANNELS[0])
+    assert sub is not None
+    assert sub == subscriptions.Subscription(
+        id=sub.id, card_id=card.id, guild_id=GUILD, channel_id=CHANNELS[0], message_id=None, content_hash=None,
+        paused=False, mode="redirect", local_channel_id=None)
     assert world.last_reply() == text.SUBSCRIBED
     assert world.kicks
 
@@ -241,16 +254,18 @@ async def test_resuming_a_paused_channel_whose_check_now_fails_leaves_it_paused(
     assert sub is not None and sub.paused is True
 
 
-async def test_a_sixth_channel_is_refused_with_the_limit(world: World) -> None:
+async def test_a_twenty_first_channel_is_refused_with_the_limit(world: World) -> None:
     card = await make_card(world)
-    for channel in CHANNELS[:5]:
+    register_channels(world, CAP_CHANNELS)
+    for channel in CAP_CHANNELS[:20]:
         await subscribe_by_ids(world, "mc", channel)
+    assert await world.db.run(lambda c: subscriptions.count(c, card.id)) == 20
     world.clear_requests()
-    await subscribe_by_ids(world, "mc", CHANNELS[5])
-    assert world.last_reply() == text.SUBSCRIPTION_LIMIT.format(limit=subscriptions.MAX_SUBSCRIPTIONS)
-    assert await stored(world, card.id, CHANNELS[5]) is None
+    await subscribe_by_ids(world, "mc", CAP_CHANNELS[20])
+    assert world.last_reply() == text.SUBSCRIPTION_LIMIT.format(limit=20)
+    assert await stored(world, card.id, CAP_CHANNELS[20]) is None
     # The cap is read before the Fluxer checks, so a full card costs no request.
-    assert world.state.requests_to(channel_path(CHANNELS[5])) == []
+    assert world.state.requests_to(channel_path(CAP_CHANNELS[20])) == []
 
 
 # unsubscribe -----------------------------------------------------------------------------------------
@@ -447,18 +462,31 @@ async def test_archive_names_the_copy_and_the_card_message_when_both_are_refused
     assert archived is not None and archived.state == "archived" and archived.message_id is None
 
 
+def real_length_id(n: int) -> str:
+    """A 19-digit snowflake, the length Fluxer uses. Built at runtime: a literal this long fails the hygiene check."""
+    return "1" + "0" * 14 + f"{n:04d}"
+
+
 async def test_archive_reply_with_every_channel_left_stays_under_the_message_limit(world: World) -> None:
-    """The most channels an archive can leave is the subscription cap plus the card's own message: one line each."""
+    """The most channels an archive can leave is the subscription cap plus the card's own message: one line each.
+    The ids are the real length, so the reply is measured at its realistic worst. The reply is chunked: every message is
+    under the limit, the header opens the first one, and each channel is named exactly once across them."""
     card = await make_card(world)
-    channels = CHANNELS[:subscriptions.MAX_SUBSCRIPTIONS]
-    await publish_with_copies(world, card, channels)
+    channels = tuple(real_length_id(n) for n in range(1, subscriptions.MAX_SUBSCRIPTIONS + 1))
+    games = real_length_id(0)
+    register_channels(world, channels)
+    await publish_with_copies(world, card, channels, games=games)
     for channel in channels:
         delete_status(world, channel, copy_id(channel), 403)
-    delete_status(world, GAMES_ID, MAIN_MESSAGE, 403)
+    delete_status(world, games, MAIN_MESSAGE, 403)
+    world.clear_requests()
     await world.run("!card archive mc")
-    reply = world.last_reply()
-    assert reply == left_reply(*channels, GAMES_ID)
-    assert render.units(reply) <= 2000
+    replies = [payload["content"] for payload in world.payloads()]
+    assert len(replies) >= 2, "21 lines of 19-digit ids cannot fit one message"
+    assert all(render.units(reply) < 2000 for reply in replies)
+    assert replies[0].startswith(text.CARD_ARCHIVED_SOME_LEFT)
+    named = re.findall(r"<#(\d+)>", "\n".join(replies))
+    assert sorted(named) == sorted((*channels, games))
 
 
 async def test_archive_counts_a_copy_already_gone_as_removed(world: World) -> None:
@@ -580,7 +608,8 @@ async def test_show_lists_the_subscribed_channels_with_paused_marked(world: Worl
     await world.run("!card show mc")
     listing = world.payloads()[-1]
     assert listing["content"] == (text.SUBSCRIPTIONS_HEADING + "\n"
-                                  f"<#{CHANNELS[0]}>\n<#{CHANNELS[1]}>{text.SUBSCRIPTION_PAUSED_SUFFIX}")
+                                  f"<#{CHANNELS[0]}> · redirect\n"
+                                  f"<#{CHANNELS[1]}>{text.SUBSCRIPTION_PAUSED_SUFFIX} · redirect")
     assert listing["allowed_mentions"] == {"parse": []}
 
 
@@ -597,8 +626,11 @@ def test_every_subcommand_is_named_in_the_help() -> None:
 
 
 def test_the_help_lists_subscribe_and_unsubscribe_with_their_arguments() -> None:
-    assert "!card subscribe <slug> <channel>:" in text.HELP_COMMANDS
     assert "!card unsubscribe <slug> <channel>:" in text.HELP_COMMANDS
+    (subscribe_line,) = [line for line in text.HELP_COMMANDS.splitlines() if line.startswith("!card subscribe ")]
+    assert "<slug> <channel>" in subscribe_line
+    for option in ("mode=", "channel=", "role="):
+        assert option in subscribe_line
 
 
 async def test_subscribe_and_unsubscribe_are_logged_under_their_own_command_names(
@@ -633,3 +665,259 @@ async def test_publish_with_a_games_channel_says_the_card_will_post_even_with_co
     await subscribe_by_ids(games_world, "mc", CHANNELS[0])
     await games_world.run("!card publish mc")
     assert games_world.last_reply() == text.CARD_PUBLISHED
+
+
+# subscribe options: mode, channel and role -------------------------------------------------------------
+
+FAR = "1003"
+FAR_COPY = "2201"
+FAR_LOCAL = "2202"
+FAR_VOICE = "2203"
+OTHER_CH = "2204"   # a text channel of OTHER_GUILD, a community the card's copy is not in
+FAR_SECOND = "2205"  # a second text channel of FAR, for a both copy
+
+
+@pytest.fixture
+async def far_world(db, fake, session) -> World:
+    """The games community (GUILD, with GAMES_CHANNEL) and a far community FAR, with a copy channel, a second text
+    channel, a voice channel, and a channel of another community."""
+    state, base = fake
+    state.guilds[GUILD] = {"id": GUILD}
+    state.guilds[FAR] = {"id": FAR}
+    state.guilds[OTHER_GUILD] = {"id": OTHER_GUILD}
+    for channel in CHANNELS:
+        state.channels[channel] = {"id": channel, "type": 0, "guild_id": GUILD, "name": "lounge"}
+    state.channels[GAMES_CHANNEL] = {"id": GAMES_CHANNEL, "type": 0, "guild_id": GUILD, "name": "games"}
+    state.channels[FAR_COPY] = {"id": FAR_COPY, "type": 0, "guild_id": FAR, "name": "copy"}
+    state.channels[FAR_LOCAL] = {"id": FAR_LOCAL, "type": 0, "guild_id": FAR, "name": "local"}
+    state.channels[FAR_VOICE] = {"id": FAR_VOICE, "type": 2, "guild_id": FAR, "name": "voice"}
+    state.channels[OTHER_CH] = {"id": OTHER_CH, "type": 0, "guild_id": OTHER_GUILD, "name": "elsewhere"}
+    state.channels[FAR_SECOND] = {"id": FAR_SECOND, "type": 0, "guild_id": FAR, "name": "second"}
+    world = await build(db, state, base, session, GAMES_CHANNEL_ID=GAMES_CHANNEL)
+    world.ctx.games_guild = GamesGuild(world.rest, world.config)
+    return world
+
+
+async def sub_rows(world: World, card_id: int) -> list[subscriptions.Subscription]:
+    return await world.db.run(lambda c: subscriptions.list_for_card(c, card_id))
+
+
+async def test_subscribe_local_with_a_channel_stores_the_mode_and_the_local_channel(far_world: World) -> None:
+    card = await make_card(far_world)
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local channel={FAR_LOCAL}")
+    sub = await stored(far_world, card.id, FAR_COPY)
+    assert sub is not None
+    assert (sub.mode, sub.local_channel_id, sub.guild_id) == ("local", FAR_LOCAL, FAR)
+    # The role step adds its own line after these (test_card_sub_modes covers it), so only the leading lines are
+    # compared.
+    assert far_world.last_reply().splitlines()[:3] == [text.SUBSCRIBED, text.SUBSCRIPTION_MODE_SET.format(
+        channel_id=FAR_COPY, mode="local"), text.SUBSCRIPTION_LOCAL_CHANNEL_SET.format(channel_id=FAR_LOCAL)]
+
+
+async def test_subscribe_local_with_a_channel_link_stores_the_channel(far_world: World) -> None:
+    card = await make_card(far_world)
+    link = f"https://fluxer.invalid/channels/{FAR}/{FAR_LOCAL}"
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local channel={link}")
+    sub = await stored(far_world, card.id, FAR_COPY)
+    assert sub is not None and sub.local_channel_id == FAR_LOCAL
+
+
+async def test_subscribe_local_without_a_channel_leaves_the_local_channel_empty(far_world: World) -> None:
+    card = await make_card(far_world)
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local")
+    sub = await stored(far_world, card.id, FAR_COPY)
+    assert sub is not None
+    assert (sub.mode, sub.local_channel_id) == ("local", None)
+
+
+async def test_channel_alone_on_an_active_local_row_updates_it_in_place(far_world: World) -> None:
+    card = await make_card(far_world)
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local")
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY} channel={FAR_LOCAL}")
+    sub = await stored(far_world, card.id, FAR_COPY)
+    assert sub is not None
+    assert (sub.mode, sub.local_channel_id) == ("local", FAR_LOCAL)
+    assert len(await sub_rows(far_world, card.id)) == 1
+    assert far_world.last_reply().splitlines()[0] == text.SUBSCRIPTION_LOCAL_CHANNEL_SET.format(channel_id=FAR_LOCAL)
+
+
+async def test_subscribe_with_a_bad_option_gives_usage_and_writes_nothing(far_world: World) -> None:
+    card = await make_card(far_world)
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=sometimes")
+    assert far_world.last_reply() == text.SUBSCRIPTION_USAGE
+    assert await sub_rows(far_world, card.id) == []
+
+
+async def test_local_mode_is_refused_on_a_copy_in_the_games_community(far_world: World) -> None:
+    card = await make_card(far_world)
+    await far_world.run(f"!card subscribe mc {GUILD} {CHANNELS[0]} mode=local")
+    assert far_world.last_reply() == text.SUBSCRIPTION_MODE_IN_GAMES
+    assert await sub_rows(far_world, card.id) == []
+    assert far_world.state.requests_to(channel_path(CHANNELS[0])) == []
+
+
+async def test_both_mode_is_refused_on_a_copy_in_the_games_community(far_world: World) -> None:
+    card = await make_card(far_world)
+    await far_world.run(f"!card subscribe mc {GUILD} {CHANNELS[0]} mode=both")
+    assert far_world.last_reply() == text.SUBSCRIPTION_MODE_IN_GAMES
+    assert await sub_rows(far_world, card.id) == []
+
+
+def fail_games_lookup(world: World) -> None:
+    world.state.overrides[f"GET {channel_path(GAMES_CHANNEL)}"] = Override(500, b'{"code": "X", "message": "boom"}')
+
+
+async def test_local_mode_on_a_new_row_is_refused_when_the_games_lookup_fails(far_world: World) -> None:
+    card = await make_card(far_world)
+    fail_games_lookup(far_world)
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local")
+    assert far_world.last_reply() == text.SUBSCRIPTION_GAMES_LOOKUP_FAILED
+    assert await sub_rows(far_world, card.id) == []
+    assert far_world.state.requests_to(channel_path(FAR_COPY)) == []
+    # The failure is not kept: once the lookup answers, the same command goes through.
+    del far_world.state.overrides[f"GET {channel_path(GAMES_CHANNEL)}"]
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local")
+    sub = await stored(far_world, card.id, FAR_COPY)
+    assert sub is not None and sub.mode == "local"
+
+
+async def test_both_mode_on_an_existing_redirect_row_is_refused_when_the_games_lookup_fails(
+        far_world: World) -> None:
+    card = await make_card(far_world)
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY}")
+    before = await stored(far_world, card.id, FAR_COPY)
+    assert before is not None and before.mode == "redirect"
+    fail_games_lookup(far_world)
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=both")
+    assert far_world.last_reply() == text.SUBSCRIPTION_GAMES_LOOKUP_FAILED
+    rows = await sub_rows(far_world, card.id)
+    assert len(rows) == 1
+    assert await stored(far_world, card.id, FAR_COPY) == before
+
+
+async def test_local_mode_succeeds_when_no_games_channel_is_configured(world: World) -> None:
+    card = await make_card(world)
+    world.state.guilds[FAR] = {"id": FAR}
+    world.state.channels[FAR_COPY] = {"id": FAR_COPY, "type": 0, "guild_id": FAR, "name": "copy"}
+    world.ctx.games_guild = GamesGuild(world.rest, world.config)
+    await world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local")
+    sub = await stored(world, card.id, FAR_COPY)
+    assert sub is not None and sub.mode == "local"
+    assert world.last_reply().splitlines()[0] == text.SUBSCRIBED
+
+
+async def test_a_channel_of_another_community_is_refused_and_nothing_changes(far_world: World) -> None:
+    card = await make_card(far_world)
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local")
+    before = await stored(far_world, card.id, FAR_COPY)
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY} channel={OTHER_CH}")
+    assert far_world.last_reply() == text.CHANNEL_OTHER_COMMUNITY
+    assert await stored(far_world, card.id, FAR_COPY) == before
+    assert len(await sub_rows(far_world, card.id)) == 1
+
+
+async def test_a_channel_link_into_another_community_is_refused_before_any_fluxer_call(far_world: World) -> None:
+    card = await make_card(far_world)
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local")
+    far_world.clear_requests()
+    link = f"https://fluxer.invalid/channels/{OTHER_GUILD}/{OTHER_CH}"
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY} channel={link}")
+    assert far_world.last_reply() == text.CHANNEL_OTHER_COMMUNITY
+    assert far_world.state.requests_to(channel_path(OTHER_CH)) == []
+    sub = await stored(far_world, card.id, FAR_COPY)
+    assert sub is not None and sub.local_channel_id is None
+
+
+async def test_a_voice_channel_is_refused_as_the_local_channel(far_world: World) -> None:
+    card = await make_card(far_world)
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local")
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY} channel={FAR_VOICE}")
+    assert far_world.last_reply() == text.CHANNEL_WRONG_TYPE.format(kind=text.CHANNEL_KIND_TEXT)
+    sub = await stored(far_world, card.id, FAR_COPY)
+    assert sub is not None and sub.local_channel_id is None
+
+
+async def test_the_games_channel_is_refused_as_the_local_channel(far_world: World) -> None:
+    card = await make_card(far_world)
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local")
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY} channel={GAMES_CHANNEL}")
+    assert far_world.last_reply() == text.SUBSCRIPTION_CHANNEL_IS_GAMES
+    sub = await stored(far_world, card.id, FAR_COPY)
+    assert sub is not None and sub.local_channel_id is None
+
+
+async def test_channel_with_redirect_mode_is_refused(far_world: World) -> None:
+    card = await make_card(far_world)
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=redirect channel={FAR_LOCAL}")
+    assert far_world.last_reply() == text.SUBSCRIPTION_NEEDS_SCOPE
+    assert await sub_rows(far_world, card.id) == []
+
+
+async def test_channel_on_a_plain_redirect_row_is_refused_and_keeps_the_row(far_world: World) -> None:
+    card = await make_card(far_world)
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY}")
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY} channel={FAR_LOCAL}")
+    assert far_world.last_reply() == text.SUBSCRIPTION_NEEDS_SCOPE
+    sub = await stored(far_world, card.id, FAR_COPY)
+    assert sub is not None and (sub.mode, sub.local_channel_id) == ("redirect", None)
+
+
+# show: each subscription's mode, posting channel and follow role ---------------------------------------
+
+async def test_show_lists_each_subscriptions_mode_posting_channel_and_role(far_world: World) -> None:
+    card = await make_card(far_world)
+    await far_world.run(f"!card subscribe mc {GUILD} {CHANNELS[0]}")
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local channel={FAR_LOCAL}")
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_SECOND} mode=both")
+    sub = await stored(far_world, card.id, FAR_COPY)
+    assert sub is not None
+    await far_world.db.run(lambda c: cards.set_subscription_role(c, sub.id, "7001"))
+    far_world.clear_requests()
+    await far_world.run("!card show mc")
+    listing = far_world.payloads()[-1]
+    assert listing["content"] == "\n".join([
+        text.SUBSCRIPTIONS_HEADING,
+        f"<#{CHANNELS[0]}> · redirect",
+        f"<#{FAR_COPY}> · local · posts in <#{FAR_LOCAL}> · role <@&7001>",
+        f"<#{FAR_SECOND}> · both · posts in <#{FAR_SECOND}> · no follow role",
+    ])
+    assert listing["allowed_mentions"] == {"parse": []}
+
+
+async def test_show_marks_a_paused_scope_copy_and_keeps_its_mode(far_world: World) -> None:
+    card = await make_card(far_world)
+    await far_world.run(f"!card subscribe mc {FAR} {FAR_COPY} mode=local")
+    await far_world.db.run(lambda c: subscriptions.pause(c, card.id, FAR_COPY))
+    await far_world.run("!card show mc")
+    assert far_world.payloads()[-1]["content"] == "\n".join([
+        text.SUBSCRIPTIONS_HEADING,
+        f"<#{FAR_COPY}>{text.SUBSCRIPTION_PAUSED_SUFFIX} · local · posts in <#{FAR_COPY}> · no follow role",
+    ])
+
+
+def long_scope_copy(card_id: int, n: int) -> Callable[[Any], None]:
+    """A paused both copy with a 19-digit local channel and role: one of the longest lines `!card show` can list."""
+    channel, role_id = f"3{n:018d}", f"4{n:018d}"
+
+    def add(conn: Any) -> None:
+        sub_id = subscriptions.add(conn, card_id, FAR, channel)
+        assert subscriptions.set_mode_if(conn, sub_id, "redirect", "both")
+        subscriptions.set_local_channel(conn, sub_id, channel)
+        cards.set_subscription_role(conn, sub_id, role_id)
+        subscriptions.pause(conn, card_id, channel)
+
+    return add
+
+
+async def test_show_splits_a_full_list_of_long_scope_lines_into_messages_under_the_limit(far_world: World) -> None:
+    card = await make_card(far_world)
+    for n in range(subscriptions.MAX_SUBSCRIPTIONS):
+        await far_world.db.run(long_scope_copy(card.id, n))
+    far_world.clear_requests()
+    await far_world.run("!card show mc")
+    embed, outside, *listing = [payload["content"] for payload in far_world.payloads()
+                                if payload.get("content") is not None]
+    assert len(listing) >= 2
+    assert all(render.units(content) < 2000 for content in listing)
+    assert listing[0].startswith(text.SUBSCRIPTIONS_HEADING)
+    assert sum(content.count("<#") for content in listing) == 2 * subscriptions.MAX_SUBSCRIPTIONS   # copy and channel

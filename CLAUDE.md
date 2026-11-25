@@ -3,7 +3,7 @@
 
 # Fluxer Activity Panel
 
-Last verified: 2026-11-13
+Last verified: 2026-11-23
 
 Standalone project with two packages under `src/`: `fluxer_client` (a panel-agnostic Fluxer REST and
 gateway client) and `fluxer_panel` (the activity panel bot built on it). `README.md` has the
@@ -20,32 +20,36 @@ user-facing description, the purge status file format and the "Exit 3" recovery 
   (gateway dispatches to frozen dataclasses; unknown or malformed payloads give `None` and log the field name only),
   `roles.py`.
 - `src/fluxer_panel/`: `__main__.py` (`run|purge` entry point), `config.py`, `db.py` (single SQLite connection),
-  `migrations/` (numbered SQL, see Database), `purge.py`, `admin.py`, `bot.py`, `logs.py`, `fsutil.py`.
-  Sessions: `sessions.py` (the session, presence and RSVP store), `rsvp.py` (the pure RSVP engine), `session_time.py`
-  (the pure typed-time parser and slots), `session_flow.py` (the 📅 DM flow; in-memory drafts), `session_post.py`
-  (every REST call on a session message; the games-channel guard), `session_commands.py` (`!session`),
-  `session_jobs.py` (end, recurrence, heads-up, draft expiry), `dm_router.py` (the DM entry point; the non-admin path)
-  and `dm_backoff.py` (the per-user DM-failure backoff).
-  Polls: `polls.py` (the store for polls, options, ballots and votes, and the view a renderer reads), `poll_letters.py`
-  (option letters from positions), `poll_reply.py` (the pure ballot-reply parser), `poll_count.py` (the pure approval and
-  instant-runoff counts), `poll_members.py` (the follow-role holders from the member list, and the recipient cap),
-  `poll_post.py` (every REST call on a poll message and a ballot DM, with debounced edits), `poll_flow.py` (🗳️ starts a
-  poll, 📅 and 🔁 on a closed poll, ballot replies, runoffs), `poll_close.py` (the one close path), `poll_commands.py`
-  (`!poll`) and `poll_jobs.py` (the due closes and the halfway reminders).
-  Cards: `cards.py` (store and dataclasses), `card_fields.py` (field validators), `card_commands.py` (`!card`
-  subcommands), `resolver.py` (status from manager and probe results), `render.py` (embed, outside text and the
-  summary board's payload), `text.py` (user-facing strings), `poller.py` (the single card poller, which also keeps
-  the board and each card's subscription copies). The summary board's single-row store is `board.py`. Card
-  subscriptions (copies of a card in other text channels) are stored by `subscriptions.py`.
-  Reactions: `presses.py` (filters, rate limits and removals for presses; the only module that knows presses are
-  reactions), `interactions.py` (the press handler), `seeding.py` (adds and removes the bot's own reactions),
-  `pacer.py` (the per-channel reaction budget), `games.py` (the games community lookup and the bot's identity),
-  `notify.py` (DMs to the admins and to one user; `dm_user` applies the DM backoff unless `bypass`), `interaction_settings.py` (the global switch, the per-card off
-  switch and the degraded channels) and `follow_roles.py` (the only module that changes a role: the bell (U+1F514) follow toggle
-  and each card's follow role).
-  `wake.py` (wake presses, and closing a request on ready or expiry), `wake_requests.py` (the request store),
-  `request_commands.py` (`!request list|clear`). `play_now.py` is the play-now store: one row per press, live until
-  its expiry, then expired. The play-now send itself is `interactions.send_play_now`.
+  `migrations/` (numbered SQL, see Database), `purge.py`, `admin.py`, `bot.py`, `logs.py`, `fsutil.py`. Sessions:
+  `scope.py` (the scope a press or a row belongs to: home, or one local/both subscription; `resolve_scope` reads the
+  mode again inside the caller's transaction), `scope_cleanup.py` (ends a scope and deletes its mirrors and rows, for a
+  mode change away from local/both and for unsubscribe), `sessions.py` (the session, presence and RSVP store), `rsvp.py`
+  (the pure RSVP engine), `session_time.py` (the pure typed-time parser and slots), `session_flow.py` (the 📅 DM flow;
+  in-memory drafts), `session_post.py` (every REST call on a session message; the games-channel guard),
+  `session_commands.py` (`!session`), `session_jobs.py` (end, recurrence, heads-up, draft expiry), `dm_router.py` (the
+  DM entry point; the non-admin path) and `dm_backoff.py` (the per-user DM-failure backoff). Polls: `polls.py` (the
+  store for polls, options, ballots and votes, and the view a renderer reads), `poll_letters.py` (option letters from
+  positions), `poll_reply.py` (the pure ballot-reply parser), `poll_count.py` (the pure approval and instant-runoff
+  counts), `poll_members.py` (the follow-role holders from the member list, and the recipient cap), `poll_post.py`
+  (every REST call on a poll message and a ballot DM, with debounced edits), `poll_flow.py` (🗳️ starts a poll, 📅 and 🔁
+  on a closed poll, ballot replies, runoffs), `poll_close.py` (the one close path), `poll_commands.py` (`!poll`) and
+  `poll_jobs.py` (the due closes and the halfway reminders). Cards: `cards.py` (store and dataclasses), `card_fields.py`
+  (field validators), `card_commands.py` (`!card` subcommands), `resolver.py` (status from manager and probe results),
+  `render.py` (embed, outside text and the summary board's payload), `text.py` (user-facing strings), `poller.py` (the
+  single card poller, which also keeps the board and each card's subscription copies). The summary board's single-row
+  store is `board.py`. Card subscriptions (copies of a card in other text channels) are stored by `subscriptions.py`.
+  The mirrors of home sessions, polls and play-now posts in a `both` copy are stored by `mirrors.py`. `mirror_post.py`
+  makes every REST call on a mirror, `mirror_backfill.py` posts a both copy's mirrors when it enters both, and
+  `games_guard.py` holds the `GamesChannelRefused` check that session, poll and mirror posts share. Reactions:
+  `presses.py` (filters, rate limits and removals for presses; the only module that knows presses are reactions),
+  `interactions.py` (the press handler), `seeding.py` (adds and removes the bot's own reactions), `pacer.py` (the
+  per-channel reaction budget), `games.py` (the games community lookup and the bot's identity), `notify.py` (DMs to the
+  admins and to one user; `dm_user` applies the DM backoff unless `bypass`), `interaction_settings.py` (the global
+  switch, the per-card off switch and the degraded channels) and `follow_roles.py` (the only module that changes a role:
+  the bell (U+1F514) follow toggle and each card's follow role). `wake.py` (wake presses, and closing a request on ready
+  or expiry), `wake_requests.py` (the request store), `request_commands.py` (`!request list|clear`). `play_now.py` is
+  the play-now store: one row per press, live until its expiry, then expired. The play-now send itself is
+  `interactions.send_play_now`.
 - `src/fluxer_panel/sources/`: `base.py` (result types and the `HostManager`/`Probe` protocols), `registry.py`
   (the kind-to-plugin map), `pterodactyl.py` (host manager), `minecraft.py` (Bedrock and Java probes), `a2s.py`
   (A2S probe), `_probe_util.py` (the shared guard and limits).
@@ -187,23 +191,32 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
 - `!card list` sends its lines in messages under `card_commands.LIST_CHUNK` UTF-16 units each (`render.units`), so a
   message stays under Fluxer's 2000-unit limit. `!card show`'s outside preview is fitted to the same limit in units.
 - Adding a plugin is one module plus one line in `sources/registry.py`.
-- Card subscriptions (`subscriptions.py`, migration 0005): a copy of the full card message in another text channel.
-  Its payload is the card's own, from `render.card_message`, with `allowed_mentions={"parse": []}`. The poller posts,
-  edits and reposts a copy through the card's `_sync` path, under the card's lock, after the card's own message. A
-  failed post or edit of the card's own message is logged and the copies still run. A copy is never on the board, and
-  a board link never points at one. `subscriptions.MAX_SUBSCRIPTIONS` (5) is checked in `subscriptions.add`, in the
-  insert's transaction. A 403 on a copy's post or edit, or a 404 on its post (the channel is gone), pauses it and DMs
-  the admins once: the pause changes a row only while it is active. The DM takes `text.SUBSCRIPTION_PAUSED_ALERT`
-  (403) or `text.SUBSCRIPTION_CHANNEL_GONE_ALERT` (404), with the card slug and channel id as its only inputs. A 404
-  on an edit reposts the copy. `!card subscribe` on a paused channel resumes it, which clears a 403 pause;
-  `!card unsubscribe` clears a channel-gone pause. `!card archive` first cancels the card's upcoming sessions, under the card lock (their messages are edited and
-  their attendees DMed), and closes its open poll with no winner (`_close_open_poll_locked`; a failed close is logged
-  as `poll_archive_failed` and the archive goes on). It then deletes every copy first and the card's message last. A 404 counts as deleted. A 403 on a copy or on the card's own message leaves that message in place, the
-  archive goes on, and the reply names each channel left: `text.CARD_ARCHIVED_SOME_LEFT` with one
-  `text.ARCHIVE_LEFT_LINE` per channel. `text.CARD_ARCHIVED` is used only when nothing is left. Any other failure
-  stops the archive while the card stays live, and the copies it already deleted are forgotten so the poller posts
-  them again. `!card unsubscribe` removes the row whatever the delete outcome, and says so when the copy is left.
-  Copies log ids and exception types only.
+- Card subscriptions (`subscriptions.py`, migration 0005): a copy of the full card message in another text channel. Its
+  payload is the card's own, from `render.card_message`, with `allowed_mentions={"parse": []}`. The poller posts, edits
+  and reposts a copy through the card's `_sync` path, under the card's lock, after the card's own message. A failed post
+  or edit of the card's own message is logged and the copies still run. A copy is never on the board, and a board link
+  never points at one. `subscriptions.MAX_SUBSCRIPTIONS` (20) is checked in `subscriptions.add`, in the insert's
+  transaction. A 403 on a copy's post or edit, or a 404 on its post (the channel is gone), pauses it and DMs the admins
+  once: the pause changes a row only while it is active. The DM takes `text.SUBSCRIPTION_PAUSED_ALERT` (403) or
+  `text.SUBSCRIPTION_CHANNEL_GONE_ALERT` (404), with the card slug and channel id as its only inputs. A 404 on an edit
+  reposts the copy. `!card subscribe` on a paused channel resumes it, which clears a 403 pause; `!card unsubscribe`
+  clears a channel-gone pause. `!card archive` first ends every scope, the card's own and each local or both copy's,
+  and any object a copy left behind when it became `redirect`, under the card lock: it cancels every upcoming session
+  of the card in one `cancel_card_sessions_locked` call, every scope included, and clears every weekly series of the
+  card, ended occurrences included (their successors would still post). Their messages are edited and their
+  attendees DMed); it closes every open poll of the card with no winner (`polls.open_for_card_any`, one
+  `close_locked(..., outcome_override="none")` per poll in `_close_open_polls_locked`; a failed close is logged as
+  `poll_archive_failed` and the archive goes on); and it expires every live play-now post of every scope
+  (`play_now.live_for_card`). Before the mirror rows are deleted, `reaction_targets` lists each expired post's message
+  and its mirrors, and their reactions are cleared after the lock (`clear_reactions`), so a mirror whose delete fails
+  still loses its reactions. It then deletes every mirror, then every copy, and the card's message last. A 404 counts
+  as deleted. Any failed mirror delete (not a 404) is named in the reply and never stops the archive; its row is
+  forgotten either way. A 403 on a copy or the card's own message leaves that message in place, the archive goes on,
+  and the reply names each channel left: `text.CARD_ARCHIVED_SOME_LEFT` with one `text.ARCHIVE_LEFT_LINE` per channel,
+  split into several messages when long (`card_commands._archive_reply`). `text.CARD_ARCHIVED` is used only when nothing
+  is left. Any other failure on a copy or the card's own message stops the archive while the card stays live, and the
+  copies it already deleted are forgotten so the poller posts them again. `!card unsubscribe` removes the row whatever
+  the delete outcome, and says so when the copy is left. Copies log ids and exception types only.
 - Summary board (`render.board_message`, `board.py`, `poller.py`): one message, always on when `GAMES_CHANNEL_ID` is
   set. It is posted to that channel when none is stored, and then it stays in the channel it was posted in: a changed
   `GAMES_CHANNEL_ID` never moves it, as with cards. Its payload comes only from `render.board_message`, which escapes
@@ -224,8 +237,63 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   with a board stored, and no new board is posted in that tick (a stored board is still edited); the next tick
   posts it. The poller logs the board's ids and exception types only: never a title, a status or a link.
 
+## Subscriptions and scopes
+
+- A subscription's mode is `redirect`, `local` or `both` (`subscriptions.MODES`). Only `local` and `both` are scopes
+  (`Subscription.is_scope`, `subscriptions.LOCAL_MODES`).
+- The mode, local channel and role are set by `!card subscribe <slug> <channel> [mode=] [channel=] [role=]`
+  (`card_fields.subscription_options`), under the card lock, with every refusal decided before the first write. A copy
+  in the games community is always `redirect` (`text.SUBSCRIPTION_MODE_IN_GAMES`), and `channel=` and `role=` need a
+  scope mode. The mode write is compare-and-set (`subscriptions.set_mode_if`). A change to `redirect` forgets the local
+  channel; `both` to `local` deletes the mirrors only. A copy that enters `both` is back-filled under the lock. A
+  `channel=` change on a copy that stays `both` moves its mirrors the same way: `delete_mirrors_locked`, the new local
+  channel stored, then `backfill_locked`, all under the lock, with the seeds after it. Its RSVP rows are kept, also
+  across a restart (the new mirror cannot show them, see the Sessions rules), and a mirror that cannot be deleted is
+  named in the reply.
+- Each local or both subscription has its own follow role in its own community (`subscription_follow_role`), set by
+  `follow_roles.ensure_follow_role(..., sub_id=)` after the card lock. Its bell toggles that role only; with none
+  stored the copy gets no bell. `cards.follow_role_ids` (the role-call allowlist) includes these roles.
+- The scope rule: every session, poll and play-now row has a scope. NULL `scope_sub_id` is home; a row with an id
+  belongs to that one subscription. No home object posts in a local channel, and a copy's own objects never post home.
+  Mirrors exist only for `both`.
+- A scope is resolved by `scope.resolve_scope` from the press's surface, inside the caller's transaction, so a mode
+  changed since the press wins. A surface outside the games community with no scope of its own (a redirect copy, a far
+  card or a far play-now post) resolves to `ELSEWHERE`, which only points back to the card.
+- Caps: a card has 20 subscriptions (`subscriptions.MAX_SUBSCRIPTIONS`, checked in the insert's transaction). Sessions
+  are capped per scope: 10 upcoming per card and 3 per proposer, counted with the scope's own rows only
+  (`sessions.check_caps`), so a full home scope never blocks a subscription's scope. A scope has one open poll at a time
+  (`polls_open_once`).
+- Leaving a scope (a mode change away from `local` or `both`, or unsubscribe) goes through `scope_cleanup`: it ends
+  the scope's upcoming sessions and open poll, clears every weekly series in the scope (ended occurrences included,
+  through `cancel_card_sessions_locked`), expires its play-now posts, and deletes its mirrors. A series whose copy is
+  gone, or no longer local or both, is cleared by `session_jobs._plan_tx` and posts nothing. A paused copy's series is
+  kept and waits, posting again once `!card subscribe` resumes the copy. Unsubscribe then deletes the scope's rows, so
+  `scope_sub_id ... ON DELETE RESTRICT` never blocks it.
+
+## Mirror rules
+
+- `mirror_post.py` (`MirrorPost`) is the only REST path for a mirror message. It refuses the games channel
+  (`games_guard.GamesChannelRefused`) before any REST call, as sessions and polls do.
+- The first post of a mirror carries the caller's `allowed_mentions` (a play-now mirror pings only its copy's own role,
+  through `interactions.play_now_mentions`). Every mirror edit sends `{"parse": []}`, so an edit never re-pings.
+- Mentions: a session or poll mirror mentions nobody, at its first post or after. Only a play-now mirror's first post
+  may mention, under the one mention rule in Reactions rules. A 404 on a mirror drops its row (`mirrors.delete_if`);
+  a 403 or another failure is logged with ids and status only, and the row is kept.
+- A mirror row is stored only while its copy is `both` and active (`mirrors.py` checks the copy in the insert's
+  `WHERE EXISTS`).
+- A home session, poll or play-now call is mirrored when it is published (`SessionPost.sync_mirrors`,
+  `PollFlow._mirror_new_poll`, `Interactions._post_mirrors`); later edits update only the stored mirrors.
+  An RSVP on a mirror counts for the home session (`rsvp_reaction.via_sub_id`), and a far user's DM links to that mirror.
+- The poller never back-fills a mirror. Back-fill runs only when a copy enters `both` (`mirror_backfill.py`), under the
+  card lock, and a mirror the copy lost on a 404 stays gone until it enters `both` again.
+- No reaction REST call runs under the card lock. A mirror's reactions are seeded after the lock is released, as the
+  card's own are.
+- The purge's scrub also edits each stored mirror of a session (`session_post._scrub_mirrors`), before the rows are
+  deleted.
+
 ## Sessions rules
 
+- Session caps are per scope (see Subscriptions and scopes).
 - Sessions are never posted to the games channel. `session_post.send_session` and `edit_session` raise
   `GamesChannelRefused` before any REST call. The recurrence posts through `send_session` to the session's own
   channel. `tests/test_games_channel_sessions.py` runs a full scenario and checks it.
@@ -240,7 +308,14 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   after a session exists. `sessions.add` writes the proposer's first going row when the session is created, and
   `sessions.add_presence` replaces the implicit presence row of any user who reacts. Any user may hold an implicit row:
   the proposer's going, and each maybe that `sessions.add(..., maybe=...)` writes for a scheduled poll's voters. The
-  reconcile drops the implicit row of every user with a reaction before it adds that user's real row.
+  reconcile drops the implicit row of every user with a reaction before it adds that user's real row. The startup
+  reconcile also carries a real row whose origin mirror is unreadable (403, dropped on 404, or no longer stored because
+  the copy left both or was unsubscribed): it stays with its origin, unless a readable message shows that user with the
+  same choice (`interactions._carry_unreadable`). A row made before its origin's current mirror was posted is carried
+  the same way, since that mirror cannot show it: the row's `via_message_id` is no longer the origin's current mirror
+  message (`sessions.predated_origin_rows`). A mirror reaction records the mirror message it was seen on, and a
+  re-reaction on a newer mirror updates only that id (`sessions.add_presence`), never the seq, so the effective choice
+  does not change. A removal the bot can see is read at the next startup.
 - The non-admin paths are `dm_router` with `help`/`!help` (the command heads; admin heads only when `admin.authorize`
   passes; answered before a draft or ballot takes the reply), `!session` (`session_commands.py`), `!poll`, and ballot replies. `NonAdminLimiter.admit`
   allows 5 DM commands, draft or ballot replies, or 📅 DM reactions per 60 seconds per non-admin user. Admins are exempt. A `!session`
@@ -264,6 +339,7 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
 
 ## Polls rules
 
+- Poll caps: a poll has at most `polls.MAX_OPTIONS` (702) options, and one open poll per scope.
 - Poll content is never posted to the games channel: `PollPost.send_poll`, `flush` and the closed-poll reactions
   (`seed_closed`, `unseed_closed`, `remove_reaction`) refuse it before any REST call. `tests/test_games_channel_polls.py`
   runs a full scenario and checks it.
@@ -274,14 +350,16 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   open or on the value it expects, in one transaction. A vote is parsed and written in the same transaction
   (`_vote_tx`).
 - `poll_reply`, `poll_count` and `poll_letters` are pure (no database, REST or logging).
-- A poll posts to the channel from `interactions.target_channel_id`, the rule sessions share: the card's verified
-  play-now channel, else `PLAY_NOW_CHANNEL_ID`. `PollPost` requires the bot `identity`, because unseeding removes the
+- A poll posts to the channel from `scope.scope_target`, the rule sessions share: home is the card's verified
+  play-now channel, else `PLAY_NOW_CHANNEL_ID`; a local or both scope is its local channel, else its copy's channel.
+  `PollPost` requires the bot `identity`, because unseeding removes the
   bot's own reactions.
 - Letters come from positions; only `!poll sort` moves positions; votes point at option ids. A poll has at most 702
   options (`polls.MAX_OPTIONS`), and a typed time that would exceed that refuses the whole reply (`POLL_FULL`).
 - The member list is read once per poll start and once per runoff, in ids only. A failed read refuses the start
   (`poll_members.MembersUnavailable`).
-- A card has at most one open poll (the `polls_open_once` index).
+- A scope has at most one open poll: the home scope (NULL `scope_sub_id`) or one subscription's scope (the
+  `polls_open_once` index).
 - A runoff closes at min(now + `POLL_LENGTH_SECONDS`, earliest candidate time - 1 h - 10 min). With under 15 minutes
   left, 🔁 is refused (`POLL_RUNOFF_TOO_SOON`) and the presser is told to use 📅. A runoff keeps the parent's starter,
   and its candidates are the top three usable times that have votes; fewer than two is refused. The README's `### Polls`
@@ -317,12 +395,13 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   after posting it, never after an edit, and on reconcile it checks each stored card message and copy. It adds only the
   emoji that are missing and never removes one. Wanted: the wake emoji (U+25B6 U+FE0F) always; the follow emoji (bell,
   U+1F514) when the card has a follow role; the play-now emoji (U+1F64B) when the surface has a play-now target. The calendar (U+1F4C5) is wanted when the
-  surface has a session channel: a card or a home copy, never a far copy or a play-now post
-  (`seeding.has_session_channel`). A card
+  surface has a session channel: a card or a home copy, and a local or both copy too (its scope has its own channel),
+  never a redirect far copy or a play-now post (`seeding.has_session_channel` with `sub`). A card
   message is always at home, and a copy is at home when its community is the games channel's. A card message's play-now
   target is its own verified play-now channel or `PLAY_NOW_CHANNEL_ID`; a home copy always has one, and a copy elsewhere
-  has one when the card does. A copy elsewhere carries the bell and the raised hand too, but a press there makes no
-  role call and no post: it gets a DM pointing at the card (`text.FOLLOW_ELSEWHERE`, `text.PLAY_NOW_ELSEWHERE`).
+  has one when the card does. A redirect copy elsewhere carries the bell and the raised hand too, but a press there
+  makes no role call and no post: it gets a DM pointing at the card (`text.FOLLOW_ELSEWHERE`, `text.PLAY_NOW_ELSEWHERE`).
+  A local or both copy always has a play-now target (its scope's channel), and its bell follows `seeding.follow_for`.
   Seeding runs only while `Seeder.enabled_for` allows it (the global switch on and the card not switched off), and
   `Seeder.seed` asks again before each add. It runs after the card's lock is released, so a reaction send is the one
   card call not under the lock. A failure is logged as `seed_failed` with the card id and the exception type, and the
@@ -339,13 +418,17 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
 - Play-now targets (`interactions._play_now_targets`): a press on the card posts once, in the card's target (its
   verified `play_now_channel`, else `PLAY_NOW_CHANNEL_ID`). A press on a home copy posts in the copy's channel and, when
   the card's target is another channel, in that too. Each post gets its own play-now row and seeds, and both count as
-  one press for the cooldown. One failed post is logged (ids and status only) and the other is kept; the presser is
-  DMed only when no post succeeds.
+  one press for the cooldown. A press that resolves to a subscription's scope posts once, in that scope's target
+  (`scope.checked_target`), never at home. The cooldown is per scope (`play_now.latest_for_scope`). Only a home call
+  is mirrored, into each active both copy, under the card lock. One failed post is logged (ids and status only) and
+  the other is kept; the presser is DMed only when no post succeeds.
 - Play-now posts are sent only by `interactions.send_play_now`, which refuses a games-channel target before any REST
   call (`GamesChannelRefused`). `PLAY_NOW_CHANNEL_ID` must differ from `GAMES_CHANNEL_ID`, or the bot refuses to start.
-- A play-now post is the only send that may mention anyone: `interactions.play_now_mentions` allows the card's own
-  follow role only, and only when it belongs to the target's community (`_role_in`); otherwise `{"parse": []}`. Never
-  users, `@everyone` or another role. `REVIEW.md` anchors these lines.
+- The one mention rule: only a play-now post, or a play-now mirror's first post, may mention anyone, and only the
+  follow role of its own scope (the card's for a home post). Session and poll mirrors mention nobody.
+  `interactions.play_now_mentions` allows that role only when it belongs to the target's community (`_scope_role_in`);
+  otherwise `{"parse": []}`. An edit never re-pings. Never users, `@everyone` or another role. `REVIEW.md` anchors these
+  lines.
 
 ## Database
 
@@ -374,10 +457,12 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   Hosts are never logged,
   and the outside text shows an address only when it is public (`render.outside_address`, the one helper for all
   three address slots).
-- `card_subscription` (migration 0005) holds one row per card and channel, keyed by `(card_id, channel_id)`, and cascades
-  with its card. `message_id` and `content_hash` are set together or not at all, and a hash only with a message.
-  `paused` is 0 or 1. Its writes are keyed by card and channel: `set_hash_if` and `clear_message_if` are compare-and-set,
-  and `pause` and `resume` change a row only in the state they expect. The cap of five is app-level, not a CHECK.
+- `card_subscription` (migration 0005, rebuilt by 0010) holds one row per card and channel and cascades with its card.
+  Its key is a surrogate `id` (`INTEGER PRIMARY KEY AUTOINCREMENT`, so an id is never reused), and `UNIQUE (card_id,
+  channel_id)` keeps one row per channel. `message_id` and `content_hash` are set together or not at all, and a hash
+  only with a message. `paused` is 0 or 1. Its writes are keyed by card and channel: `set_hash_if` and
+  `clear_message_if` are compare-and-set, and `pause` and `resume` change a row only in the state they expect. The cap
+  of twenty (`subscriptions.MAX_SUBSCRIPTIONS`) is app-level, not a CHECK.
 - `board` (migration 0004) holds one row, `id = 1`, seeded by the migration. Its `channel_id` and `message_id` are set
   together or not at all, and `content_hash` is set only with a message. The board's writes are compare-and-set, as
   the cards' are: `clear_message_if`, and `set_hash_if` for the hash.
@@ -398,9 +483,18 @@ Any change that moves referenced code must update `REVIEW.md` in the same change
   `outcome` is `winner`, `none` or `removed`; `parent_poll_id` links a runoff; `session_id` is `ON DELETE SET NULL`),
   `poll_options` (positions and `starts_at` unique per poll; `origin` is `offered` or `typed`), `poll_ballots` (one per
   recipient, with `answered`, `reminded` and the DM ids), and `poll_votes` (one row per pick, with `rank` for a runoff).
-  The indexes are `polls_open_once` (one open poll per card), `polls_message`, `polls_state_closes`, `polls_parent`,
+  The indexes are `polls_open_once` (one open poll per scope), `polls_message`, `polls_state_closes`, `polls_parent`,
   `poll_votes_rank`, `poll_votes_option` and `poll_ballots_user`. Every table is `STRICT`, and the ids are checked as
   digits, as elsewhere.
+- Subscription modes (migration 0010, schema 10): `card_subscription` gains `mode` (`redirect`, `local` or `both`,
+  default `redirect`, so every existing row is `redirect`) and `local_channel_id`, and is rebuilt with the AUTOINCREMENT
+  id above. `subscription_follow_role` (`sub_id` primary key, `role_id` unique) holds one follow role per subscription,
+  cascading with it. `sessions`, `polls` and `play_now` gain `scope_sub_id` (NULL is the home scope) with
+  `ON DELETE RESTRICT`, so a subscription that owns scoped rows cannot be deleted by SQL. `poll_ballots.via_sub_id` and
+  `rsvp_reaction.via_sub_id` are plain integers with no foreign key, because an id is never reused.
+  `rsvp_reaction.via_message_id` (migration 0010) is the origin mirror's message id the reaction was seen on, or NULL
+  for home. `mirror_message` holds one row per home session, poll or play-now post re-posted in a `both` subscription
+  (exactly one object id per row, cascading with the subscription and the object).
 - Migrations: `src/fluxer_panel/migrations/NNNN_name.sql`, numbered and contiguous from `0001`. Never edit a migration
   after release; add a new file instead. Do not put `BEGIN`, `COMMIT` or `PRAGMA user_version` in a file: the runner adds them.
 - `secure_delete = ON` is set, so purged rows do not survive in free pages. `.pre-v<N>` backups are not covered by that

@@ -389,10 +389,11 @@ async def test_a_session_that_raises_does_not_stop_the_next_session(world: World
     before = await rows(world)
     real = sessions.reconcile_presence
 
-    def failing_for_the_first(conn: sqlite3.Connection, session: sessions.Session, actual: Any, now: int) -> bool:
+    def failing_for_the_first(conn: sqlite3.Connection, session: sessions.Session, actual: Any, now: int,
+                              via: Any = None, kept: Any = frozenset()) -> bool:
         if session.id == world.session_id:
             raise sqlite3.IntegrityError("simulated")
-        return real(conn, session, actual, now)
+        return real(conn, session, actual, now, via=via, kept=kept)
 
     monkeypatch.setattr(sessions, "reconcile_presence", failing_for_the_first)
     caplog.set_level(logging.DEBUG, logger="fluxer_panel.interactions")

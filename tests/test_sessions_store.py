@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from fluxer_panel import rsvp, sessions
+from fluxer_panel import cards, rsvp, sessions, subscriptions
 from fluxer_panel.db import Database
 from fluxer_panel.sessions import SessionCapReached
 
@@ -501,3 +501,162 @@ async def test_attendees_are_the_going_and_waiting_users_going_first_then_by_wai
     attendees = await db.run(lambda c: sessions.attendees(c, session_id))
 
     assert attendees == ["1001", "1004", "1008", "1007"]
+
+
+# Scopes: a subscription's sessions are kept apart from the home card's ---------------------------------
+
+async def _sub(db: Database, card_id: int, channel_id: str = "3050") -> int:
+    return await db.run(lambda c: subscriptions.add(c, card_id, "3001", channel_id))
+
+
+async def test_rows_added_without_a_scope_read_back_as_home(db: Database) -> None:
+    card = await _card(db)
+    session_id = await _add(db, card)
+    assert (await _get(db, session_id)).scope_sub_id is None
+
+
+async def test_the_caps_count_only_their_own_scope(db: Database) -> None:
+    card = await _card(db)
+    sub = await _sub(db, card)
+    for index in range(sessions.MAX_PER_CARD):
+        await _add(db, card, proposer=str(1101 + index))
+    with pytest.raises(SessionCapReached):
+        await _add(db, card, proposer="1200")
+    scoped = await _add(db, card, proposer="1200", scope_sub_id=sub)
+    assert (await _get(db, scoped)).scope_sub_id == sub
+
+
+async def test_the_proposer_cap_is_per_scope(db: Database) -> None:
+    card = await _card(db)
+    sub = await _sub(db, card)
+    for _ in range(sessions.MAX_PER_PROPOSER):
+        await _add(db, card, proposer="1001")
+    with pytest.raises(SessionCapReached):
+        await _add(db, card, proposer="1001")
+    await _add(db, card, proposer="1001", scope_sub_id=sub)
+
+
+async def test_next_for_scope_and_next_for_card_never_return_the_other_scope(db: Database) -> None:
+    card = await _card(db)
+    sub = await _sub(db, card)
+    home = await _add(db, card, starts_in=2 * HOUR)
+    scoped = await _add(db, card, starts_in=1 * HOUR, scope_sub_id=sub)
+
+    def read(c: sqlite3.Connection) -> tuple[int | None, int | None, int | None]:
+        home_next = sessions.next_for_card(c, card, NOW)
+        scoped_next = sessions.next_for_scope(c, card, sub, NOW)
+        home_scope = sessions.next_for_scope(c, card, None, NOW)
+        return (home_next and home_next.id, scoped_next and scoped_next.id, home_scope and home_scope.id)
+
+    assert await db.run(read) == (home, scoped, home)
+
+
+async def test_list_for_scope_returns_only_that_scope_in_any_state(db: Database) -> None:
+    card = await _card(db)
+    sub = await _sub(db, card)
+    await _add(db, card)
+    scoped = await _add(db, card, scope_sub_id=sub)
+    await db.run(lambda c: sessions.cancel_if(c, scoped, NOW))
+    listed = await db.run(lambda c: sessions.list_for_scope(c, sub))
+    assert [session.id for session in listed] == [scoped]
+    assert listed[0].state == "cancelled"
+
+
+async def test_the_upcoming_list_for_a_card_keeps_every_scope(db: Database) -> None:
+    card = await _card(db)
+    sub = await _sub(db, card)
+    home = await _add(db, card)
+    scoped = await _add(db, card, scope_sub_id=sub)
+    upcoming = await db.run(lambda c: sessions.upcoming_for_card(c, card))
+    assert {session.id for session in upcoming} == {home, scoped}
+
+
+async def test_upcoming_for_scope_returns_only_that_scopes_upcoming_rows_in_start_order(db: Database) -> None:
+    card = await _card(db)
+    sub = await _sub(db, card)
+    home = await _add(db, card, starts_in=5 * HOUR)
+    later = await _add(db, card, starts_in=4 * HOUR, scope_sub_id=sub)
+    cancelled = await _add(db, card, starts_in=6 * HOUR, scope_sub_id=sub)
+    earlier = await _add(db, card, starts_in=3 * HOUR, scope_sub_id=sub)
+    await db.run(lambda c: sessions.cancel_if(c, cancelled, NOW))
+
+    home_only = await db.run(lambda c: sessions.upcoming_for_scope(c, card, None))
+    scoped = await db.run(lambda c: sessions.upcoming_for_scope(c, card, sub))
+
+    assert [session.id for session in home_only] == [home]
+    assert [session.id for session in scoped] == [earlier, later]
+
+
+async def test_a_mirror_only_user_has_the_subscription_as_origin(db: Database) -> None:
+    card = await _card(db)
+    sub = await _sub(db, card)
+    session = await _get(db, await _add(db, card))
+    await db.run(lambda c: sessions.add_presence(c, session, "1002", "going", NOW, via_sub_id=sub))
+    assert await db.run(lambda c: sessions.presence_via(c, session.id, "1002")) == sub
+
+
+async def test_home_wins_whichever_reaction_comes_first(db: Database) -> None:
+    card = await _card(db)
+    sub = await _sub(db, card)
+    session = await _get(db, await _add(db, card))
+    # Mirror first, then the same reaction on the home message.
+    await db.run(lambda c: sessions.add_presence(c, session, "1002", "going", NOW, via_sub_id=sub))
+    await db.run(lambda c: sessions.add_presence(c, session, "1002", "going", NOW))
+    assert await db.run(lambda c: sessions.presence_via(c, session.id, "1002")) is None
+    # Home first, then the mirror.
+    await db.run(lambda c: sessions.add_presence(c, session, "1003", "maybe", NOW))
+    await db.run(lambda c: sessions.add_presence(c, session, "1003", "maybe", NOW, via_sub_id=sub))
+    assert await db.run(lambda c: sessions.presence_via(c, session.id, "1003")) is None
+
+
+async def test_presence_via_of_a_user_with_no_rows_is_none(db: Database) -> None:
+    card = await _card(db)
+    session_id = await _add(db, card)
+    assert await db.run(lambda c: sessions.presence_via(c, session_id, "1009")) is None
+
+
+# Per-scope next-session view (AC4.1) ---------------------------------------------------------------
+
+async def _give_slug(db: Database, card_id: int) -> None:
+    """cards.get_by_id reads only a card with a slug, so the view's card needs one."""
+    await db.run(lambda c: c.execute("UPDATE cards SET slug = 'game' WHERE id = ?", (card_id,)))
+
+async def test_scope_session_view_shows_only_its_own_scope_and_links_into_its_community(db: Database) -> None:
+    card = await _card(db)
+    await _give_slug(db, card)
+    sub_id = await db.run(lambda c: subscriptions.add(c, card, "3009", "3010"))
+    await _add(db, card, starts_in=1 * HOUR)                                # a home session, sooner
+    local_message = str(next(_MESSAGE_IDS))
+
+    def add_local(c: sqlite3.Connection) -> int:
+        return sessions.add(c, card_id=card, guild_id="3009", channel_id="3011", message_id=local_message,
+                            starts_at=NOW + 2 * HOUR, ends_at=NOW + 3 * HOUR, proposer_id="1001", now=NOW,
+                            scope_sub_id=sub_id)
+
+    await db.run(add_local)
+
+    def views(c: sqlite3.Connection) -> tuple[Any, Any]:
+        loaded = cards.get_by_id(c, card)
+        assert loaded is not None
+        return (sessions.scope_session_view(c, loaded, sub_id, NOW),
+                sessions.scope_session_view(c, loaded, sub_id + 1, NOW))
+
+    local_view, other_view = await db.run(views)
+    assert local_view is not None
+    assert local_view.starts_at == NOW + 2 * HOUR
+    assert local_view.jump == ("3009", "3011", local_message)
+    assert other_view is None
+
+
+async def test_scope_session_view_is_none_when_the_scope_has_no_upcoming_session(db: Database) -> None:
+    card = await _card(db)
+    await _give_slug(db, card)
+    sub_id = await db.run(lambda c: subscriptions.add(c, card, "3009", "3010"))
+    await _add(db, card, starts_in=1 * HOUR)
+
+    def view(c: sqlite3.Connection) -> Any:
+        loaded = cards.get_by_id(c, card)
+        assert loaded is not None
+        return sessions.scope_session_view(c, loaded, sub_id, NOW)
+
+    assert await db.run(view) is None
