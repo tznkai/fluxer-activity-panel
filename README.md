@@ -652,6 +652,24 @@ That is not a refusal and does not quarantine anything.
 
 ## Release notes
 
+### v0.5.0
+
+- Subscription modes. `!card subscribe` takes `mode=redirect|local|both`, `channel=` and `role=` (see Subscriptions).
+  A `local` copy runs its own sessions, polls and play-now posts in its own community, with its own follow role. A
+  `both` copy does that too, and also mirrors the home sessions, polls and play-now posts. RSVPs, Me Too presses and
+  votes made from a far ballot count toward the home object they mirror.
+- No new variable is required.
+- Back up the database before upgrading. The bot also writes a `.pre-v10` copy beside the database before it applies
+  the migration.
+- The schema moves to 10. Every existing subscription becomes `redirect` and behaves as before, and `!card show <slug>`
+  now marks each copy with its mode. v0.4.0 refuses a v10 database (exit 3, reason `schema_newer`) and leaves the file
+  unchanged, so a downgrade means restoring the `.pre-v10` backup.
+- A card may now have twenty subscribed channels, up from five.
+- A copy set to `local` or `both` creates (or adopts) a follow role in its own community, so the bot needs Manage
+  Roles there. Without it the mode is kept with no role, and the reply says why.
+- `!card archive` now ends every scope of the card before it deletes its messages: the card's own, and each copy's.
+- The live checks for this release are in `docs/fluxer-notes.md`, under "Live sub-mode checks".
+
 ### v0.4.0
 
 - v0.3.0 was not released on its own. Upgrading from v0.2.0 applies both sets of notes below, and the database moves
